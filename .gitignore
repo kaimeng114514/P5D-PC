@@ -1,0 +1,71 @@
+# ===== 禁止入库：游戏文件 / 游戏衍生数据（见 docs/RELEASE_COMPLIANCE.md）=====
+*.cpk
+*.gsc
+*.gxp
+*.usm
+*.at9
+*.at3
+*.awb
+*.acb
+*.adx
+*.ahx
+*.spr
+*.gmd
+*.gfs
+*.gap
+*.epl
+*.pkx
+*.psarc
+*.sfo
+*.suprx
+*.pkg
+*.vpk
+*.bin
+*.elf
+*.self
+*.prx
+
+# 由游戏代码/着色器翻译出的产物：只在玩家机器本地生成，禁止入库
+batch_*.cpp
+batch_*.o
+*.spv
+spv_all/
+spv_2ph/
+spv_all_new/
+rt_gxp/
+cache/recomp/
+cache/shaders/
+cache/pipelines/
+
+# 构建产物
+*.o
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+recomp_harness
+
+# 日志 / 临时 / 证据
+*.log
+_*.txt
+_out*/
+out*.txt
+err*.txt
+*_dump.txt
+*.bmp
+*.png
+*.jpg
+*.tga
+
+# 备份
+*.bak
+*_backup*
+*.corrupt.bak
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
