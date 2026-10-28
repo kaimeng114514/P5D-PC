@@ -746,7 +746,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
 static void mainctx_note(const char* tag, uint32_t sp) {
@@ -3183,6 +3183,7 @@ int main(int argc, char** argv) {
   { const char* _sl = getenv("P5D_SWLOG"); g_swlog = (_sl && atoi(_sl) != 0) ? 1 : 0; }
   { const char* _ns = getenv("P5D_NOSCHEDRUN"); g_noschedrun = (_ns && atoi(_ns) != 0) ? 1 : 0; }
   { const char* _ss = getenv("P5D_SCHEDRUNSMART"); g_schrunsmart = (_ss && atoi(_ss) != 0) ? 1 : 0; }
+  { const char* _si = getenv("P5D_SCHEDIDX"); if (_si) g_schedidx = atoi(_si); }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -3617,7 +3618,10 @@ int main(int argc, char** argv) {
       }
     if ((pc & ~1u) == 0x812068D8u && g_schedrun_n < 4 && g_in_fex == 0 && !g_in_fiber_exec && !g_noschedrun) {
       ++g_schedrun_n;
-      uint32_t fb = (g_fiber_list.size() > 1 ? g_fiber_list[1] : (g_fiber_list.empty() ? 0u : g_fiber_list[0]));
+      uint32_t _si = (g_schedidx >= 0 && (size_t)g_schedidx < g_fiber_list.size()) ? (uint32_t)g_schedidx : 0u;
+      uint32_t fb = (g_fiber_list.size() > _si ? g_fiber_list[_si] : (g_fiber_list.empty() ? 0u : g_fiber_list[0]));
+      if (g_schedlist_n++ < 8) { printf("[SCHEDLIST] cur=%08X idx=%d n=%zu list:", g_cur_fiber, g_schedidx, g_fiber_list.size());
+        for (uint32_t _fb : g_fiber_list) printf(" %08X", _fb); printf(" -> fb=%08X\n", fb); fflush(stdout); }
       if (fb) {
         uint32_t off = fb - IMG_VA_BASE, fentry = 0, farg = 0;
         if (off + 0x90u <= IMG_SIZE) { std::memcpy(&fentry, gp_img+off+0x84u, 4); std::memcpy(&farg, gp_img+off+0x88u, 4); }
