@@ -711,12 +711,22 @@ static uint32_t g_inpctx = 0;
 static uint32_t inputctx(void) { if (!g_inpctx) { uint8_t* q = GP(0x81539754u); if (q) std::memcpy(&g_inpctx, q, 4); } return g_inpctx; }
 static int g_inpw_n = 0, g_inp_init_n = 0, g_inp_update_n = 0, g_inp_update2_n = 0, g_inp_disp_n = 0;
 
+static int g_fsm_n = 0, g_fsm6_n = 0, g_fsmw_n = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
+  { uint32_t p = pcv & ~1u;
+    if (p == 0x811E5928u) { if (g_fsm_n++ < 24) { uint32_t t = s->r[0]; uint16_t st = 0; uint8_t* q = GP(t + 2u); if (q) std::memcpy(&st, q, 2);
+        printf("[FIOSSM] enter task=%08X state=%u thr=%08X fib=%08X\n", t, (unsigned)st, g_cur_thr, g_cur_fiber); fflush(stdout);} }
+    else if (p == 0x811E5A9Au) { if (g_fsm6_n++ < 30) { printf("[FIOSSM] STATE6 done thr=%08X fib=%08X\n", g_cur_thr, g_cur_fiber); fflush(stdout);} }
+    else if (p == 0x811E5AF4u) { if (g_fsmw_n++ < 12) { uint32_t t = s->r[6]; uint16_t st = 0; uint8_t* q = GP(t + 2u); if (q) std::memcpy(&st, q, 2);
+        printf("[FIOSSM] waitloop pc=%08X task=%08X state=%u r4=%08X r7=%08X thr=%08X fib=%08X\n", pcv, t, (unsigned)st, s->r[4], s->r[7], g_cur_thr, g_cur_fiber); fflush(stdout);} } }
+
   uint32_t p = pcv & ~1u;
   if (p == 0x81003D26u) { if (g_jobpost_n++ < 20) { printf("[JOBPOST] q(r0)=%08X r1=%08X fn(r2)=%08X arg(r3)=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],s->r[2],s->r[3],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x81003D88u) { if (g_jobfn_n++ < 20) { printf("[JOBFN] r0=%08X r4=%08X thr=%08X fib=%08X\n", s->r[0],s->r[4],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160E8u) { if (g_jobq_n++ < 20) { printf("[JOBQ] consumer q(r0)=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160C4u) { if (g_enq_n++ < 20) { uint32_t head=0; uint8_t* q=GP(s->r[7]+4u); if(q) std::memcpy(&head,q,4); printf("[ENQ] q(r7)=%08X node(r6)=%08X head=%08X thr=%08X\n", s->r[7],s->r[6],head,g_cur_thr); fflush(stdout);} }
+  else if (p == 0x811F23D8u) { static int _a=0; if (_a++ < 8) { printf("[INPCHAIN] FUN_811F23D8 enter r0=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
+  else if (p == 0x811F226Cu) { static int _b=0; if (_b++ < 8) { printf("[INPCHAIN] FUN_811F226C enter r0=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x811F0A8Cu) { if (g_inp_init_n++ < 4) { printf("[INPINIT] enter\n"); fflush(stdout);} }
   else if (p == 0x811F0D7Cu) { if (g_inp_update_n++ < 8) { printf("[INPUPD1] enter r0=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x811F10D8u) { if (g_inp_update2_n++ < 8) { printf("[INPUPD2] enter r0=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
@@ -724,6 +734,37 @@ static void job_probes(uint32_t pcv, RecState* s) {
   else if (p == 0x811F22B8u) { if (g_touchprod_n++ < 12) { printf("[TOUCHPROD] enter r0=%08X r1=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x81174CD4u) { if (g_postcb_n++ < 12) { printf("[POSTCB] enter r0=%08X r1=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160FCu) { if (g_qhead_n++ < 20) { uint32_t head=0; uint8_t* q=GP(s->r[7]+4u); if(q) std::memcpy(&head,q,4); printf("[QHEAD] q(r7)=%08X head=%08X thr=%08X\n", s->r[7],head,g_cur_thr); fflush(stdout);} }
+}
+// ===== 18.4270: SceLibKernel/SceIofilemgr host-file IO (guest CRI CPK reader path) =====
+struct HostFd { std::FILE* fp = nullptr; std::vector<uint8_t> mem; bool isMem = true; int64_t pos = 0, size = 0; };
+static std::map<uint32_t, HostFd> g_hostfd;
+static uint32_t g_hostfd_id = 0x4000u;
+static int g_io_rn = 0, g_io_pn = 0;
+static std::string io_guest_str(uint32_t va) {
+  std::string s; uint8_t* p = GP(va); if (p) for (int i = 0; i < 512 && p[i]; ++i) s.push_back((char)p[i]);
+  return s;
+}
+static std::string io_strip_prefix(std::string s) {
+  static const char* pres[] = {"app0:/","app0:","host0:/","host0:","cache0:/","cache0:","savedata0:/","savedata0:","ux0:"};
+  for (const char* pre : pres) { size_t l = std::strlen(pre); if (s.size() >= l && _strnicmp(s.c_str(), pre, l) == 0) { s = s.substr(l); break; } }
+  for (char& c : s) if (c == '/') c = '\\';
+  while (!s.empty() && s[0] == '\\') s.erase(s.begin());
+  return s;
+}
+static bool io_open_host(const std::string& raw, HostFd& h, std::string& used) {
+  std::string q = io_strip_prefix(raw);
+  bool isSave = raw.size() >= 10 && _strnicmp(raw.c_str(), "savedata0:", 10) == 0;
+  static const char* bases[] = {"C:\\dev\\p5d_rom\\", "C:\\dev\\p5d_rom\\data\\", "C:\\dev\\p5dsrc\\game\\PCSH10109\\vita_extracted\\"};
+  for (const char* b : bases) {
+    std::string cand = std::string(b) + (isSave ? std::string("savedata\\") : std::string("")) + q;
+    std::FILE* fp = std::fopen(cand.c_str(), "rb");
+    if (!fp) { std::string c2 = std::string(b) + q; fp = std::fopen(c2.c_str(), "rb"); if (fp) cand = c2; }
+    if (fp) { _fseeki64(fp, 0, SEEK_END); h.size = _ftelli64(fp); _fseeki64(fp, 0, SEEK_SET);
+      h.fp = fp; h.isMem = false; h.pos = 0; used = cand; return true; }
+  }
+  std::vector<uint8_t> data;
+  if (!raw.empty() && cpk_read_any_impl(raw, data)) { h.mem = std::move(data); h.size = (int64_t)h.mem.size(); h.isMem = true; h.pos = 0; used = "<cpk>"; return true; }
+  return false;
 }
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
@@ -1209,29 +1250,52 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       hle_eflag_set(0x60014000u, 1u); hle_eflag_set(0x60015000u, 1u);   // 18.4264: op completion notification
       break; }
     case 0x812B1A00u: { auto it = g_fios_data.find(s->r[0]); r0 = (it == g_fios_data.end()) ? 0u : (uint32_t)it->second.size(); break; } // sceFiosFHGetSize
-    case 0x812B2970u: {                                               // 18.4255: sceIoOpen (SceIofilemgr, NID 0x34EFD876) - CRI/GFD resource loader path
-      fios_ensure_cpk();
-      std::string path; { uint8_t* p = GP(s->r[0]); if (p) path = (const char*)p; }
-      std::vector<uint8_t> data;
-      uint32_t fd;
-      if (!path.empty() && cpk_read_any_impl(path, data)) { fd = ++g_io_id; g_io_data[fd] = std::move(data); g_io_pos[fd] = 0;
-        if (g_io_n++ < 60) printf("[IO] OPEN '%s' -> fd=%u size=%zu\n", path.c_str(), fd, g_io_data[fd].size()); }
-      else { fd = ++g_io_id; g_io_data[fd] = std::vector<uint8_t>(); g_io_pos[fd] = 0;
-        if (g_io_n++ < 60) printf("[IO] OPEN-MISS '%s' -> empty fd=%u\n", path.c_str(), fd); }
+    case 0x812B2870u: {                                               // 18.4270: sceIoOpen(path,flags) - guest CRI CPK reader opens the real data.cpk/vita.cpk
+      std::string path = io_guest_str(s->r[0]); HostFd hh; std::string used; uint32_t fd = ++g_hostfd_id;
+      if (!path.empty() && io_open_host(path, hh, used)) { g_hostfd[fd] = std::move(hh);
+        if (g_io_n++ < 80) printf("[IO] OPEN '%s' -> fd=%u %s size=%lld\n", path.c_str(), fd, used.c_str(), (long long)g_hostfd[fd].size); }
+      else { HostFd e; e.isMem = true; e.size = 0; e.pos = 0; g_hostfd[fd] = std::move(e);
+        if (g_io_n++ < 80) printf("[IO] OPEN-MISS '%s' -> empty fd=%u\n", path.c_str(), fd); }
       r0 = fd; break; }
-    case 0x812B29B0u: {                                               // sceIoRead(fd, buf, size)
-      auto it = g_io_data.find(s->r[0]); if (it == g_io_data.end()) { r0 = 0; break; }
-      size_t& pos = g_io_pos[s->r[0]]; size_t avail = it->second.size() - pos;
-      uint32_t n = (uint32_t)(s->r[2] < avail ? s->r[2] : avail);
-      uint8_t* dst = GP(s->r[1]); if (dst && n) std::memcpy(dst, it->second.data() + pos, n);
-      pos += n; r0 = n; break; }
-    case 0x812B2990u: {                                               // sceIoLseek32(fd, offset, whence)
-      auto it = g_io_data.find(s->r[0]); if (it == g_io_data.end()) { r0 = 0xFFFFFFFFu; break; }
-      int32_t off = (int32_t)s->r[1]; size_t& pos = g_io_pos[s->r[0]];
-      int64_t np = (s->r[2] == 0 ? 0 : s->r[2] == 1 ? (int64_t)pos : (int64_t)it->second.size()) + off;
-      if (np < 0) np = 0; pos = (size_t)np; r0 = (uint32_t)pos; break; }
-    case 0x812B29A0u: case 0x812B2980u:                               // sceIoClose / sceIoDclose
-      g_io_data.erase(s->r[0]); g_io_pos.erase(s->r[0]); r0 = 0; break;
+    case 0x812B2840u: {                                               // 18.4270: sceIoPread(fd,dst,size,seekPtr) - CPK reader absolute reads
+      auto it = g_hostfd.find(s->r[0]); if (it == g_hostfd.end()) { r0 = 0xFFFFFFFFu; break; }
+      HostFd& hh = it->second; int64_t off = hh.pos;
+      if (s->r[3]) { uint8_t* q = GP(s->r[3]); if (q) { uint64_t v = 0; std::memcpy(&v, q, 8); off = (int64_t)v; } }
+      else { uint8_t* q = GP(s->r[13]); if (q) { uint64_t v = 0; std::memcpy(&v, q, 8); if ((int64_t)v >= 0 && (int64_t)v <= hh.size) off = (int64_t)v; } }
+      uint32_t size = s->r[2]; uint8_t* dst = GP(s->r[1]); size_t n = 0;
+      if (dst && size) { if (hh.isMem) { if (off < (int64_t)hh.mem.size()) { size_t avail = (size_t)((int64_t)hh.mem.size() - off); n = size < avail ? size : avail; std::memcpy(dst, hh.mem.data() + off, n); } }
+        else if (hh.fp) { _fseeki64(hh.fp, off, SEEK_SET); n = std::fread(dst, 1, size, hh.fp); } }
+      hh.pos = off + (int64_t)n; r0 = (uint32_t)n;
+      if (g_io_pn++ < 20) { printf("[IO] PREAD fd=%u off=%lld size=%u got=%zu\n", s->r[0], (long long)off, size, n); fflush(stdout); }
+      break; }
+    case 0x812B28B0u:                                                 // 18.4270: sceIoLseek(fd,off,whence)
+    case 0x812B2990u: {                                               // sceIoLseek32
+      auto it = g_hostfd.find(s->r[0]); if (it == g_hostfd.end()) { r0 = 0xFFFFFFFFu; break; }
+      HostFd& hh = it->second; int32_t off = (int32_t)s->r[1]; int64_t base = 0;
+      if (s->r[2] == 1) base = hh.pos; else if (s->r[2] == 2) base = hh.size;
+      int64_t np = base + off; if (np < 0) np = 0; hh.pos = np; r0 = (uint32_t)np; break; }
+    case 0x812B28F0u: {                                               // 18.4270: sceIoGetstat(path, stat)
+      std::string path = io_guest_str(s->r[0]); HostFd hh; std::string used; uint8_t* st = GP(s->r[1]); r0 = 0x80010002u;
+      if (!path.empty() && io_open_host(path, hh, used)) { if (st) { std::memset(st, 0, 0x58); int32_t mode = 0x21FF; std::memcpy(st, &mode, 4); std::memcpy(st + 0x28, &hh.size, 8); } if (hh.fp) std::fclose(hh.fp); r0 = 0; }
+      if (g_io_n++ < 80) { printf("[IO] GETSTAT '%s' -> %08X size=%lld\n", path.c_str(), r0, (long long)hh.size); fflush(stdout); }
+      break; }
+    case 0x812B2970u: {                                               // 18.4270: sceIoWrite(fd,buf,size) - minimal
+      auto it = g_hostfd.find(s->r[0]); if (it == g_hostfd.end()) { r0 = 0xFFFFFFFFu; break; }
+      HostFd& hh = it->second; uint32_t n = 0; uint8_t* src = GP(s->r[1]);
+      if (src && s->r[2]) { if (hh.isMem) { size_t need = (size_t)(hh.pos < 0 ? 0 : hh.pos) + s->r[2]; if (hh.mem.size() < need) hh.mem.resize(need); std::memcpy(hh.mem.data() + (size_t)hh.pos, src, s->r[2]); n = s->r[2]; }
+        else if (hh.fp) { _fseeki64(hh.fp, hh.pos, SEEK_SET); n = (uint32_t)std::fwrite(src, 1, s->r[2], hh.fp); std::fflush(hh.fp); } }
+      hh.pos += n; if (hh.pos > hh.size) hh.size = hh.pos; r0 = n; break; }
+    case 0x812B29B0u: {                                               // 18.4270: sceIoRead(fd,buf,size) - streaming
+      auto it = g_hostfd.find(s->r[0]); if (it == g_hostfd.end()) { r0 = 0xFFFFFFFFu; break; }
+      HostFd& hh = it->second; uint32_t size = s->r[2]; uint8_t* dst = GP(s->r[1]); size_t n = 0;
+      if (dst && size) { if (hh.isMem) { if (hh.pos < (int64_t)hh.mem.size()) { size_t avail = (size_t)((int64_t)hh.mem.size() - hh.pos); n = size < avail ? size : avail; std::memcpy(dst, hh.mem.data() + hh.pos, n); } }
+        else if (hh.fp) { _fseeki64(hh.fp, hh.pos, SEEK_SET); n = std::fread(dst, 1, size, hh.fp); } }
+      int64_t oldpos = hh.pos; hh.pos += (int64_t)n; r0 = (uint32_t)n;
+      if (g_io_rn++ < 20) { printf("[IO] READ fd=%u pos=%lld size=%u got=%zu\n", s->r[0], (long long)oldpos, size, n); fflush(stdout); }
+      break; }
+    case 0x812B29A0u: case 0x812B2980u: {                             // sceIoClose / sceIoDclose
+      auto it = g_hostfd.find(s->r[0]); if (it != g_hostfd.end()) { if (it->second.fp) std::fclose(it->second.fp); g_hostfd.erase(it); }
+      r0 = 0; break; }
     case 0x812B19C0u: case 0x812B19A0u: g_fios_data.erase(s->r[1]); g_fios_pos.erase(s->r[1]); r0 = 0; break;  // FHClose / FHCloseSync
     case 0x812B1960u: r0 = 1; break;                                  // sceFiosOpIsDone -> done
     case 0x812B1980u: hle_eflag_set(0x60014000u, 1u); hle_eflag_set(0x60015000u, 1u); r0 = 0; break;  // sceFiosOpWait (+ op completion notify)
@@ -2577,6 +2641,8 @@ static void init_job_pools() {
 
 
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { static int _r3=0; if ((v == 0x811F3124u || v == 0x811F3125u) && _r3++ < 20) {
+      printf("[REG3124] st a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   { uint32_t _c = inputctx(); if (_c && a >= _c + 0x0Cu && a < _c + 0x1Cu && g_inpw_n++ < 40) {
       printf("[INPW] a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   static int g_f630_n = 0;
