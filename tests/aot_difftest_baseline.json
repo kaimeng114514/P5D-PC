@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "notes": "Known deviations of the current generated C++ from ARM semantics. Cases listed here are still executed and their mismatch is printed as KNOWN; they are not fatal unless --strict is passed. Remove an entry once the generator is fixed (the driver prints STALE for entries that now pass). The entries below were confirmed against unicorn as well: the generated code, not the reference model, is wrong.",
+  "known_failures": {
+    "shift_imm_lsrs_32": "emit(): immediate shift amount is masked with &0x1F, so LSR #32 (encoded shift=0 in the instruction, reported as 32 by capstone) becomes 'shift by 0' and returns the source unchanged; ARM requires 0 with C=bit31",
+    "shift_imm_asrs_32": "emit(): immediate ASR #32 becomes 'shift by 0' instead of sign fill",
+    "shift_imm_asrs_32_pos": "emit(): immediate ASR #32 (positive source) becomes 'shift by 0' instead of 0",
+    "shift_imm_lsr_32_bug": "emit(): non-S LSR #32 immediate form becomes shift by 0",
+    "shift_imm_asr_32_bug": "emit(): non-S ASR #32 immediate form becomes shift by 0",
+    "shiftmask_lsl_low8_0": "emit() register-shift path compares the full 32-bit Rs against 32 instead of using ARM's Rs[7:0]; 0x100 must mean shift-by-0 but is treated as >=32 -> 0",
+    "shiftmask_lsl_low8_8": "emit() register-shift path ignores Rs[7:0] masking; 0x108 must mean shift-by-8 but is treated as >=32 -> 0",
+    "shiftmask_lsr_low8_8": "emit() register-shift path ignores Rs[7:0] masking (LSR variant)",
+    "shiftmask_asr_low8_8": "emit() register-shift path ignores Rs[7:0] masking (ASR variant: 0x108 must be shift-by-8, not >=32 sign fill)",
+    "carry_adcs_nowrap": "emit() ADC/SBC 3-register form starts from Rd (reg(0)) instead of Rn (reg(1)); with Rd!=Rn the result and flags are wrong",
+    "carry_adcs_wrap": "emit() computes ADC carry-in as b+c in 32-bit arithmetic, so b=0xFFFFFFFF,c=1 wraps to 0 and the carry-out is lost",
+    "carry_adc_nos": "emit() updates flags for non-S ADC.W (ARM: flags must be preserved); result also uses Rd instead of Rn",
+    "carry_sbcs_16": "emit() SBC carry chain computes b+(1-C) in 32-bit arithmetic; b=0xFFFFFFFF,C=0 wraps to 0 and the borrow flag is wrong",
+    "carry_sbcs_w": "emit() SBC 3-register form uses Rd instead of Rn and loses the b+(1-C) wrap, corrupting result and flags",
+    "carry_adcs_rd_ne_rn": "emit() ADC/Rd!=Rn case uses Rd as the first addend instead of Rn",
+    "carry_sbcs_rd_ne_rn": "emit() SBC/Rd!=Rn case uses Rd as the first addend instead of Rn",
+    "it_eq_cmp_skipped": "IT blocks are translated unconditionally: emit() turns 'it eq' into a comment and strips the condition suffix from 'cmpeq' (see batch_000.cpp blk_8100AD80: '/* it */ {cmp} if (cond_ne)'). When the IT condition is false the conditional instruction must be skipped, but the generated code executes it and clobbers APSR (found in production code: 205 IT blocks / 126 'cmpeq' in p5d_true.elf, e.g. 0x8100AD92 'it eq; cmpeq r2,r4; bne')"
+  }
+}

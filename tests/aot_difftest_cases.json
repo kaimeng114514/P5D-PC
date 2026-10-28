@@ -1,0 +1,2276 @@
+{
+  "version": 1,
+  "purpose": "Golden-semantics cases for the P5D static AOT recompiler (ARMv7 Thumb-2). Each case feeds one or more real/hand-encoded Thumb instructions to the generated C++ translation and compares the resulting register file, memory and APSR against the independent Python reference model in tools/aot_difftest.py. The 'expect' blocks are hand-derived constants that pin the bug classes we have been bitten by; the driver verifies the reference model against them on every run.",
+  "encoding_sources": {
+    "elf": "C:\\dev\\p5d_build\\p5d_true.elf (instruction bytes taken verbatim; 'src' fields give the ELF VA)",
+    "hand": "hand-encoded ARMv7-M/Thumb-2, verified with capstone; used for edge encodings absent from the ELF (e.g. shift-by-32)"
+  },
+  "defaults": {
+    "va": "0x81000000",
+    "apsr": "0x00000000"
+  },
+  "cases": [
+    {
+      "id": "post_ldr_imm8",
+      "cls": "postindex",
+      "src": "elf:0x810049D4",
+      "bytes": "54f8080b",
+      "desc": "ldr r0,[r4],#8 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x80601000"
+        },
+        "apsr": "0x30000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "44332211"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ],
+        [
+          "0x80601004",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0x11223344",
+          "4": "0x80601008"
+        },
+        "apsr": "0x30000000"
+      }
+    },
+    {
+      "id": "post_ldr_imm16",
+      "cls": "postindex",
+      "src": "elf:0x81006494",
+      "bytes": "54f8100b",
+      "desc": "ldr r0,[r4],#0x10 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x80601000"
+        },
+        "apsr": "0x60000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "efbeadde"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0xDEADBEEF",
+          "4": "0x80601010"
+        }
+      }
+    },
+    {
+      "id": "post_str_imm4",
+      "cls": "postindex",
+      "src": "elf:0x8100D848",
+      "bytes": "4af8040b",
+      "desc": "str r0,[sl],#4 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0xDEADBEEF",
+          "10": "0x80601000"
+        },
+        "apsr": "0xA0000000"
+      },
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "10": "0x80601004"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "post_strb_imm1",
+      "cls": "postindex",
+      "src": "elf:0x8100C9E0",
+      "bytes": "08f8019b",
+      "desc": "strb r1,[r8],#1 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0xAB",
+          "8": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80601000",
+          1
+        ]
+      ],
+      "expect": {
+        "r": {
+          "8": "0x80601001"
+        }
+      }
+    },
+    {
+      "id": "post_strh_imm2",
+      "cls": "postindex",
+      "src": "elf:0x810201BA",
+      "bytes": "27f8020b",
+      "desc": "strh r0,[r7],#2 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0xBEEF",
+          "7": "0x80601000"
+        },
+        "apsr": "0x10000000"
+      },
+      "probes": [
+        [
+          "0x80601000",
+          2
+        ]
+      ],
+      "expect": {
+        "r": {
+          "7": "0x80601002"
+        },
+        "apsr": "0x10000000"
+      }
+    },
+    {
+      "id": "post_ldrb_imm3",
+      "cls": "postindex",
+      "src": "elf:0x8100E0B0",
+      "bytes": "1ef8030b",
+      "desc": "ldrb r0,[lr],#3 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "80"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          1
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0x00000080",
+          "14": "0x80601003"
+        }
+      }
+    },
+    {
+      "id": "post_ldrh_imm2",
+      "cls": "postindex",
+      "src": "elf:0x8101E22C",
+      "bytes": "34f802bb",
+      "desc": "ldrh fp,[r4],#2 : post-index writeback, high reg dest",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "efbe0000"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          2
+        ]
+      ],
+      "expect": {
+        "r": {
+          "11": "0x0000BEEF",
+          "4": "0x80601002"
+        }
+      }
+    },
+    {
+      "id": "post_ldrsb_imm1",
+      "cls": "postindex",
+      "src": "elf:0x8101CF04",
+      "bytes": "17f9011b",
+      "desc": "ldrsb r1,[r7],#1 : post-index writeback + sign extension",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "7": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "80"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          1
+        ]
+      ],
+      "expect": {
+        "r": {
+          "1": "0xFFFFFF80",
+          "7": "0x80601001"
+        }
+      }
+    },
+    {
+      "id": "post_ldrsh_imm2",
+      "cls": "postindex",
+      "src": "hand",
+      "bytes": "31f9020b",
+      "desc": "ldrsh r0,[r1],#2 : post-index writeback + sign extension",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "0180"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          2
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0xFFFF8001",
+          "1": "0x80601002"
+        }
+      }
+    },
+    {
+      "id": "pre_ldr_imm4",
+      "cls": "preindex",
+      "src": "elf:0x81023AD6",
+      "bytes": "51f8040f",
+      "desc": "ldr r0,[r1,#4]! : pre-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601004",
+          "ddccbbaa"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601004",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0xAABBCCDD",
+          "1": "0x80601004"
+        }
+      }
+    },
+    {
+      "id": "pre_str_imm4",
+      "cls": "preindex",
+      "src": "elf:0x81021AC2",
+      "bytes": "46f8041f",
+      "desc": "str r1,[r6,#4]! : pre-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0xCAFEBABE",
+          "6": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80601004",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "6": "0x80601004"
+        }
+      }
+    },
+    {
+      "id": "pre_ldrb_neg",
+      "cls": "preindex",
+      "src": "elf:0x812ACB00",
+      "bytes": "13f8010d",
+      "desc": "ldrb r0,[r3,#-1]! : negative pre-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "3": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80600FFF",
+          "7f"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80600FFF",
+          1
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0x0000007F",
+          "3": "0x80600FFF"
+        }
+      }
+    },
+    {
+      "id": "pre_strb_neg",
+      "cls": "preindex",
+      "src": "elf:0x811DC03C",
+      "bytes": "0cf8016d",
+      "desc": "strb r6,[ip,#-1]! : negative pre-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "6": "0x5A",
+          "12": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80600FFF",
+          1
+        ]
+      ],
+      "expect": {
+        "r": {
+          "12": "0x80600FFF"
+        }
+      }
+    },
+    {
+      "id": "pre_ldrsb_imm1",
+      "cls": "preindex",
+      "src": "elf:0x8101E318",
+      "bytes": "10f9011f",
+      "desc": "ldrsb r1,[r0,#1]! : pre-index + sign extension",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601001",
+          "81"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601001",
+          1
+        ]
+      ],
+      "expect": {
+        "r": {
+          "1": "0xFFFFFF81",
+          "0": "0x80601001"
+        }
+      }
+    },
+    {
+      "id": "pre_ldrh_imm2",
+      "cls": "preindex",
+      "src": "elf:0x8101FF8A",
+      "bytes": "31f8025f",
+      "desc": "ldrh r5,[r1,#2]! : pre-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601002",
+          "3412"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601002",
+          2
+        ]
+      ],
+      "expect": {
+        "r": {
+          "5": "0x00001234",
+          "1": "0x80601002"
+        }
+      }
+    },
+    {
+      "id": "dual_ldrd_off",
+      "cls": "dual",
+      "src": "elf:0x8100AD9C",
+      "bytes": "d1e90245",
+      "desc": "ldrd r4,r5,[r1,#8] : register pairing / order",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601008",
+          "11111111"
+        ],
+        [
+          "0x8060100C",
+          "22222222"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601008",
+          4
+        ],
+        [
+          "0x8060100C",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "4": "0x11111111",
+          "5": "0x22222222",
+          "1": "0x80601000"
+        }
+      }
+    },
+    {
+      "id": "dual_strd_off",
+      "cls": "dual",
+      "src": "elf:0x81000074",
+      "bytes": "cde90214",
+      "desc": "strd r1,r4,[sp,#8] : register pairing / order",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x11111111",
+          "4": "0x22222222",
+          "13": "0x80601000"
+        },
+        "apsr": "0x10000000"
+      },
+      "probes": [
+        [
+          "0x80601008",
+          4
+        ],
+        [
+          "0x8060100C",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "13": "0x80601000"
+        }
+      }
+    },
+    {
+      "id": "dual_ldrd_post",
+      "cls": "dual",
+      "src": "hand",
+      "bytes": "f2e80201",
+      "desc": "ldrd r0,r1,[r2],#8 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "2": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "ddccbbaa"
+        ],
+        [
+          "0x80601004",
+          "88776655"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ],
+        [
+          "0x80601004",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0xAABBCCDD",
+          "1": "0x55667788",
+          "2": "0x80601008"
+        }
+      }
+    },
+    {
+      "id": "dual_strd_post",
+      "cls": "dual",
+      "src": "hand",
+      "bytes": "e2e80201",
+      "desc": "strd r0,r1,[r2],#8 : post-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x11223344",
+          "1": "0x55667788",
+          "2": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ],
+        [
+          "0x80601004",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "2": "0x80601008"
+        }
+      }
+    },
+    {
+      "id": "dual_ldrd_pre_neg",
+      "cls": "dual",
+      "src": "hand",
+      "bytes": "72e90201",
+      "desc": "ldrd r0,r1,[r2,#-8]! : negative pre-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "2": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80600FF8",
+          "11111111"
+        ],
+        [
+          "0x80600FFC",
+          "22222222"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80600FF8",
+          4
+        ],
+        [
+          "0x80600FFC",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0x11111111",
+          "1": "0x22222222",
+          "2": "0x80600FF8"
+        }
+      }
+    },
+    {
+      "id": "dual_strd_pre_neg",
+      "cls": "dual",
+      "src": "hand",
+      "bytes": "62e90201",
+      "desc": "strd r0,r1,[r2,#-8]! : negative pre-index writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x11111111",
+          "1": "0x22222222",
+          "2": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80600FF8",
+          4
+        ],
+        [
+          "0x80600FFC",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "2": "0x80600FF8"
+        }
+      }
+    },
+    {
+      "id": "shift_reg_lsl_0",
+      "cls": "shift",
+      "src": "elf:0x81009734",
+      "bytes": "0efa00f0",
+      "desc": "lsl.w r0,lr,r0 with r0=0 : register shift by zero",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000001",
+          "0": "0x00000000"
+        },
+        "apsr": "0xA0000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000001"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "shift_reg_lsl_31",
+      "cls": "shift",
+      "bytes": "0efa00f0",
+      "src": "hand",
+      "desc": "lsl.w by 31",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000001",
+          "0": "0x0000001F"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000000"
+        },
+        "apsr": "0x10000000"
+      }
+    },
+    {
+      "id": "shift_reg_lsl_32",
+      "cls": "shift",
+      "bytes": "0efa00f0",
+      "src": "hand",
+      "desc": "lsl.w by 32 -> 0 (shift>=32 mask rule)",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x12345678",
+          "0": "0x00000020"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        },
+        "apsr": "0x10000000"
+      }
+    },
+    {
+      "id": "shift_reg_lsl_33",
+      "cls": "shift",
+      "bytes": "0efa00f0",
+      "src": "hand",
+      "desc": "lsl.w by 33 -> 0",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x12345678",
+          "0": "0x00000021"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        }
+      }
+    },
+    {
+      "id": "shift_reg_lsr_0",
+      "cls": "shift",
+      "bytes": "2efa00f0",
+      "src": "hand",
+      "desc": "lsr.w by 0",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000001",
+          "0": "0x00000000"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000001"
+        }
+      }
+    },
+    {
+      "id": "shift_reg_lsr_32",
+      "cls": "shift",
+      "bytes": "2efa00f0",
+      "src": "hand",
+      "desc": "lsr.w by 32 -> 0",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000001",
+          "0": "0x00000020"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        }
+      }
+    },
+    {
+      "id": "shift_reg_asr_31",
+      "cls": "shift",
+      "bytes": "4efa00f0",
+      "src": "hand",
+      "desc": "asr.w by 31 : sign fill",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000001",
+          "0": "0x0000001F"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        }
+      }
+    },
+    {
+      "id": "shift_reg_asr_32",
+      "cls": "shift",
+      "bytes": "4efa00f0",
+      "src": "hand",
+      "desc": "asr.w by 32 : all sign bits",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000001",
+          "0": "0x00000020"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        }
+      }
+    },
+    {
+      "id": "shift_reg_asr_33",
+      "cls": "shift",
+      "bytes": "4efa00f0",
+      "src": "hand",
+      "desc": "asr.w by 33 : all sign bits",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000001",
+          "0": "0x00000021"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        }
+      }
+    },
+    {
+      "id": "shift_reg_ror_1",
+      "cls": "shift",
+      "bytes": "6efa00f0",
+      "src": "hand",
+      "desc": "ror.w r0,lr,r0 with r0=1",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x00000001",
+          "0": "0x00000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000000"
+        }
+      }
+    },
+    {
+      "id": "shift_imm_lsls_1",
+      "cls": "shiftflag",
+      "bytes": "5fea4100",
+      "src": "hand",
+      "desc": "lsls.w r0,r1,#1 : N/Z + C from shift (C is a known deviation)",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0x80000001"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000002"
+        },
+        "apsr": "0x30000000"
+      }
+    },
+    {
+      "id": "shift_imm_lsrs_1",
+      "cls": "shiftflag",
+      "bytes": "5fea5100",
+      "src": "hand",
+      "desc": "lsrs.w r0,r1,#1",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0x00000003"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000001"
+        }
+      }
+    },
+    {
+      "id": "shift_imm_lsrs_32",
+      "cls": "shiftflag",
+      "bytes": "5fea1100",
+      "src": "hand",
+      "desc": "lsrs.w r0,r1,#32 : result must be 0 (bug class: LSR #32 encoded as 0)",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0x80000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        },
+        "apsr": "0x60000000"
+      }
+    },
+    {
+      "id": "shift_imm_asrs_32",
+      "cls": "shiftflag",
+      "bytes": "5fea2100",
+      "src": "hand",
+      "desc": "asrs.w r0,r1,#32 : sign fill",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0x80000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "shift_imm_asrs_32_pos",
+      "cls": "shiftflag",
+      "bytes": "5fea2100",
+      "src": "hand",
+      "desc": "asrs.w r0,r1,#32 positive -> 0",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0x7FFFFFFF"
+        },
+        "apsr": "0x80000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        },
+        "apsr": "0x40000000"
+      }
+    },
+    {
+      "id": "shift_imm_rors_1",
+      "cls": "shiftflag",
+      "bytes": "5fea7100",
+      "src": "hand",
+      "desc": "rors.w r0,r1,#1 : rotate sets N/Z",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0x00000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000000"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "shift_imm_asr_nos",
+      "cls": "shift",
+      "bytes": "4feae804",
+      "src": "elf:0x8100A020",
+      "desc": "asr.w r4,r8,#3 : non-S shift must not change flags",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "8": "0xFFFFFFFF"
+        },
+        "apsr": "0xA0000000"
+      },
+      "expect": {
+        "r": {
+          "4": "0xFFFFFFFF"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "shift_imm_ror_nos",
+      "cls": "shift",
+      "bytes": "4feab522",
+      "src": "elf:0x8100882C",
+      "desc": "ror.w r2,r5,#0xa : non-S rotate",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "5": "0x12345678"
+        },
+        "apsr": "0x50000000"
+      },
+      "expect": {
+        "apsr": "0x50000000"
+      }
+    },
+    {
+      "id": "shift_imm_lsr_32_bug",
+      "cls": "shift32imm",
+      "bytes": "4fea1100",
+      "src": "hand",
+      "desc": "lsr.w r0,r1,#32 : encodable LSR #32; result must be 0",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x80000001"
+        },
+        "apsr": "0xA0000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "shift_imm_asr_32_bug",
+      "cls": "shift32imm",
+      "bytes": "4fea2100",
+      "src": "hand",
+      "desc": "asr.w r0,r1,#32 : encodable ASR #32; result must be sign fill",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x80000001"
+        },
+        "apsr": "0x50000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        },
+        "apsr": "0x50000000"
+      }
+    },
+    {
+      "id": "shift_imm_lsr_1_nos",
+      "cls": "shift",
+      "bytes": "4fea5100",
+      "src": "hand",
+      "desc": "lsr.w r0,r1,#1",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x00000003"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000001"
+        }
+      }
+    },
+    {
+      "id": "alu_adds_shifted_lsl2",
+      "cls": "alushift",
+      "bytes": "11eb8200",
+      "src": "hand",
+      "desc": "adds.w r0,r1,r2,lsl #2 : three-register shift + full ALU flags",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x00000001",
+          "2": "0x20000000"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000001"
+        },
+        "apsr": "0x80000000"
+      }
+    },
+    {
+      "id": "alu_adds_shifted_lsl2_carry",
+      "cls": "alushift",
+      "bytes": "11eb8200",
+      "src": "hand",
+      "desc": "adds.w with shifted operand producing carry+overflow",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0xFFFFFFFF",
+          "2": "0x20000000"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x7FFFFFFF"
+        },
+        "apsr": "0x30000000"
+      }
+    },
+    {
+      "id": "alu_add_shifted_str",
+      "cls": "alushift",
+      "bytes": "0aeb4707",
+      "src": "elf:0x8100014A",
+      "desc": "add.w r7,sl,r7,lsl #1 : non-S shifted ALU (flags preserved)",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "10": "0x00000001",
+          "7": "0x40000000"
+        },
+        "apsr": "0xA0000000"
+      },
+      "expect": {
+        "r": {
+          "7": "0x80000001"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "alu_sub_shifted_asr",
+      "cls": "alushift",
+      "bytes": "a1ebe070",
+      "src": "elf:0x81009BBA",
+      "desc": "sub.w r0,r1,r0,asr #31 : shifted subtract",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x12345678",
+          "0": "0xFFFFFFFF"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x12345679"
+        },
+        "apsr": "0x10000000"
+      }
+    },
+    {
+      "id": "alu_ands_shifted",
+      "cls": "logicshift",
+      "bytes": "11ea0210",
+      "src": "hand",
+      "desc": "ands.w r0,r1,r2,lsl #4 : N/Z core (C from shifter is a known deviation)",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0xFFFFFFFF",
+          "2": "0x80000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000010"
+        },
+        "apsr": "0x00000000"
+      }
+    },
+    {
+      "id": "alu_ands_shifted_zero",
+      "cls": "logicshift",
+      "bytes": "11ea0210",
+      "src": "hand",
+      "desc": "ands.w with zero result -> Z",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "1": "0x00000000",
+          "2": "0x80000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        },
+        "apsr": "0x40000000"
+      }
+    },
+    {
+      "id": "alu_cmp_shifted",
+      "cls": "cmp",
+      "bytes": "b0eb810f",
+      "src": "hand",
+      "desc": "cmp.w r0,r1,lsl #2 : C from ALU subtraction",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x00000005",
+          "1": "0x00000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000005",
+          "1": "0x00000001"
+        },
+        "apsr": "0x20000000"
+      }
+    },
+    {
+      "id": "alu_cmp_shifted_eq",
+      "cls": "cmp",
+      "bytes": "b0eb810f",
+      "src": "hand",
+      "desc": "cmp.w equal -> Z,C",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x00000004",
+          "1": "0x00000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "apsr": "0x60000000"
+      }
+    },
+    {
+      "id": "alu_adds_shifted_lsr32_bug",
+      "cls": "alushift32",
+      "bytes": "11eb1200",
+      "src": "hand",
+      "desc": "adds.w r0,r1,r2,lsr #32 : shifted operand amount 32 must yield 0",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x00000001",
+          "2": "0x80000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000001"
+        },
+        "apsr": "0x00000000"
+      }
+    },
+    {
+      "id": "alu_add_shifted_lsr32_bug",
+      "cls": "alushift32",
+      "bytes": "01eb1200",
+      "src": "hand",
+      "desc": "add.w r0,r1,r2,lsr #32 : flags preserved",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x00000001",
+          "2": "0x80000001"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000001"
+        },
+        "apsr": "0x10000000"
+      }
+    },
+    {
+      "id": "alu_rsb_shifted",
+      "cls": "alushift",
+      "bytes": "c8eb8800",
+      "src": "elf:0x81002A1C",
+      "desc": "rsb r0,r8,r8,lsl #2 : reversed subtract of shifted operand",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "8": "0x12345678"
+        },
+        "apsr": "0x80000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x369D0368"
+        },
+        "apsr": "0x80000000"
+      }
+    },
+    {
+      "id": "carry_adcs_nowrap",
+      "cls": "carry",
+      "bytes": "51eb0300",
+      "src": "hand",
+      "desc": "adcs.w r0,r1,r3 : carry-in consumed normally",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0xFFFFFFFF",
+          "3": "0x00000000"
+        },
+        "apsr": "0x20000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        },
+        "apsr": "0x60000000"
+      }
+    },
+    {
+      "id": "carry_adcs_wrap",
+      "cls": "carrybug",
+      "bytes": "51eb0300",
+      "src": "hand",
+      "desc": "adcs.w with op2=0xFFFFFFFF, carry-in=1 : carry chain must not be lost when op2+carry wraps",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x00000000",
+          "3": "0xFFFFFFFF"
+        },
+        "apsr": "0x20000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000000"
+        },
+        "apsr": "0x60000000"
+      }
+    },
+    {
+      "id": "carry_adc_nos",
+      "cls": "carrynoS",
+      "bytes": "41eb0300",
+      "src": "elf:0x8105AA16",
+      "desc": "adc.w (no S) must not modify flags",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0xFFFFFFFF",
+          "3": "0x00000000"
+        },
+        "apsr": "0x80000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        },
+        "apsr": "0x80000000"
+      }
+    },
+    {
+      "id": "carry_sbcs_16",
+      "cls": "carrybug",
+      "bytes": "8941",
+      "src": "elf:0x81050B02",
+      "desc": "sbcs r1,r1 : C=0 and op2=0xFFFFFFFF; borrow must survive base+!C wrap",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0xFFFFFFFF"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "1": "0xFFFFFFFF"
+        },
+        "apsr": "0x80000000"
+      }
+    },
+    {
+      "id": "carry_sbcs_16_c1",
+      "cls": "carry",
+      "bytes": "8941",
+      "src": "elf:0x81050B02",
+      "desc": "sbcs r1,r1 with C=1 -> r1-r1",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0xFFFFFFFF"
+        },
+        "apsr": "0x20000000"
+      },
+      "expect": {
+        "r": {
+          "1": "0x00000000"
+        },
+        "apsr": "0x60000000"
+      }
+    },
+    {
+      "id": "carry_sbcs_w",
+      "cls": "carrybug",
+      "bytes": "73eb0300",
+      "src": "hand",
+      "desc": "sbcs.w r0,r3,r3 : same carry-chain wrap case, 32-bit form",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "3": "0xFFFFFFFF"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        },
+        "apsr": "0x80000000"
+      }
+    },
+    {
+      "id": "carry_sbc_nos",
+      "cls": "carrynoS",
+      "bytes": "63eb0503",
+      "src": "elf:0x810E4878",
+      "desc": "sbc.w (no S) must not modify flags",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "3": "0xFFFFFFFF",
+          "5": "0x00000000"
+        },
+        "apsr": "0xA0000000"
+      },
+      "expect": {
+        "r": {
+          "3": "0xFFFFFFFF"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "logic_ands_16",
+      "cls": "logic",
+      "bytes": "0840",
+      "src": "hand",
+      "desc": "ands r0,r1 (16-bit) : N/Z set, C/V preserved",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "0": "0xFFFFFFFF",
+          "1": "0x80000001"
+        },
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000001"
+        },
+        "apsr": "0x90000000"
+      }
+    },
+    {
+      "id": "misc_movs_imm",
+      "cls": "logic",
+      "bytes": "0420",
+      "src": "elf:0x81000024",
+      "desc": "movs r0,#4 : N/Z only",
+      "flags": "nz",
+      "init": {
+        "r": {},
+        "apsr": "0x10000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00000004"
+        },
+        "apsr": "0x10000000"
+      }
+    },
+    {
+      "id": "misc_mov_imm",
+      "cls": "move",
+      "bytes": "4ff4e561",
+      "src": "elf:0x81000216",
+      "desc": "mov.w r1,#0x728 : flags preserved",
+      "flags": "nzcv",
+      "init": {
+        "r": {},
+        "apsr": "0xA0000000"
+      },
+      "expect": {
+        "r": {
+          "1": "0x00000728"
+        },
+        "apsr": "0xA0000000"
+      }
+    },
+    {
+      "id": "misc_uxtb",
+      "cls": "move",
+      "bytes": "c1b2",
+      "src": "elf:0x81008F48",
+      "desc": "uxtb r1,r0",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x12345678"
+        }
+      },
+      "expect": {
+        "r": {
+          "1": "0x00000078"
+        }
+      }
+    },
+    {
+      "id": "misc_sxtb",
+      "cls": "move",
+      "bytes": "60b2",
+      "src": "elf:0x810026DE",
+      "desc": "sxtb r0,r4",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x000000FF"
+        }
+      },
+      "expect": {
+        "r": {
+          "0": "0xFFFFFFFF"
+        }
+      }
+    },
+    {
+      "id": "misc_sxth",
+      "cls": "move",
+      "bytes": "09b2",
+      "src": "elf:0x8100040A",
+      "desc": "sxth r1,r1",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "1": "0x00008000"
+        }
+      },
+      "expect": {
+        "r": {
+          "1": "0xFFFF8000"
+        }
+      }
+    },
+    {
+      "id": "misc_rev",
+      "cls": "move",
+      "bytes": "36ba",
+      "src": "elf:0x811F3B28",
+      "desc": "rev r6,r6",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "6": "0x12345678"
+        }
+      },
+      "expect": {
+        "r": {
+          "6": "0x78563412"
+        }
+      }
+    },
+    {
+      "id": "mem_ldr_16",
+      "cls": "loadstore",
+      "bytes": "2968",
+      "src": "elf:0x81000324",
+      "desc": "ldr r1,[r5] (16-bit LDR) : flags preserved",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "5": "0x80601000"
+        },
+        "apsr": "0x70000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "ddccbbaa"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "1": "0xAABBCCDD"
+        },
+        "apsr": "0x70000000"
+      }
+    },
+    {
+      "id": "mem_str_16",
+      "cls": "loadstore",
+      "bytes": "0190",
+      "src": "elf:0x81000022",
+      "desc": "str r0,[sp,#4] (16-bit STR)",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x11223344",
+          "13": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80601004",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "13": "0x80601000"
+        }
+      }
+    },
+    {
+      "id": "mem_ldrsh_off",
+      "cls": "loadstore",
+      "bytes": "b4f91010",
+      "src": "elf:0x81002D9C",
+      "desc": "ldrsh.w r1,[r4,#0x10]",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x80601000"
+        }
+      },
+      "mem": [
+        [
+          "0x80601010",
+          "efbe"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601010",
+          2
+        ]
+      ],
+      "expect": {
+        "r": {
+          "1": "0xFFFFBEEF"
+        }
+      }
+    },
+    {
+      "id": "mem_ldrb_wide",
+      "cls": "loadstore",
+      "bytes": "90f800a0",
+      "src": "elf:0x8100160E",
+      "desc": "ldrb.w sl,[r0]",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x80601000"
+        }
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "fe"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          1
+        ]
+      ],
+      "expect": {
+        "r": {
+          "10": "0x000000FE"
+        }
+      }
+    },
+    {
+      "id": "stack_push_16",
+      "cls": "pushpop",
+      "bytes": "f0b5",
+      "src": "elf:0x81000000",
+      "desc": "push {r4,r5,r6,r7,lr} : descending full stack, lr stored last",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x44444444",
+          "5": "0x55555555",
+          "6": "0x66666666",
+          "7": "0x77777777",
+          "14": "0xEEEEEEEE",
+          "13": "0x806F0000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x806EFFEC",
+          4
+        ],
+        [
+          "0x806EFFF0",
+          4
+        ],
+        [
+          "0x806EFFF4",
+          4
+        ],
+        [
+          "0x806EFFF8",
+          4
+        ],
+        [
+          "0x806EFFFC",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "13": "0x806EFFEC",
+          "4": "0x44444444"
+        }
+      }
+    },
+    {
+      "id": "stack_push_32",
+      "cls": "pushpop",
+      "bytes": "2de9f04f",
+      "src": "elf:0x810000A4",
+      "desc": "push.w {r4-r11,lr} : 9-register descending stack",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x04040404",
+          "5": "0x05050505",
+          "6": "0x06060606",
+          "7": "0x07070707",
+          "8": "0x08080808",
+          "9": "0x09090909",
+          "10": "0x0A0A0A0A",
+          "11": "0x0B0B0B0B",
+          "14": "0xEEEEEEEE",
+          "13": "0x806F0000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x806EFFDC",
+          4
+        ],
+        [
+          "0x806EFFE0",
+          4
+        ],
+        [
+          "0x806EFFE4",
+          4
+        ],
+        [
+          "0x806EFFE8",
+          4
+        ],
+        [
+          "0x806EFFEC",
+          4
+        ],
+        [
+          "0x806EFFF0",
+          4
+        ],
+        [
+          "0x806EFFF4",
+          4
+        ],
+        [
+          "0x806EFFF8",
+          4
+        ],
+        [
+          "0x806EFFFC",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "13": "0x806EFFDC"
+        }
+      }
+    },
+    {
+      "id": "multi_ldm_wb",
+      "cls": "multimem",
+      "bytes": "cdcc",
+      "src": "elf:0x8100E954",
+      "desc": "ldm r4!,{r0,r2,r3,r6,r7} : ascending load, writeback base",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "4": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "10000000"
+        ],
+        [
+          "0x80601004",
+          "20000000"
+        ],
+        [
+          "0x80601008",
+          "30000000"
+        ],
+        [
+          "0x8060100C",
+          "40000000"
+        ],
+        [
+          "0x80601010",
+          "50000000"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ],
+        [
+          "0x80601010",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "4": "0x80601014"
+        }
+      }
+    },
+    {
+      "id": "multi_ldm_nowb",
+      "cls": "multimem",
+      "bytes": "9de8f053",
+      "src": "elf:0x810089E2",
+      "desc": "ldm.w sp,{r4,r5,r6,r7,r8,r9,r12,lr} : no writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "13": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "mem": [
+        [
+          "0x80601000",
+          "01000000"
+        ],
+        [
+          "0x80601004",
+          "02000000"
+        ],
+        [
+          "0x80601008",
+          "03000000"
+        ],
+        [
+          "0x8060100C",
+          "04000000"
+        ],
+        [
+          "0x80601010",
+          "05000000"
+        ],
+        [
+          "0x80601014",
+          "06000000"
+        ],
+        [
+          "0x80601018",
+          "07000000"
+        ],
+        [
+          "0x8060101C",
+          "08000000"
+        ]
+      ],
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "13": "0x80601000"
+        }
+      }
+    },
+    {
+      "id": "multi_stm_wb",
+      "cls": "multimem",
+      "bytes": "6dc1",
+      "src": "elf:0x81049718",
+      "desc": "stm r1!,{r0,r2,r3,r5,r6} : ascending store, writeback base",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x10000001",
+          "2": "0x20000002",
+          "3": "0x30000003",
+          "5": "0x50000005",
+          "6": "0x60000006",
+          "1": "0x80601000"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ],
+        [
+          "0x80601004",
+          4
+        ],
+        [
+          "0x80601008",
+          4
+        ],
+        [
+          "0x8060100C",
+          4
+        ],
+        [
+          "0x80601010",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "1": "0x80601014"
+        }
+      }
+    },
+    {
+      "id": "multi_stm_nowb",
+      "cls": "multimem",
+      "bytes": "80e80c00",
+      "src": "elf:0x8100ACD4",
+      "desc": "stm.w r0,{r2,r3} : no writeback",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x80601000",
+          "2": "0x20000002",
+          "3": "0x30000003"
+        },
+        "apsr": "0x00000000"
+      },
+      "probes": [
+        [
+          "0x80601000",
+          4
+        ],
+        [
+          "0x80601004",
+          4
+        ]
+      ],
+      "expect": {
+        "r": {
+          "0": "0x80601000"
+        }
+      }
+    },
+    {
+      "id": "shiftmask_lsl_low8_0",
+      "cls": "shiftmask",
+      "bytes": "0efa00f0",
+      "src": "hand",
+      "desc": "lsl.w r0,lr,r0 with shift register 0x100: ARM uses Rs[7:0]=0 -> no shift",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x12345678",
+          "0": "0x00000100"
+        },
+        "apsr": "0xA0000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x12345678"
+        },
+        "apsr": "0xA0000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "shiftmask_lsl_low8_8",
+      "cls": "shiftmask",
+      "bytes": "0efa00f0",
+      "src": "hand",
+      "desc": "lsl.w with shift register 0x108: ARM uses Rs[7:0]=8 -> shift by 8",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x12345678",
+          "0": "0x00000108"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x34567800"
+        },
+        "apsr": "0x00000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "shiftmask_lsr_low8_8",
+      "cls": "shiftmask",
+      "bytes": "2efa00f0",
+      "src": "hand",
+      "desc": "lsr.w with shift register 0x108: ARM uses Rs[7:0]=8",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x12345678",
+          "0": "0x00000108"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x00123456"
+        },
+        "apsr": "0x00000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "shiftmask_asr_low8_8",
+      "cls": "shiftmask",
+      "bytes": "4efa00f0",
+      "src": "hand",
+      "desc": "asr.w with shift register 0x108: ARM uses Rs[7:0]=8",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "14": "0x80000000",
+          "0": "0x00000108"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0xFF800000"
+        },
+        "apsr": "0x00000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "shift_16bit_lsls",
+      "cls": "shiftflag",
+      "bytes": "9040",
+      "src": "hand",
+      "desc": "lsls r0,r2 (16-bit register shift) with r2=1",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "0": "0x40000001",
+          "2": "0x00000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x80000002"
+        },
+        "apsr": "0x80000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "shift_16bit_lsrs",
+      "cls": "shiftflag",
+      "bytes": "c840",
+      "src": "hand",
+      "desc": "lsrs r0,r1 (16-bit register shift) with r1=3",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "0": "0x80000001",
+          "1": "0x00000003"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x10000000"
+        },
+        "apsr": "0x00000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "shift_16bit_asrs",
+      "cls": "shiftflag",
+      "bytes": "2c41",
+      "src": "hand",
+      "desc": "asrs r4,r5 (16-bit register shift) with r5=1",
+      "flags": "nz",
+      "init": {
+        "r": {
+          "4": "0x80000001",
+          "5": "0x00000001"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "4": "0xC0000000"
+        },
+        "apsr": "0xA0000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "carry_adcs_rd_ne_rn",
+      "cls": "carrybug",
+      "bytes": "51eb0300",
+      "src": "hand",
+      "desc": "adcs.w r0,r1,r3 with Rd!=Rn: Rd must be Rn+Rm+C, not Rd+Rm+C",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x11111111",
+          "1": "0x22222222",
+          "3": "0x00000000"
+        },
+        "apsr": "0x20000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x22222223"
+        },
+        "apsr": "0x00000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "carry_sbcs_rd_ne_rn",
+      "cls": "carrybug",
+      "bytes": "71eb0300",
+      "src": "hand",
+      "desc": "sbcs.w r0,r1,r3 with Rd!=Rn: Rd must be Rn-Rm-!C, not Rd-Rm-!C",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "0": "0x11111111",
+          "1": "0x22222222",
+          "3": "0x0000000C"
+        },
+        "apsr": "0x20000000"
+      },
+      "expect": {
+        "r": {
+          "0": "0x22222216"
+        },
+        "apsr": "0x20000000"
+      },
+      "va": "0x81010000"
+    },
+    {
+      "id": "it_eq_cmp_taken",
+      "cls": "itblock",
+      "bytes": "08bf",
+      "more_bytes": [
+        "a242"
+      ],
+      "src": "elf:0x8100AD92 (production pattern)",
+      "va": "0x8100AD92",
+      "desc": "it eq; cmpeq r2,r4 with Z=1 : the conditional CMP must execute",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "2": "0x00001234",
+          "4": "0x00005678"
+        },
+        "apsr": "0x40000000"
+      },
+      "expect": {
+        "r": {
+          "2": "0x00001234",
+          "4": "0x00005678"
+        },
+        "apsr": "0x80000000"
+      }
+    },
+    {
+      "id": "it_eq_cmp_skipped",
+      "cls": "itblock",
+      "bytes": "08bf",
+      "more_bytes": [
+        "a242"
+      ],
+      "src": "elf:0x8100AD92 (production pattern)",
+      "va": "0x8100AD92",
+      "desc": "it eq; cmpeq r2,r4 with Z=0 : the conditional CMP must be skipped and flags preserved",
+      "flags": "nzcv",
+      "init": {
+        "r": {
+          "2": "0x00001234",
+          "4": "0x00005678"
+        },
+        "apsr": "0x00000000"
+      },
+      "expect": {
+        "r": {
+          "2": "0x00001234",
+          "4": "0x00005678"
+        },
+        "apsr": "0x00000000"
+      }
+    }
+  ]
+}
