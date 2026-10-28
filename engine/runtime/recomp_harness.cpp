@@ -2806,6 +2806,11 @@ static void init_job_pools() {
 }
 
 
+static int g_w16_n = 0;
+extern "C" void wr16_watch(uint32_t a, uint32_t v) {
+  { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u) {
+      if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
+}
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u && g_taskobj_n++ < 60) {
       printf("[TASKWR] a=%08X off=%02X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
