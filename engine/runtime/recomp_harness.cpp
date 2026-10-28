@@ -4152,7 +4152,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       else if (s.r[13] != g_inv_last_sp) {
         if (g_inv_n++ < 12) { printf("[INVCHG] prevsp=%08X newbase=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X fib=%08X ring:", g_inv_last_sp, s.r[13], s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7], s.r[14], g_cur_fiber);
           for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
-        g_inv_base = s.r[13]; }
+        g_inv_base = s.r[13];
+        if (g_sptrace) { g_sptrace_active = 1; g_sptrace_n = 0; g_sptrace_base = s.r[13]; ++g_sptrace_traces;
+          printf("[SPTRACE] === drift trace %d start sp=%08X r4=%08X lr=%08X ===\n", g_sptrace_traces, s.r[13], s.r[4], s.r[14]); fflush(stdout); } }
       g_inv_last_sp = s.r[13];
     }
     if ((pc & ~1u) == 0x811E5EE8u && g_last_main_pc != 0x811E5EE4u && g_ee8ent_n++ < 20) {
