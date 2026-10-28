@@ -346,7 +346,7 @@ static int g_gxm_ctx_n = 0, g_gxm_begin_n = 0, g_gxm_end_n = 0, g_gxm_present_n 
 static uint32_t g_display_cb = 0, g_display_cbds = 0, g_display_maxpend = 0, g_disp_pending = 0, g_disp_pending_cbd = 0;
 static uint32_t g_watch_task = 0; static int g_taskst_n = 0;
 static int g_loadpump = 0, g_loadpump_n = 0;
-static uint32_t g_wait_task = 0; static int g_waitlog_n = 0; static int g_waitpump_n = 0; static int g_pump_now = 0; static int g_pump_setg_n = 0; static int g_stale_task_n = 0;
+static uint32_t g_wait_task = 0; static int g_waitlog_n = 0; static int g_waitpump_n = 0; static int g_pump_now = 0; static int g_threadwemu = 0, g_threadwemu_n = 0; static int g_pump_setg_n = 0; static int g_stale_task_n = 0;
 static uint32_t g_cur_wait_obj = 0; static int g_waitobj_n = 0, g_taskobj_n = 0, g_taskobj2_n = 0;
 
 static uint32_t g_test_cb = 0; static int g_test_cb_done = 0;
@@ -738,6 +738,7 @@ static uint32_t inputctx(void) { if (!g_inpctx) { uint8_t* q = GP(0x81539754u); 
 static int g_inpw_n = 0, g_inp_init_n = 0, g_inp_update_n = 0, g_inp_update2_n = 0, g_inp_disp_n = 0;
 
 static int g_fsm_n = 0, g_fsm6_n = 0, g_fsmw_n = 0;
+static int g_waitcall_n = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _o = (g_watch_task ? g_watch_task : g_cur_wait_obj);
     if (_o) {
@@ -764,7 +765,9 @@ static void job_probes(uint32_t pcv, RecState* s) {
       }
     }
   }
-  { uint32_t p = pcv & ~1u;
+  { uint32_t p = pcv & ~1u; if (p == 0x811E5EC2u) { if (g_waitcall_n++ < 24) {
+      uint32_t _sp0=0; uint8_t* _q=GP(s->r[13]); if(_q) std::memcpy(&_sp0,_q,4);
+      printf("[WAITCALL] obj(r0)=%08X lr=%08X sp=%08X [sp]=%08X fib=%08X thr=%08X\n", s->r[0], s->r[14], s->r[13], _sp0, g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if (p == 0x811E5928u) { if (g_fsm_n++ < 24) { uint32_t t = s->r[0]; uint16_t st = 0; uint8_t* q = GP(t + 2u); if (q) std::memcpy(&st, q, 2);
         printf("[FIOSSM] enter task=%08X state=%u thr=%08X fib=%08X\n", t, (unsigned)st, g_cur_thr, g_cur_fiber); fflush(stdout);} }
     else if (p == 0x811E5A9Au) { if (g_fsm6_n++ < 30) { printf("[FIOSSM] STATE6 done thr=%08X fib=%08X\n", g_cur_thr, g_cur_fiber); fflush(stdout);} }
@@ -2834,10 +2837,12 @@ static int g_dd4bc_n = 0, g_dd4c8_n = 0;
 static int g_sched_n = 0;
 static int g_de912_n = 0, g_de9ba_n = 0;
 extern "C" void wr16_watch(uint32_t a, uint32_t v) {
+  { if (a >= 0x84600000u && a < 0x84600080u) { static int _tw=0; if (_tw++ < 40) { printf("[TLSWR16] a=%08X v=%04X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { if (a >= 0x84600000u && a < 0x84600080u) { static int _tw2=0; if (_tw2++ < 40) { printf("[TLSWR32] a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u && g_taskobj_n++ < 60) {
       printf("[TASKWR] a=%08X off=%02X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _ft=0; if ((a == 0x816CDA2Cu || a == 0x816CDA28u) && _ft++ < 20) {
@@ -3113,6 +3118,7 @@ int main(int argc, char** argv) {
 { const char* _tc = getenv("P5D_TEST_CB"); if (_tc && *_tc) g_test_cb = (uint32_t)strtoul(_tc, 0, 16); }
 { const char* _lp = getenv("P5D_LOADPUMP"); g_loadpump = (_lp && atoi(_lp) != 0) ? 1 : 0; }
 { const char* _sf = getenv("P5D_SCHEDFIX"); g_schedfix = (_sf && atoi(_sf) != 0) ? 1 : 0; }
+{ const char* _tw = getenv("P5D_THREADWEMU"); g_threadwemu = (_tw && atoi(_tw) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -4043,6 +4049,10 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       uint32_t _t = g_wait_task; uint16_t _st = 0xFFFF; uint32_t _w4 = 0;
       { uint8_t* _q = GP(_t + 2u); if (_q) std::memcpy(&_st, _q, 2); }
       { uint8_t* _q = GP(_t + 4u); if (_q) std::memcpy(&_w4, _q, 4); }
+      if (g_threadwemu && _t == 0x84600000u && _st != 6u) {
+        uint16_t _six = 6u; uint8_t* _sq = GP(_t + 2u); if (_sq) std::memcpy(_sq, &_six, 2);
+        if (g_threadwemu_n++ < 20) { printf("[THREADWEMU] n=%u object=%08X state 0->6 (emulate worker-thread exit)\n", g_blkcnt_total, _t); fflush(stdout); }
+        _st = 6u; }
       if (_st <= 8u && _st != 6u && _w4 == (_t + 0x2Cu)) {
         uint32_t _gprev = 0; { uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_gprev, _q, 4); }
         if (_gprev != _t) { uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(_q, &_t, 4); }
