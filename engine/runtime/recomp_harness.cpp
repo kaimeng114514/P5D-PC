@@ -502,6 +502,9 @@ static uint32_t hle_malloc_ret(uint32_t p) {
     if (p == 0x8460F150u || (p >= 0x8460F000u && p < 0x84610000u)) {
       printf("[AREC-TARGET] p=%08X sz=%08X stub=%08X lr=%08X\n", p, tl_last_malloc_n, g_cur_hle_stub, g_cur_hle_lr); fflush(stdout); }
   }
+  if (p == 0x84C0A520u || tl_last_malloc_n == 0xC8u) {
+    printf("[CHILDALLOC] p=%08X sz=%08X stub=%08X lr=%08X blk=%08X fib=%08X thr=%08X ring:", p, tl_last_malloc_n, g_cur_hle_stub, g_cur_hle_lr, g_cur_block, g_cur_fiber, tl_ht_tid);
+    for (int _k=0;_k<32;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 32u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
   if (g_target_alloc && p == g_target_alloc && g_objalloc_n++ < 6) {
     printf("[OBJALLOC] p=%08X lr=%08X blk=%08X fib=%08X ring:", p, g_cur_hle_lr, g_cur_block, g_cur_fiber);
     for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
@@ -545,6 +548,12 @@ static uint32_t hle_malloc(uint32_t n) {
       if (g_big2n++ < 30) { printf("[BIG2] n=%08X -> %08X\n", n, b2); fflush(stdout); } return hle_malloc_ret(b2); } }
   printf("[HLE] malloc OOM n=%u (all heaps full)\n", n); return 0;
 }
+static std::map<uint32_t,uint32_t> g_prog_header_by_id;   // 18.4259: SceGxmShaderPatcher register map (id -> GXP program header VA)
+static uint32_t g_prog_id_ctr = 0;
+static uint32_t g_fprog_last = 0, g_vprog_last = 0, g_last_rt = 0;
+static inline uint32_t guest_rd32(uint32_t va) { uint32_t v = 0; uint8_t* p = GP(va); if (p) std::memcpy(&v, p, 4); return v; }
+static inline void guest_wr32(uint32_t va, uint32_t v) { uint8_t* p = GP(va); if (p) std::memcpy(p, &v, 4); }
+static int g_gxm_new_n = 0;
 static int g_hle_n = 0;
 static int g_big_n = 0;
 
@@ -1280,6 +1289,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       { uint32_t _np = s->r[0]; char _nm[48]; int _i=0; uint8_t* _q = GP(_np); if (_q) { for (; _i<40; ++_i) { char _c=(char)_q[_i]; if(!_c) break; _nm[_i] = (_c>=32&&_c<127)?_c:'.'; } } _nm[_i]=0; if (g_efc_n++ < 30) { printf("[EFCREATE] obj=%08X init=%08X name='%s' lr=%08X thr=%08X\n", obj, init, _nm, s->r[14], g_cur_thr); fflush(stdout); } }
       if (g_thr_log_n++ < 20) printf("[THR] create_eflag obj=%08X init=%08X\n", obj, init);
       r0 = obj; break; }
+    case 0x812B2930u:                                                 // 18.4259: sceKernelWaitEventFlagCB (NID E737B1DF) - same semantics as WaitEventFlag
     case 0x812B2880u: {                                               // 18.4234: sceKernelWaitEventFlag - old-runtime mode semantics (bit0=OR, bit2=CLEAR, bit3? old uses 4=CLEAR_ALL, 2=CLEAR_BITS)
       uint32_t obj = s->r[0], bits = s->r[1], mode = s->r[2], outp = s->r[3];
       bool orMode = (mode & 1u) != 0u;
@@ -1314,7 +1324,50 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           if (_ok) { kv.second.waiting = 0; kv.second.ready = 1; } } }
       r0 = 0; break; }
     case 0x812B2AB0u: r0 = 0; break;                                  // sceKernelDeleteSema
-    case 0x812B1530u: {                                               // sceGxmShaderPatcherGetProgramFromId(id) -> fake program ptr
+    case 0x812B1250u: r0 = 0; break;                                  // 18.4259: DepthStencilSurfaceSetForceStoreMode / gxm no-op
+    case 0x812B1290u: {                                               // 18.4259: sceGxmCreateRenderTarget(params, outObj)
+      uint32_t obj = hle_malloc(0x1000); if (obj) std::memset(GP(obj), 0, 0x1000);
+      if (s->r[1]) guest_wr32(s->r[1], obj); g_last_rt = obj;
+      if (g_gxm_new_n++ < 8) printf("[GXM-RT] out=%08X params=%08X -> obj=%08X lr=%08X\n", s->r[1], s->r[0], obj, s->r[14]);
+      r0 = 0; break; }
+    case 0x812B12D0u: {                                               // 18.4259: sceGxmShaderPatcherRegisterProgram(patcher, programHeader, idOut)
+      uint32_t hdr = s->r[1], idOut = s->r[2];
+      uint32_t id = ++g_prog_id_ctr; if (!id) id = ++g_prog_id_ctr;
+      g_prog_header_by_id[id] = hdr;
+      if (idOut) guest_wr32(idOut, id);
+      if (g_gxm_new_n++ < 8) { uint32_t magic = hdr ? guest_rd32(hdr) : 0;
+        printf("[GXM-REG] hdr=%08X magic=%08X id=%u idOut=%08X lr=%08X\n", hdr, magic, id, idOut, s->r[14]); }
+      r0 = 0; break; }
+    case 0x812B13A0u: {                                               // 18.4259: sceGxmProgramFindParameterBySemantic(program, semantic, index)
+      uint32_t prog = s->r[0], sem = s->r[1], idx = s->r[2]; r0 = 0;
+      if (prog) {
+        uint32_t cnt = guest_rd32(prog + 0x24); if (cnt > 0x400u) cnt = 0;
+        uint32_t base = prog + 0x28u + guest_rd32(prog + 0x28u);
+        for (uint32_t i = 0; i < cnt; ++i) {
+          uint32_t pp = base + i * 16u; uint8_t* pb = GP(pp + 6u);
+          if (pb && pb[0] == (uint8_t)(sem & 0xFFu) && pb[1] == (uint8_t)(idx & 0xFFu)) { r0 = pp; break; } } }
+      if (g_gxm_new_n++ < 10) printf("[GXM-FPS] prog=%08X sem=%u idx=%u -> %08X lr=%08X\n", prog, sem, idx, r0, s->r[14]);
+      break; }
+    case 0x812B1350u: {                                               // 18.4259: sceGxmShaderPatcherCreateFragmentProgram(patcher,id,outFmt,msaa,blend,[sp]vprog,[sp+4?]out)
+      uint32_t id = s->r[1]; uint32_t sp = s->r[13];
+      uint32_t hdr = (g_prog_header_by_id.count(id) ? g_prog_header_by_id[id] : 0u);
+      uint32_t obj = hle_malloc(0x400); if (obj) { std::memset(GP(obj), 0, 0x400); if (hdr) guest_wr32(obj, hdr); }
+      if (sp) guest_wr32(sp + 8u, obj); g_fprog_last = obj;
+      if (g_gxm_new_n++ < 8) printf("[GXM-CFP] id=%u hdr=%08X -> fprog=%08X lr=%08X\n", id, hdr, obj, s->r[14]);
+      r0 = 0; break; }
+    case 0x812B15C0u: {                                               // 18.4259: sceGxmShaderPatcherCreateVertexProgram(patcher,id,outputs,precomp,[sp]program,[sp+4]out)
+      uint32_t id = s->r[1]; uint32_t sp = s->r[13];
+      uint32_t hdr = (g_prog_header_by_id.count(id) ? g_prog_header_by_id[id] : 0u);
+      uint32_t obj = hle_malloc(0x800); if (obj) { std::memset(GP(obj), 0, 0x800); if (hdr) guest_wr32(obj, hdr); }
+      if (sp) guest_wr32(sp + 4u, obj); g_vprog_last = obj;
+      if (g_gxm_new_n++ < 8) printf("[GXM-CVP] id=%u hdr=%08X -> vprog=%08X lr=%08X\n", id, hdr, obj, s->r[14]);
+      r0 = 0; break; }
+    case 0x812B11C0u: {                                               // 18.4259: sceGxmMapFragmentUsseMemory(base,size,offsetOut) -> *out=0
+      if (s->r[2]) guest_wr32(s->r[2], 0u);
+      r0 = 0; break; }
+    case 0x812B1530u: {                                               // sceGxmShaderPatcherGetProgramFromId(id) -> registered header, else fake
+      auto itp = g_prog_header_by_id.find(s->r[0]);
+      if (itp != g_prog_header_by_id.end() && itp->second) { r0 = itp->second; break; }
       static uint32_t fp_prog = 0;
       if (!fp_prog) { fp_prog = hle_malloc(0x200); }
       if (g_gxm_stub_n++ < 6) printf("[GXMS] GetProgramFromId id=%08X -> prog=%08X lr=%08X\n", s->r[0], fp_prog, s->r[14]);
@@ -1529,8 +1582,8 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
     if (pc == 0x811C6C74u) { static int _cd=0; if (_cd++ < 2) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[4]; uint8_t* q=GP(_o); printf("[CREATED] obj=%08X:", _o); if(q){ for (int _i=0;_i<0xA0;_i+=4){uint32_t _v=0; std::memcpy(&_v,q+_i,4); printf(" +%02X=%08X",_i,_v);} } printf("\n"); fflush(stdout); } }
     if (pc == 0x811DEAB4u) { static int _g2=0; if (_g2++ < 2) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[4]; uint8_t* q=GP(_o); (void)q; } }
     if (pc == 0x811C6C72u || pc == 0x811C6C74u) { static int _cd2=0; if (_cd2++ < 3) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[0]; uint8_t* q=GP(_o); printf("[CREATED2] pc=%08X obj=%08X:", pc, _o); if(q){ for (int _i=0;_i<0xA0;_i+=4){uint32_t _v=0; std::memcpy(&_v,q+_i,4); printf(" +%02X=%08X",_i,_v);} } printf("\n"); fflush(stdout); } }
-    if (pc == 0x811C6C72u) { static int _ch=0; if (_ch++ < 4) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[0]; uint32_t _c=0,_t=0,_sz=0,_ptr=0,_q88=0,_q94=0,_qa0=0; uint8_t* q=GP(_o); if(q) std::memcpy(&_c,q,4); q=GP(_c+4u); if(q){uint16_t _h=0;std::memcpy(&_h,q,2);_t=_h;} q=GP(_c+0x88u); if(q) std::memcpy(&_sz,q,4); q=GP(_c+0x94u); if(q) std::memcpy(&_ptr,q,4); q=GP(_c+0x8cu); if(q) std::memcpy(&_q88,q,4); q=GP(_c+0x94u); if(q) std::memcpy(&_q94,q,4); q=GP(_c+0xa0u); if(q){uint8_t _b=0;std::memcpy(&_b,q,1);_qa0=_b;} uint32_t _asz=0,_astub=0,_alr=0; { std::lock_guard<std::mutex> _lk(g_arec_mtx); for (auto& _a : g_arec) if (_a.p == _c) { _asz=_a.sz; _astub=_a.stub; _alr=_a.lr; } }
-        printf("[CHILD] root=%08X child=%08X ctype=%d c88=%08X c8c=%08X c94=%08X ca0=%d asz=%08X astub=%08X alr=%08X\n", _o,_c,(int)_t,_sz,_q88,_q94,(int)_qa0,_asz,_astub,_alr); fflush(stdout); } }
+    if (pc == 0x811C6C72u) { static int _ch=0; if (_ch++ < 4) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[0]; uint32_t _c=0,_t=0,_sz=0,_ptr=0,_q88=0,_q94=0,_qa0=0; uint8_t* q=GP(_o); if(q) std::memcpy(&_c,q,4); if (_c < 0x80000000u) { printf("[CHILD] root=%08X child=%08X (invalid)\n", _o, _c); fflush(stdout); } else { q=GP(_c+4u); if(q){uint16_t _h=0;std::memcpy(&_h,q,2);_t=_h;} q=GP(_c+0x88u); if(q) std::memcpy(&_sz,q,4); q=GP(_c+0x94u); if(q) std::memcpy(&_ptr,q,4); q=GP(_c+0x8cu); if(q) std::memcpy(&_q88,q,4); q=GP(_c+0x94u); if(q) std::memcpy(&_q94,q,4); q=GP(_c+0xa0u); if(q){uint8_t _b=0;std::memcpy(&_b,q,1);_qa0=_b;} uint32_t _asz=0,_astub=0,_alr=0; { std::lock_guard<std::mutex> _lk(g_arec_mtx); for (auto& _a : g_arec) if (_a.p == _c) { _asz=_a.sz; _astub=_a.stub; _alr=_a.lr; } }
+        printf("[CHILD] root=%08X child=%08X ctype=%d c88=%08X c8c=%08X c94=%08X ca0=%d asz=%08X astub=%08X alr=%08X\n", _o,_c,(int)_t,_sz,_q88,_q94,(int)_qa0,_asz,_astub,_alr); fflush(stdout); } } }
     if (pc == 0x811DA55Cu) { static int _ga=0; if (_ga++ < 4000) { RecState* _ps=SPTR(s); printf("[GALLOC] size=%08X lr=%08X r1=%08X fib=%08X thr=%08X\n", _ps->r[0],_ps->r[14],_ps->r[1],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if (pc == 0x811DA54Cu || pc == 0x811DA55Cu) { static int _gc=0; if (_gc++ < 40) { RecState* _ps=SPTR(s); printf("[GCA] pc=%08X r0=%08X r1=%08X r2=%08X lr=%08X fib=%08X thr=%08X\n", pc,_ps->r[0],_ps->r[1],_ps->r[2],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) {
