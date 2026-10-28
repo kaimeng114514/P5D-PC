@@ -1439,6 +1439,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
     if (pc==0x811DA024u) { RecState* _ps = SPTR(s); g_last_alloc_sz = _ps->r[0]; g_last_alloc_fp = _ps->r[4]; }
     else if ((pc==0x811DA028u||pc==0x811DA02Au||pc==0x811DA030u||pc==0x811DA036u) && SPTR(s)->r[0]==0u && g_allocf_n++ < 24) { RecState* _ps = SPTR(s); printf("[ALLOCFAIL] pc=%08X size=%08X fp=%08X r0=%08X r1=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, g_last_alloc_sz, g_last_alloc_fp, _ps->r[0],_ps->r[1],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); }
     if (pc==0x811C0D74u || pc==0x81207956u || pc==0x81207982u) { if (g_free2_n++ < 80) { RecState* _ps = SPTR(s); printf("[FREE2] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
+    if (pc == 0x811DD4BCu || pc == 0x811DD4C8u) { static int _bswap=0; if (_bswap++ < 30) { RecState* _ps=SPTR(s); printf("[BSWAP] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) {
       if (!g_in_eaa4) { g_in_eaa4 = 1;
         if (g_blkcnt_total >= 14000000u && g_eaa4_ent_n++ < 40)
