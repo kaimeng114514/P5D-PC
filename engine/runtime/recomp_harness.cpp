@@ -740,6 +740,8 @@ static int g_inpw_n = 0, g_inp_init_n = 0, g_inp_update_n = 0, g_inp_update2_n =
 static int g_fsm_n = 0, g_fsm6_n = 0, g_fsmw_n = 0;
 static int g_waitcall_n = 0;
 static int g_pcall_n = 0;
+static int g_canpc_n = 0;
+static int g_oddpc_n = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _o = (g_watch_task ? g_watch_task : g_cur_wait_obj);
     if (_o) {
@@ -1834,7 +1836,6 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
           { if (_gprev != _lt) { uint8_t* _gq = GP(0x816CDA2Cu); if (_gq) std::memcpy(_gq, &_gprev, 4); } }
           if (g_loadpump_n <= 24) { uint16_t _lst2=0; uint8_t* _lq3=GP(_lt+2u); if(_lq3) std::memcpy(&_lst2,_lq3,2);
             printf("[LOADPUMP]   -> ret=%08X state now=%u\n", _lr, (unsigned)_lst2); fflush(stdout); }
-          pc = s->r[15];
         }
       }
     }
@@ -4062,18 +4063,30 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       if (_st <= 8u && _st != 6u && _w4 == (_t + 0x2Cu)) {
         uint32_t _gprev = 0; { uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_gprev, _q, 4); }
         if (_gprev != _t) { uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(_q, &_t, 4); }
-        if (g_pump_setg_n++ < 20) { printf("[WAITPUMP] n=%u task=%08X state=%u (global was %08X) force+run state machine\n", g_blkcnt_total, _t, (unsigned)_st, _gprev); fflush(stdout); }
+        // 18.4286: isolate the task (clear its next-task link) so the state machine cannot walk into a
+        // stale/reused next node (which called memcpy/HLE with garbage and corrupted the caller's stack frame)
+        uint32_t _nxt24 = 0; { uint8_t* _q = GP(_t + 0x24u); if (_q) std::memcpy(&_nxt24, _q, 4); }
+        if (_nxt24) { uint32_t _z = 0; uint8_t* _q = GP(_t + 0x24u); if (_q) std::memcpy(_q, &_z, 4); }
+        if (g_pump_setg_n++ < 20) { printf("[WAITPUMP] n=%u task=%08X state=%u (global was %08X next=%08X) force+run state machine\n", g_blkcnt_total, _t, (unsigned)_st, _gprev, _nxt24); fflush(stdout); }
         call_guest_cb(&s, 0x811E5928u, 0, 30000);
+        if (_nxt24) { uint8_t* _q = GP(_t + 0x24u); if (_q) std::memcpy(_q, &_nxt24, 4); }
         { if (_gprev != _t) { uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(_q, &_gprev, 4); } }
         { uint16_t _st2=0xFFFF; uint8_t* _q = GP(_t + 2u); if (_q) std::memcpy(&_st2, _q, 2);
           if (g_pump_setg_n++ < 40) { printf("[WAITPUMP]   -> state now=%u pc=%08X\n", (unsigned)_st2, s.r[15]); fflush(stdout); } }
-        pc = s.r[15]; if (pc) fn = gbn(pc); if (!fn) { pc = 0x811E5EC6u; fn = gbn(pc); }
+        // 18.4286: call_guest_cb restores ALL registers -> keep the dispatcher's own pc/fn (do NOT use the
+        // stale s.r[15], which can be mid-block garbage like 0x811E5EF0 and caused the canary-LR corruption)
       }
     }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
     { static uint32_t _lastg=0; if (g_blkcnt_total - _lastg > 500000u) { _lastg = g_blkcnt_total;
         if (g_stall_n++ < 20) { printf("[STALLTRACE] n=%u pc=%08X blk=%08X fib=%08X loop=%d sp=%08X fex=%d\n", g_blkcnt_total, pc, g_cur_block, g_cur_fiber, g_loop_site, s.r[13], g_in_fex); fflush(stdout); } } }
+    if (nxt != 0u && nxt != 0xFFFFFFF0u && nxt < 0x80000000u && !gbn(nxt) && g_oddpc_n++ < 20) {
+      printf("[ODDPC] nxt=%08X blk=%08X fib=%08X thr=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X ring:", nxt, g_cur_block, g_cur_fiber, g_cur_thr, s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7],s.r[13],s.r[14]);
+      for (int _k=0;_k<18;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 18u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+    if (nxt == 0x812B4150u && g_canpc_n++ < 10) {
+      printf("[CANARYPC] n=%d blk=%08X fib=%08X thr=%08X r0=%08X r1=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X ring:", n, g_cur_block, g_cur_fiber, g_cur_thr, s.r[0],s.r[1],s.r[4],s.r[5],s.r[6],s.r[7],s.r[13],s.r[14]);
+      for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
     if ((g_switch_pending || g_fiber_switch_to) && g_blkcnt_total > 1400000u) {
       static int _msw2=0; if (_msw2++ < 48) { uint32_t _t2 = g_switch_pending ? g_switch_target : g_fiber_switch_to;
         auto _it2 = g_fctx.find(_t2 & ~1u);
