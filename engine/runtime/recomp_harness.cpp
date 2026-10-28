@@ -7,6 +7,7 @@
 //   0x812B22A0 malloc etc.
 #include <cstdio>
 #include <thread>
+static int g_sem2_n = 0, g_sig2_n = 0, g_evt2_n = 0;
 static int g_thrst_n = 0;
 static int g_thrtrace = 0;   // 18.4232 trace off by default (P5D_THRTRACE=1 enables)
 static int g_thrtr_n = 0;
@@ -1082,6 +1083,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       auto it = g_sema.find(obj);
       uint32_t have = (it == g_sema.end()) ? 0u : it->second;
       if (g_thr_log_n++ < 80) printf("[SEM] wait obj=%08X need=%u have=%u cur_thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]);
+      if (g_sem2_n++ < 60) { printf("[SEM2] wait obj=%08X need=%u have=%u thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]); fflush(stdout); }
       if (have >= need) { if (it != g_sema.end()) it->second = have - need; r0 = 0; }
       else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = 0; r0 = 0; }
       else {   // main-block-pump: main thread must BLOCK by running workers until sema satisfied
@@ -1102,6 +1104,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t obj = s->r[0];
       g_sema[obj] += 1;
       if (g_thr_log_n++ < 80) printf("[SEM] signal obj=%08X count=%u cur_thr=%08X lr=%08X\n", obj, g_sema[obj], g_cur_thr, s->r[14]);
+      if (g_sig2_n++ < 60) { printf("[SIG2] obj=%08X count=%u thr=%08X lr=%08X\n", obj, g_sema[obj], g_cur_thr, s->r[14]); fflush(stdout); }
       for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) { kv.second.waiting = 0; kv.second.ready = 1; }
       r0 = 0; break; }
     case 0x812B2890u: {                                               // sceKernelCreateEventFlag
@@ -1124,6 +1127,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t obj = s->r[0], bits = s->r[1];
       g_eflag[obj] |= bits;
       if (g_thr_log_n++ < 80) printf("[EVT] set obj=%08X bits=%08X cur_thr=%08X lr=%08X\n", obj, bits, g_cur_thr, s->r[14]);
+      if (g_evt2_n++ < 60) { printf("[EVT2] set obj=%08X bits=%08X thr=%08X lr=%08X\n", obj, bits, g_cur_thr, s->r[14]); fflush(stdout); }
       { uint32_t cur2 = g_eflag[obj];
         for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj && (kv.second.wait_bits == 0u || (cur2 & kv.second.wait_bits) == kv.second.wait_bits)) { kv.second.waiting = 0; kv.second.ready = 1; } }
       r0 = 0; break; }
