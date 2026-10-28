@@ -746,7 +746,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_heaptgt_n = 0; static int g_c0f8_n = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_heaptgt_n = 0; static int g_c0f8_n = 0; static int g_dly_n = 0, g_dly_save_n = 0; static uint32_t g_dly_last_pc = 0, g_dly_last_sp = 0, g_dly_last_w0 = 0, g_dly_last_w1 = 0; static int g_dly_chg_n = 0;
 static int g_dframe_active = 0, g_dframe_n = 0, g_dframe_wr_n = 0; static uint32_t g_dframe_sp = 0, g_dframe_v0 = 0, g_dframe_v1 = 0; static int g_schedresume = 0, g_schedresume_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
@@ -761,6 +761,8 @@ static int g_driftdump_n = 0; static int g_swlog = 0, g_swlog_n = 0;
 static int g_ctxchk_n[8] = {0,0,0,0,0,0,0,0};
 static void ctxchk(int tag, uint32_t fib, RecState* s) {
   uint32_t p = s->r[15] & ~1u;
+  if (p >= 0x8127C0C0u && p <= 0x8127C100u) {
+    if (g_dly_n++ < 20) { printf("[REST-DLY] tag=%d fib=%08X pc=%08X sp=%08X lr=%08X r4=%08X\n", tag, fib, s->r[15], s->r[13], s->r[14], s->r[4]); fflush(stdout); } }
   if (p >= 0x811E5E80u && p <= 0x811E5EF2u) {
     int i = tag & 7;
     if (g_ctxchk_n[i]++ < 20) {
@@ -1729,6 +1731,11 @@ struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
   if (g_cur_fiber) { g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr;
+    if (((c.r[15] & ~1u) >= 0x8127C0C0u && (c.r[15] & ~1u) <= 0x8127C100u) && g_dly_save_n++ < 20) {
+      uint32_t _w0=0,_w1=0; uint8_t* _q=GP(c.r[13]); if(_q) std::memcpy(&_w0,_q,4); _q=GP(c.r[13]+4u); if(_q) std::memcpy(&_w1,_q,4);
+      if ((c.r[15] & ~1u) != g_dly_last_pc || c.r[13] != g_dly_last_sp || _w0 != g_dly_last_w0 || _w1 != g_dly_last_w1) {
+        if (g_dly_chg_n++ < 60) { printf("[SAVE-DLY] fiber=%08X savedpc=%08X sp=%08X [sp]=%08X [sp+4]=%08X lr=%08X\n", g_cur_fiber, c.r[15], c.r[13], _w0, _w1, c.r[14]); fflush(stdout); }
+        g_dly_last_pc = c.r[15] & ~1u; g_dly_last_sp = c.r[13]; g_dly_last_w0 = _w0; g_dly_last_w1 = _w1; } }
     if (g_cur_fiber == 0x848468E0u) { mainctx_note("SAVE", c.r[13]); if (g_mainctx_n <= 40) { printf("[MAINCTX-SAVE] sp=%08X pc=%08X lr=%08X r4=%08X ring:", c.r[13], c.r[15], c.r[14], c.r[4]); for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     { uint32_t _p = c.r[15] & ~1u; if ((_p >= 0x811E5E80u && _p <= 0x811E5EF2u) && g_fs5ec_n++ < 16) {
         printf("[FSAVE5EC] fiber=%08X savepc=%08X curblk=%08X sp=%08X lr=%08X r4=%08X r5=%08X r7=%08X\n", g_cur_fiber, c.r[15], g_cur_block, c.r[13], c.r[14], c.r[4], c.r[5], c.r[7]); fflush(stdout); } }
@@ -1737,6 +1744,8 @@ static void fiber_save(RecState* s) {
       printf("[FSAVE-BAD] fiber=%08X r0=%08X r13=%08X r15=%08X\n", g_cur_fiber, c.r[0], c.r[13], c.r[15]); }
 }
 static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg) {
+  { auto _mi = g_fctx.find(fiber); if (_mi != g_fctx.end() && ((_mi->second.r[15] & ~1u) >= 0x8127C0C0u && (_mi->second.r[15] & ~1u) <= 0x8127C100u)) {
+      if (g_dly_n++ < 20) { printf("[LOAD-DLY] fiber=%08X savedpc=%08X sp=%08X lr=%08X\n", fiber, _mi->second.r[15], _mi->second.r[13], _mi->second.r[14]); fflush(stdout); } } }
   if (fiber == 0x848468E0u) { auto _mi = g_fctx.find(fiber); if (_mi != g_fctx.end()) mainctx_note("LOAD", _mi->second.r[13]); }
   // 18.3773: mark the fiber ACTIVE ([fiber+0x80] bit0) on first run - the game's fiber manager checks this bit
   // (ands r1,r0,#1) to decide whether to unlink/track the fiber; a zero state made it spin forever.
