@@ -16,6 +16,8 @@
 #include <vector>
 static int g_loadclear_env = 0;
 static int g_hostthreads = 0;
+static int g_vblank_n = 0;
+static uint32_t g_fb_pitch = 0;
 static std::mutex g_hle_mtx;
 static uint32_t g_cur_hle_stub = 0;   // 18.4239: guest threads as real host threads (P5D_HOSTTHREADS=1)
 static int g_ht_n = 0;
@@ -1002,13 +1004,24 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       if (g_pfmt_n < 6) { printf("[PFMT2] dst=%08X fmt=%08X oi=%u ret=%u\n", s->r[0], s->r[1], oi_out, oi_out); fflush(stdout); }
       r0 = oi_out; break; }   // 18.4189: formatter returns the number of bytes written (caller does ptr += r0)
-    case 0x812B1810u: {                                               // sceDisplayGetFrameBuf(buf, ...)
-      uint32_t out = s->r[0];
-      if (out) { uint8_t* p = GP(out); if (p) std::memcpy(p, &g_fb_addr, 4); }
-      r0 = 0; break; }
-    case 0x812B1820u: {                                               // sceDisplaySetFrameBuf(addr, pitch, fmt, sync)
+    case 0x812B1800u: {                                               // 18.4243: sceDisplaySetFrameBuf (NID 7A410B64, SceDisplayUser) - REAL mapping
+      g_fb_addr = s->r[0]; g_fb_pitch = s->r[1];
       if (g_fb_set_n++ < 10) printf("[DISPLAY] SetFrameBuf addr=%08X pitch=%08X fmt=%08X sync=%08X\n", s->r[0], s->r[1], s->r[2], s->r[3]);
-      g_fb_addr = s->r[0]; r0 = 0; break; }
+      r0 = 0; break; }
+    case 0x812B1810u: {                                               // 18.4243: sceDisplayWaitVblankStartMultiCB (NID 05F27764) - NOT GetFrameBuf!
+      uint32_t cnt = s->r[0]; if (cnt == 0u) cnt = 1u; if (cnt > 4u) cnt = 4u;
+      ++g_vblank_n;
+      if (tl_ht_tid) std::this_thread::sleep_for(std::chrono::microseconds(16000u * cnt));
+      if (g_vblank_n <= 8) { printf("[VBLANK] count=%u n=%d tid=%08X\n", s->r[0], g_vblank_n, tl_ht_tid); fflush(stdout); }
+      r0 = 0; break; }
+    case 0x812B1820u: {                                               // 18.4243: sceDisplayWaitSetFrameBufMulti (NID 7D9864A8) - NOT SetFrameBuf
+      if (tl_ht_tid) std::this_thread::sleep_for(std::chrono::microseconds(1000));
+      r0 = 0; break; }
+    case 0x812B2410u: {                                               // 18.4243: strncat (NID FBA69BC2, SceLibc) - was missing
+      uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
+      uint8_t* dq = GP(dst); uint8_t* sq = GP(src);
+      if (dq && sq) { size_t dl = std::strlen((const char*)dq); size_t k = 0; while (k < n && sq[k]) { dq[dl + k] = sq[k]; ++k; } dq[dl + k] = 0; }
+      r0 = dst; break; }
     case 0x812B16F0u: r0 = 0; g_gxm_ctx_n++; if (g_gxm_ctx_n <= 3) printf("[GXM-CTX] CreateContext n=%d\n", g_gxm_ctx_n); break;
       { static int _gb=0; if (_gb++ < 4) { printf("[GXMBLK] #%d n=%u pc=%08X\n", _gb, g_blkcnt_total, g_cur_block); fflush(stdout); } }
     case 0x812B1470u: gxmvk_begin_frame(); r0 = 0; g_gxm_begin_n++; if (g_gxm_begin_n <= 3) printf("[GXM-BEGIN] BeginScene n=%d\n", g_gxm_begin_n); break;
@@ -2149,6 +2162,7 @@ static void guest_thread_run(uint32_t tid) {
   while (!t->exit_flag) {
     if ((pc & ~1u) >= 0xFFFFFF00u || pc == 0u) { if (g_ht_bad_n++ < 20) { printf("[HT-SENTINEL] tid=%08X pc=%08X r0=%08X r1=%08X sp=%08X\n", tid, pc, s->r[0], s->r[1], s->r[13]); fflush(stdout); } break; }
     tl_pc_ring[tl_pc_n & 63u] = pc; ++tl_pc_n;
+    { static int _a6=0; if ((pc==0x8122C6B6u||pc==0x8122C6DCu||pc==0x8122C6F6u||pc==0x8122C718u) && _a6++ < 24) { printf("[A6B6] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X tid=%08X\n", pc, s->r[0],s->r[1],s->r[2],s->r[3],s->r[4],s->r[5],s->r[6],s->r[7],s->r[13],s->r[14],tid); fflush(stdout); } }
     { static int _tr=0; if (_tr++ < 100) { printf("[HTBLK] tid=%08X pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X sp=%08X lr=%08X\n", tid, pc, s->r[0],s->r[1],s->r[2],s->r[3],s->r[4],s->r[5],s->r[13],s->r[14]); fflush(stdout); } }
     BlockFn fn = gbn(pc);
     if (!fn) { if (g_ht_bad_n++ < 20) { printf("[HT-NOBLK] tid=%08X pc=%08X\n", tid, pc); fflush(stdout); } break; }
