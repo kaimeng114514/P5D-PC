@@ -7,6 +7,10 @@
 //   0x812B22A0 malloc etc.
 #include <cstdio>
 #include <thread>
+static int g_thrst_n = 0;
+static int g_thrtrace = 0;   // 18.4232 trace off by default (P5D_THRTRACE=1 enables)
+static int g_thrtr_n = 0;
+static int g_thrpump_env = 0;
 static int g_tidp_n = 0;   // 18.4228c
 static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
@@ -1068,7 +1072,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (g_thr_log_n++ < 20) printf("[THR] start tid=%08X entry=%08X arglen=%u argp=%08X sp=%08X\n", tid, t.entry, arglen, argp, t.stack); }
       r0 = 0; break; }
     case 0x812B27C0u: {                                               // sceKernelCreateSema
-      uint32_t cnt = s->r[1];
+      uint32_t cnt = s->r[2];   // 18.4232: sceKernelCreateSema(name,attr,initCount,maxCount) - initCount is r2, NOT r1(attr)
       uint32_t obj = (g_next_sema += 0x1000u);
       if (obj) g_sema[obj] = cnt;
       if (g_thr_log_n++ < 20) printf("[THR] create_sema obj=%08X init=%u\n", obj, cnt);
@@ -1101,10 +1105,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) { kv.second.waiting = 0; kv.second.ready = 1; }
       r0 = 0; break; }
     case 0x812B2890u: {                                               // sceKernelCreateEventFlag
-      uint32_t attr = s->r[1];
+      uint32_t init = s->r[2];   // 18.4232: sceKernelCreateEventFlag(name,attr,initPattern,opt) - init pattern is r2
       uint32_t obj = (g_next_eflag += 0x1000u);
-      if (obj) g_eflag[obj] = attr;
-      if (g_thr_log_n++ < 20) printf("[THR] create_eflag obj=%08X attr=%08X\n", obj, attr);
+      if (obj) g_eflag[obj] = init;
+      if (g_thr_log_n++ < 20) printf("[THR] create_eflag obj=%08X init=%08X\n", obj, init);
       r0 = obj; break; }
     case 0x812B2880u: {                                               // sceKernelWaitEventFlag
       uint32_t obj = s->r[0], bits = s->r[1], mode = s->r[2];
@@ -1164,6 +1168,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from DelayThread fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_delay_n++ < 8) printf("[DELAY] usec=%u lr=%08X fib=%08X\n", s->r[0], s->r[14], g_cur_fiber);
       if (g_in_fex == 0 && !g_in_fiber_exec) { if (g_thry_n++ < 6) { printf("[THRYIELD] DelayThread -> pump thr (thr count=%zu)\n", g_thr.size()); fflush(stdout); } hle_thr_pump(s, 20000); }
+      else if (g_thrpump_env && !g_cur_thr) { if (g_thry_n++ < 6) { printf("[THRYIELD] env DelayThread -> pump thr (count=%zu fib=%08X)\n", g_thr.size(), g_cur_fiber); fflush(stdout); } hle_thr_pump(s, 20000); }
       if (g_in_fex > 0 && g_in_fiber_exec && !g_fiber_switch_to && g_fiber_list.size() > 1) {
         uint32_t cur = g_cur_fiber ? g_cur_fiber : g_last_fiber;
         for (size_t k = 1; k <= g_fiber_list.size(); ++k) {
@@ -1325,6 +1330,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       g_switch_budget = 3000;   // 18.3822: time-slice the switched-to fiber so it cannot monopolize the exec
       continue; }
     uint32_t pc = s->r[15];
+    if (g_thrpump_env && !g_cur_thr && g_blkcnt_total > 1500000u && (g_blkcnt_total % 20000u) == 0u) { hle_thr_pump(s, 20000); pc = s->r[15]; }
     if ((pc & ~1u) == 0x811EAAE4u) {
       if (!g_in_eaa4) { g_in_eaa4 = 1;
         if (g_blkcnt_total >= 14000000u && g_eaa4_ent_n++ < 40)
@@ -2259,7 +2265,9 @@ extern "C" void wr32_watch(uint32_t a, uint32_t v) {
 
 
 static void hle_thr_pump(RecState* s, int quantum) {
-  if (g_cur_thr || g_in_fiber_exec) return;   // 18.4228: allow the pump from the main-loop world (g_cur_fiber is the app fiber there); never nest inside thread execution
+  if (g_cur_thr) return;
+  if (g_in_fiber_exec && !g_thrpump_env) return;   // 18.4232: worker-trace mode (P5D_THRPUMP=1) allows pumping from the fiber world
+  if (g_thrtrace && g_thrst_n++ < 20) { printf("[THRST] n=%zu:", g_thr.size()); for (auto& _kv : g_thr) { auto& _t=_kv.second; printf(" %08X(a%d,r%d,w%d,obj=%08X,bits=%08X,sp=%08X)", _kv.first, _t.alive?1:0, _t.ready?1:0, _t.waiting?1:0, _t.wait_obj, _t.wait_bits, _t.ctx.r[13]); } printf("\n"); fflush(stdout); }   // 18.4228: allow the pump from the main-loop world (g_cur_fiber is the app fiber there); never nest inside thread execution
   for (auto& kv : g_thr) {
     HThread& t = kv.second;
     if (!t.alive || !t.ready) continue;
@@ -2267,8 +2275,10 @@ static void hle_thr_pump(RecState* s, int quantum) {
     std::memcpy(s->r, t.ctx.r, sizeof(t.ctx.r)); s->apsr = t.ctx.apsr;
     g_cur_thr = kv.first; g_thr_blocked = 0;
     uint32_t pc = t.ctx.r[15] ? t.ctx.r[15] : (t.entry & ~1u);
+    if (g_thrtrace) { for (int _k=0;_k<16;++_k) { } if (g_thrtrace && g_thrtr_n++ < 160) { printf("[THRTR] tid=%08X entry=%08X sp=%08X r0=%08X r1=%08X r9=%08X pc=%08X\n", kv.first, t.entry, t.ctx.r[13], t.ctx.r[0], t.ctx.r[1], t.ctx.r[9], pc); fflush(stdout); } }
     int n = 0;
     while (n++ < quantum) {
+      if (g_thrtrace && g_thrtr_n++ < 160) { printf("[THRBLK] tid=%08X #%d pc=%08X lr=%08X r0=%08X r4=%08X r5=%08X sp=%08X\n", kv.first, n, pc, s->r[14], s->r[0], s->r[4], s->r[5], s->r[13]); fflush(stdout); }
       if (g_thr_blocked) { t.ready = 0; t.waiting = 1; t.wait_obj = g_thr_wait_obj; t.wait_bits = g_thr_wait_bits; break; }
     if ((pc & ~1u) == 0x811EA552u) { if (g_ea552_n++ < 60) { printf("[EA552] ENTER r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EA5FEu) { if (g_ea552_n++ < 60) { printf("[EA552] MAPLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
