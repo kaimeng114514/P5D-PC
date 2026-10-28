@@ -20,7 +20,9 @@
 
 struct RecState { uint32_t r[16]; uint32_t apsr; uint8_t* base; uint32_t mem_size; uint64_t d[32]; };
 extern "C" uint32_t g_cur_block = 0;
-static int g_hacks = 0;   // 18.4205: semantic patch stack (XSKIP/REFNULL/NULLOBJ/RET/RETFAM/DUMMYPROG/NULLDESC/ABORTSKIP) - OFF by default for a clean baseline; P5D_HACKS=1 enables
+static int g_hacks = 0;
+static int g_loop_site = -1;
+static uint32_t g_f2_seen = 0;   // 18.4208b: last fiber whose context was really saved by execution (used to decide whether the pump may reset fiber2 to its entry)   // 18.4208: which dispatch loop executed the current block (0=fiber_exec,1=thread pump,2=main,3=fiber2 pump)   // 18.4205: semantic patch stack (XSKIP/REFNULL/NULLOBJ/RET/RETFAM/DUMMYPROG/NULLDESC/ABORTSKIP) - OFF by default for a clean baseline; P5D_HACKS=1 enables
 typedef uint32_t (*BlockFn)(RecState*);
 extern "C" uint32_t (*find_block_000(uint32_t pc))(RecState*);
 #define FB(N) extern "C" uint32_t (*find_block_##N(uint32_t pc))(RecState*);
@@ -468,8 +470,14 @@ static void initwatch_probe(RecState* s, uint32_t pcv) {   // 18.4207: count ent
   else if (p == 0x8117339Cu) { nm = "appTouch-init"; slot = 1; }
   else if (p == 0x8115D5E2u) { nm = "appAllocHandler-init"; slot = 2; }
   else if (p == 0x81008222u) { nm = "appGxScene-init"; slot = 3; }
+  else if (p == 0x81172EFCu) { nm = "appSystem-init"; slot = 4; }
+  else if (p == 0x81184536u) { nm = "appSystem-init-callblk"; slot = 5; }
+  else if (p == 0x811845C8u) { nm = "sysInitAgg"; slot = 6; }
+  else if (p == 0x8115A336u) { nm = "initEntry-A-336"; slot = 7; }
   else return;
-  if (g_iw_n[slot]++ < 6) { printf("[INITW] %s #%d lr=%08X sp=%08X fib=%08X r0=%08X\n", nm, g_iw_n[slot], s->r[14], s->r[13], g_cur_fiber, s->r[0]); fflush(stdout); }
+  if (g_iw_n[slot]++ < 6) { printf("[INITW] %s #%d loop=%d lr=%08X sp=%08X fib=%08X r0=%08X", nm, g_iw_n[slot], g_loop_site, s->r[14], s->r[13], g_cur_fiber, s->r[0]);
+    if (slot == 6) { printf(" chain:"); for (int k = 0; k < 24; ++k) { uint8_t* q = GP(s->r[13] + (uint32_t)k * 4u); if (!q) break; uint32_t w = 0; std::memcpy(&w, q, 4); uint32_t a = w & ~1u; if (a >= 0x81000000u && a < 0x81330000u) printf(" %08X", a); } }
+    printf("\n"); fflush(stdout); }
 }
 
 static int assert_hle(RecState* s, uint32_t pcv) {   // 18.4205: platform ASSERT decision stub (0x8115F7E0) - emulates the dialog default "ignore"
@@ -1119,7 +1127,7 @@ static FinderFn ALL_FINDERS[26] = {
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
-  if (g_cur_fiber) { FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr;
+  if (g_cur_fiber) { g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr;
     if (g_fsv_n++ < 40) printf("[FSAVE] fiber=%08X pc=%08X sp=%08X r5=%08X\n", g_cur_fiber, c.r[15], c.r[13], c.r[5]);
     if ((c.r[15] & ~1u) == 0x81206BDCu || c.r[0] == 2u)
       printf("[FSAVE-BAD] fiber=%08X r0=%08X r13=%08X r15=%08X\n", g_cur_fiber, c.r[0], c.r[13], c.r[15]); }
@@ -1777,7 +1785,7 @@ if (nulldesc_skip(s, pc)) continue;
 if (assert_hle(s, pc)) continue;
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
-BlockFn fn = gbn(pc);
+g_loop_site = 0; BlockFn fn = gbn(pc);
     if (!fn) { int back = 0; uint32_t bq = gbn_back(pc, &back);
       if (bq && back <= 16) { fn = gbn(bq); if (fn) { if (g_fback_n++ < 8) printf("[FBACK] pc=%08X -> block %08X (back %d)\n", pc, bq, back); pc = bq; } } }
     if (!fn) { printf("[FIBER-EXEC] no block for pc=%08X (cur=%08X)\n", pc, g_cur_fiber); fiber_save(s); break; }
@@ -2329,7 +2337,7 @@ if (nulldesc_skip(s, pc)) continue;
 if (assert_hle(s, pc)) continue;
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
-BlockFn fn = gbn(pc);
+g_loop_site = 1; BlockFn fn = gbn(pc);
       if (!fn) { int _back = 0; uint32_t _rp = gbn_back(pc, &_back); if (_rp) { pc = _rp; fn = gbn(pc); } }
       if (!fn) { if (g_thr_log_n++ < 40) printf("[THR-BAD] tid=%08X pc=%08X\\n", kv.first, pc); t.alive = 0; break; }
       uint32_t np = fn(s);
@@ -2955,7 +2963,7 @@ if (nulldesc_skip(&s, pc)) continue;
 if (assert_hle(&s, pc)) continue;
 assert_msg_probe(&s, pc);
 initwatch_probe(&s, pc);
-BlockFn fn = gbn(pc);
+g_loop_site = 2; BlockFn fn = gbn(pc);
     { uint32_t gpc = pc; if ((gpc & ~1u) == 0x81206BDCu && s.r[0] != 0u && s.r[0] < 0x80000000u) {
         // 18.3871: diagnostic guard - the stub is being entered with a small/garbage r0 (M330: r0=2).
         printf("[GUARD-RG] stub r0=%08X r13=%08X r14=%08X r7=%08X r1=%08X cur=%08X pump=%d ring:", s.r[0], s.r[13], s.r[14], s.r[7], s.r[1], g_cur_fiber, g_pumping2);
@@ -3017,7 +3025,8 @@ BlockFn fn = gbn(pc);
       uint32_t f2 = (g_fiber_list[1] == f1) ? g_fiber_list[0] : g_fiber_list[1];
       { FCtx& c = g_fctx[f1]; std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr; }
       FCtx& c2 = g_fctx[f2];
-      if (pump_first || c2.r[15] == 0u) {
+      const bool f2_ran = (g_f2_seen == f2);
+      if ((pump_first && !f2_ran) || c2.r[15] == 0u) {
         pump_first = 0;
         uint32_t off2 = f2 - IMG_VA_BASE, arg2 = 0;
         if (off2 + 0x90 <= IMG_SIZE) std::memcpy(&arg2, gp_img + off2 + 0x88, 4);
@@ -3025,6 +3034,9 @@ BlockFn fn = gbn(pc);
         c2.r[0] = arg2 ? arg2 : f2;
         c2.r[13] = 0xA0600000u; c2.r[14] = 0xFFFFFFF0u; c2.r[15] = 0x81198C0Au;
         if (g_pump2_n <= 6) printf("[PMP2] fiber2 FORCE-RESET user-entry r0=%08X\n", c2.r[0]);
+      } else {
+        if (g_pump2_n <= 6) printf("[PMP2] fiber2 RESUME saved ctx pc=%08X (f2_ran=%d)\n", c2.r[15], (int)f2_ran);
+        pump_first = 0;
       }
       std::memcpy(s.r, c2.r, sizeof(s.r)); s.apsr = c2.apsr; g_cur_fiber = f2;
       auto g_pump_t0 = std::chrono::steady_clock::now();
@@ -3064,6 +3076,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         if (assert_hle(&s, ppc)) { ppc = s.r[15]; continue; }
         assert_msg_probe(&s, ppc);
         initwatch_probe(&s, ppc);
+        g_loop_site = 3;
         BlockFn f2fn = gbn(ppc);
         if (!f2fn) { int back = 0; uint32_t bq = gbn_back(ppc, &back); if (bq && back <= 16) { f2fn = gbn(bq); ppc = bq; } }
         if (!f2fn) { if (g_pump2_n <= 8) printf("[PMP2] fiber2 no block pc=%08X\n", ppc); break; }
