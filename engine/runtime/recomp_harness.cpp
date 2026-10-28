@@ -3775,6 +3775,12 @@ if (0) { uint32_t _fc = 0; uint8_t* _fq = GP(0x816CC63Cu); if (_fq) std::memcpy(
     prev_blk = g_cur_block;
     pc = nxt;
   }
+  { printf("[THRDUMP] count=%zu\n", (size_t)g_thr.size());
+    for (auto& kv : g_thr) { auto& t = kv.second;
+      printf("  tid=%08X entry=%08X alive=%d ready=%d waiting=%d obj=%08X bits=%08X mode=%08X exit=%d\n",
+             kv.first, t.entry, t.alive, t.ready, t.waiting, t.wait_obj, t.wait_bits, t.wait_mode, t.exit_flag); }
+    printf("[SEMA]"); for (auto& kv : g_sema) printf(" %08X=%u", kv.first, kv.second); printf("\n");
+    printf("[EFLAGS]"); for (auto& kv : g_eflag) printf(" %08X=%u", kv.first, kv.second); printf("\n"); }
   { std::vector<std::pair<int,uint32_t>> vb; for (auto& kv : g_blkcnt) vb.push_back({kv.second, kv.first});
     std::sort(vb.begin(), vb.end());
     printf("[TOPBLK] unique=%zu\n", vb.size());
