@@ -743,7 +743,7 @@ static int g_pcall_n = 0;
 static int g_canpc_n = 0;
 static int g_oddpc_n = 0;
 static int g_ret_epi_n = 0;
-static int g_wl_active = 0, g_wl_n = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
+static int g_wl_active = 0, g_wl_n = 0; static int g_wlpro_n = 0, g_wlentry_n = 0, g_wlec6_n = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _o = (g_watch_task ? g_watch_task : g_cur_wait_obj);
     if (_o) {
@@ -4090,11 +4090,18 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
-    if (g_cur_block == 0x811E5EC2u) { g_wl_active = 1; g_wl_sp = s.r[13]; g_wl_lr = s.r[14]; g_wl_prevblk = g_cur_block; }
+    if (g_cur_block == 0x811E5EC2u) { g_wl_active = 1; g_wl_sp = s.r[13]; g_wl_lr = s.r[14]; g_wl_prevblk = g_cur_block;
+      if (g_wlpro_n++ < 12) { printf("[WLPRO] sp=%08X lr=%08X savedLR=%08X fib=%08X n=%d\n", s.r[13], s.r[14], ({uint32_t _v=0; uint8_t* _q=GP(s.r[13]+4u); if(_q) std::memcpy(&_v,_q,4); _v;}), g_cur_fiber, g_wlpro_n); fflush(stdout); } }
+    if (g_cur_block == 0x811E5EC6u && g_wlec6_n++ < 16) { uint32_t _lr=0,_r4=0; uint8_t* _q=GP(s.r[13]+4u); if(_q) std::memcpy(&_lr,_q,4); _q=GP(s.r[13]); if(_q) std::memcpy(&_r4,_q,4);
+      printf("[WLEC6] active=%d sp=%08X [sp]=%08X [sp+4]=%08X regLR=%08X r4=%08X fib=%08X\n", g_wl_active, s.r[13], _r4, _lr, s.r[14], s.r[4], g_cur_fiber); fflush(stdout); }
     else if (g_cur_block == 0x811E5EF0u) { g_wl_active = 0; }
     else if (g_wl_active) { g_wl_prevblk = g_cur_block; }
     { static uint32_t _lastg=0; if (g_blkcnt_total - _lastg > 500000u) { _lastg = g_blkcnt_total;
         if (g_stall_n++ < 20) { printf("[STALLTRACE] n=%u pc=%08X blk=%08X fib=%08X loop=%d sp=%08X fex=%d\n", g_blkcnt_total, pc, g_cur_block, g_cur_fiber, g_loop_site, s.r[13], g_in_fex); fflush(stdout); } } }
+    if (nxt == 0x811E5EC6u && g_wlentry_n++ < 20) {
+      printf("[WLENTRY] from blk=%08X fib=%08X thr=%08X r0=%08X r1=%08X r4=%08X r5=%08X sp=%08X lr=%08X words:", g_cur_block, g_cur_fiber, g_cur_thr, s.r[0],s.r[1],s.r[4],s.r[5],s.r[13],s.r[14]);
+      for (int _k=0;_k<6;++_k) { uint32_t _w=0; uint8_t* _q=GP(s.r[13]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); }
+      printf("\n"); fflush(stdout); }
     if (nxt == 0x811E5EF0u && g_ret_epi_n++ < 12) {
       printf("[RET_EPI] act=%d from blk=%08X fib=%08X thr=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X words:", g_wl_active, g_cur_block, g_cur_fiber, g_cur_thr, s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7],s.r[13],s.r[14]);
       for (int _k=0;_k<8;++_k) { uint32_t _w=0; uint8_t* _q=GP(s.r[13]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); }
