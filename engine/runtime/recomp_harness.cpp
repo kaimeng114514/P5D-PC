@@ -22,6 +22,8 @@ static int g_ht_n = 0;
 static std::mutex g_lwm_mtx;
 static std::map<uint32_t, std::pair<uint32_t,uint32_t> > g_lwm_real;   // work -> (owner_tid, count)
 static thread_local uint32_t tl_ht_tid = 0;
+static thread_local uint32_t tl_pc_ring[64];
+static thread_local unsigned tl_pc_n = 0;
 static void guest_thread_run(uint32_t tid);
 static int g_ht_bad_n = 0;
 static int g_task_n = 0;
@@ -438,10 +440,12 @@ static inline uint8_t* GP(uint32_t va) {
   else if (va >= 0x84600000u && va < 0x8C600000u) off = (va - 0x84600000u) + 0x4000000u;   // heap arena 96MB
   else if (va >= 0x8C600000u && va < 0xA0000000u) off = (va - 0x8C600000u) + 0x10000000u;  // 18.4165: 320MB large-block arena
   else if (va >= 0x9F000000u && va < 0xA0000000u) off = (va - 0x9F000000u) + 0x10000000u;  // 18.4162: 16MB Vita user-memblock window (fibers/scratch below Region B)
-  else { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X blk=%08X stub=%08X tid=%u ring:", va, g_cur_block, g_cur_hle_stub, tl_ht_tid);
+  else { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X blk=%08X stub=%08X tid=%u tlring:", va, g_cur_block, g_cur_hle_stub, tl_ht_tid);
+         for (int i = 0; i < 24; ++i) fprintf(stderr, " %08X", tl_pc_ring[(unsigned)i]); fprintf(stderr, " ring:");
          for (int i = 0; i < 32; ++i) fprintf(stderr, " %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)i) & 63u]);
          fprintf(stderr, "\n"); return nullptr; }
-  if (off >= IMG_SIZE) { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X off=%08X blk=%08X stub=%08X tid=%u ring:", va, off, g_cur_block, g_cur_hle_stub, tl_ht_tid);
+  if (off >= IMG_SIZE) { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X off=%08X blk=%08X stub=%08X tid=%u tlring:", va, off, g_cur_block, g_cur_hle_stub, tl_ht_tid);
+         for (int i = 0; i < 24; ++i) fprintf(stderr, " %08X", tl_pc_ring[(unsigned)i]); fprintf(stderr, " ring:");
     for (int i = 0; i < 32; ++i) fprintf(stderr, " %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)i) & 63u]);
     fprintf(stderr, "\n"); return nullptr; }
   return gp_img + off;
@@ -2144,6 +2148,7 @@ static void guest_thread_run(uint32_t tid) {
   if (g_ht_n++ < 40) { printf("[HT-RUN] tid=%08X pc=%08X sp=%08X r0=%08X r1=%08X r4=%08X r5=%08X r9=%08X lr=%08X\n", tid, pc, s->r[13], s->r[0], s->r[1], s->r[4], s->r[5], s->r[9], s->r[14]); fflush(stdout); }
   while (!t->exit_flag) {
     if ((pc & ~1u) >= 0xFFFFFF00u || pc == 0u) { if (g_ht_bad_n++ < 20) { printf("[HT-SENTINEL] tid=%08X pc=%08X r0=%08X r1=%08X sp=%08X\n", tid, pc, s->r[0], s->r[1], s->r[13]); fflush(stdout); } break; }
+    tl_pc_ring[tl_pc_n & 63u] = pc; ++tl_pc_n;
     { static int _tr=0; if (_tr++ < 100) { printf("[HTBLK] tid=%08X pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X sp=%08X lr=%08X\n", tid, pc, s->r[0],s->r[1],s->r[2],s->r[3],s->r[4],s->r[5],s->r[13],s->r[14]); fflush(stdout); } }
     BlockFn fn = gbn(pc);
     if (!fn) { if (g_ht_bad_n++ < 20) { printf("[HT-NOBLK] tid=%08X pc=%08X\n", tid, pc); fflush(stdout); } break; }
