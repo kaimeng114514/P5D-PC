@@ -471,7 +471,7 @@ static uint32_t gbn_back(uint32_t t, int* pback);
 static int g_stall_n = 0;
 static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg);
 static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int maxblocks);
-static int g_gxmabi = 0, g_gxmabi_n = 0;
+static int g_gxmabi = 0, g_gxmabi_n = 0; static int g_gxmabi_scene_n = 0, g_gxmabi_draw_n = 0; static int g_bs_n = 0;
 static uint8_t* gp_img = nullptr;
 static inline uint8_t* GP(uint32_t va) {
   uint32_t off;
@@ -898,7 +898,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
       uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
-      if (g_gxmabi_n++ < 60) { printf("[GXMABI] %s va=%08X r0=%08X ret=%08X lr=%08X blk=%08X\n", _ge->name, stub_va, s->r[0], _rv, s->r[14], g_cur_block); fflush(stdout); }
+      { int _always = 0;
+        if (strstr(_ge->name, "BeginScene") || strstr(_ge->name, "EndScene") || strstr(_ge->name, "DisplayQueueAddEntry") || strstr(_ge->name, "Present")) { if (g_gxmabi_scene_n++ < 400) _always = 1; }
+        else if (strstr(_ge->name, "Draw")) { if (g_gxmabi_draw_n++ < 40) _always = 1; }
+        if (_always || g_gxmabi_n++ < 60) { printf("[GXMABI] %s va=%08X r0=%08X r1=%08X r2=%08X r3=%08X ret=%08X lr=%08X blk=%08X sp=%08X\n", _ge->name, stub_va, s->r[0], s->r[1], s->r[2], s->r[3], _rv, s->r[14], g_cur_block, s->r[13]); fflush(stdout); } }
       s->r[0] = _rv; return s->r[14];
     }
   }
@@ -3679,6 +3682,8 @@ int main(int argc, char** argv) {
     if ((pc & ~1u) == 0x811EB040u && g_b40_n++ < 6) { printf("[B40] after-call r0=%08X fp=%08X sp=%08X r9=%08X fib=%08X\n", s.r[0], s.r[11], s.r[13], s.r[9], g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x811EB048u && g_b48_n++ < 6) { uint32_t _v=0; uint8_t* _q=GP(s.r[0]); if(_q) std::memcpy(&_v,_q,4); printf("[B48] r0=%08X [r0]=%08X mapped=%d sp=%08X fib=%08X\n", s.r[0], _v, _q?1:0, s.r[13], g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x811EB04Eu && g_b4e_n++ < 6) { printf("[B4E] lr=%08X r1=%08X r2=%08X sp=%08X fib=%08X\n", s.r[14], s.r[1], s.r[2], s.r[13], g_cur_fiber); fflush(stdout); }
+    if ((pc & ~1u) >= 0x811DD4B0u && (pc & ~1u) <= 0x811DD4E0u && g_bs_n++ < 20) {
+      printf("[BSWAP-PC] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X sp=%08X fib=%08X\n", pc, s.r[0], s.r[1], s.r[2], s.r[3], s.r[4], s.r[5], s.r[6], s.r[7], s.r[14], s.r[13], g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x812068D8u && g_schedrun_n < 4 && g_in_fex == 0 && !g_in_fiber_exec && !g_noschedrun) {
       ++g_schedrun_n;
       uint32_t _si = (g_schedidx >= 0 && (size_t)g_schedidx < g_fiber_list.size()) ? (uint32_t)g_schedidx : 0u;
