@@ -343,6 +343,8 @@ static int g_e6a_n = 0;
 static int g_gs_dbg_n = 0;
 static int g_gxm_ctx_n = 0, g_gxm_begin_n = 0, g_gxm_end_n = 0, g_gxm_present_n = 0, g_gxm_fin_n = 0, g_gfx_rep_n = 0;
 static uint32_t g_display_cb = 0, g_display_cbds = 0, g_display_maxpend = 0, g_disp_pending = 0, g_disp_pending_cbd = 0;
+static uint32_t g_watch_task = 0; static int g_taskst_n = 0;
+static int g_loadpump = 0, g_loadpump_n = 0;
 static uint32_t g_test_cb = 0; static int g_test_cb_done = 0;
 static int g_disp_depth = 0, g_disp_n = 0, g_gxminit_n = 0;
 static uint32_t g_gsr_in[24] = {0}, g_gsr_out[24] = {0}, g_gsr_f[24] = {0};
@@ -954,6 +956,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       fflush(stdout);
       r0 = 0; break; }
     case 0x812B1B80u: {                                               // sceFiberRun(fiber, ...): start/resume the fiber
+      if (g_blkcnt_total > 1400000u) { static int _frl=0; if (_frl++ < 40) { printf("[FRUN2] n=%u r0=%08X cur=%08X fex=%d inexec=%d lr=%08X sp=%08X ring:", g_blkcnt_total, s->r[0], g_cur_fiber, g_in_fex, g_in_fiber_exec, s->r[14], s->r[13]);
+        for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       uint32_t fb = s->r[0] & ~1u;
       { static int _fr=0; if (_fr++ < 12) { printf("[FRUN] r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
           for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
@@ -990,6 +994,19 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       break; }
     case 0x812B1BA0u: {                                               // sceFiberSwitch(fiber, ...): start/resume target
+      if (g_blkcnt_total > 1400000u) { static int _fsl=0; if (_fsl++ < 40) { printf("[FSW2] n=%u r0=%08X cur=%08X fex=%d inexec=%d lr=%08X sp=%08X ring:", g_blkcnt_total, s->r[0], g_cur_fiber, g_in_fex, g_in_fiber_exec, s->r[14], s->r[13]);
+        for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+      if (g_blkcnt_total > 1400000u && (s->r[0] & ~1u) == g_cur_fiber) {
+        static int _fl=0; if (_fl++ < 24) {
+          uint32_t _h=0,_t=0; uint8_t* _q=GP(0x816CBC08u+0xA18u); if(_q) std::memcpy(&_h,_q,4);
+          _q=GP(0x816CBC08u+0xA1Cu); if(_q) std::memcpy(&_t,_q,4);
+          auto dumpf=[](uint32_t fb, const char* nm){ uint32_t f80=0,f94=0,f98=0; uint8_t* q;
+            q=GP(fb+0x80u); if(q) std::memcpy(&f80,q,4); q=GP(fb+0x94u); if(q) std::memcpy(&f94,q,4); q=GP(fb+0x98u); if(q) std::memcpy(&f98,q,4);
+            printf(" %s=%08X[st=%08X prev=%08X next=%08X]", nm, fb, f80, f94, f98); };
+          printf("[FLIST] selfswitch cur=%08X head=%08X tail=%08X", g_cur_fiber, _h, _t);
+          dumpf(g_cur_fiber, "cur"); for (uint32_t _fb : g_fiber_list) if (_fb != g_cur_fiber) dumpf(_fb, "oth");
+          printf("\n"); fflush(stdout); } }
+      { static int _fs0=0; if (_fs0++ < 0) {} }
       { static int _fs=0; if (_fs++ < 16) { printf("[FSW] r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
           for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       if (g_swp_n < 40) { ++g_swp_n; printf("[SWP] fb=%08X in=%d cur=%08X sp=%08X\n", s->r[0] & ~1u, g_in_fiber_exec, g_cur_fiber, s->r[13]); }
@@ -1755,6 +1772,19 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       printf("[TESTCB] cb=%08X ret=%08X blocks=%u r0=%08X\n", g_test_cb, _tr, g_blkcnt_total - _tb0, s->r[0]); fflush(stdout);
       pc = s->r[15];
     }
+    if (g_loadpump && g_blkcnt_total > 1400000u && g_disp_depth == 0) {
+      uint32_t _lt = 0; { uint8_t* _lq = GP(0x816CDA2Cu); if (_lq) std::memcpy(&_lt, _lq, 4); }
+      if (_lt) {
+        uint16_t _lst = 0; { uint8_t* _lq2 = GP(_lt + 2u); if (_lq2) std::memcpy(&_lst, _lq2, 2); }
+        if (_lst != 6u && (g_blkcnt_total % 20000u) == 0u) {
+          if (g_loadpump_n++ < 24) { printf("[LOADPUMP] n=%u task=%08X state=%u fib=%08X -> run FUN_811E5928\n", g_blkcnt_total, _lt, (unsigned)_lst, g_cur_fiber); fflush(stdout); }
+          uint32_t _lr = call_guest_cb(s, 0x811E5928u, 0, 120000);
+          if (g_loadpump_n <= 24) { uint16_t _lst2=0; uint8_t* _lq3=GP(_lt+2u); if(_lq3) std::memcpy(&_lst2,_lq3,2);
+            printf("[LOADPUMP]   -> ret=%08X state now=%u\n", _lr, (unsigned)_lst2); fflush(stdout); }
+          pc = s->r[15];
+        }
+      }
+    }
     if (g_disp_pending && g_disp_depth == 0 && !g_cur_thr) {
       uint32_t _dcb = g_disp_pending, _dcd = g_disp_pending_cbd;
       g_disp_pending = 0; ++g_disp_depth;
@@ -1765,7 +1795,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       if (_fp == 0x811E5928u || _fp == 0x811E5A9Au || _fp == 0x811E5AECu || _fp == 0x811E5B9Au) {
         static int _sm2 = 0, _sm2b = 0;
         if (_fp == 0x811E5928u) { uint32_t _t0 = 0; uint8_t* _q0 = GP(0x816CDA2Cu); if (_q0) std::memcpy(&_t0, _q0, 4);
-            if (_t0 != 0 && _sm2++ < 200) { uint32_t _t = _t0;
+            if (_t0 != 0 && _sm2++ < 400) { uint32_t _t = _t0;
             uint16_t _st = 0xFFFF; uint8_t* _w = _t ? GP(_t + 2u) : nullptr; if (_w) std::memcpy(&_st, _w, 2);
             printf("[FIOSSM2] RUN task=%08X state=%u blk=%u fib=%08X thr=%08X\n", _t, (unsigned)_st, g_blkcnt_total, g_cur_fiber, g_cur_thr); fflush(stdout); } }
         else if (_fp == 0x811E5A9Au) { static int _s6=0; if (_s6++ < 40) { printf("[FIOSSM2] STATE6-DONE blk=%u fib=%08X\n", g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
@@ -2748,7 +2778,10 @@ static void init_job_pools() {
 
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
   { static int _ft=0; if ((a == 0x816CDA2Cu || a == 0x816CDA28u) && _ft++ < 20) {
-      printf("[FIRSTTASK] wr a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+      printf("[FIRSTTASK] wr a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout);
+      if (a == 0x816CDA2Cu && v) { g_watch_task = v; printf("[TASKWATCH] task=%08X state=%u\n", v, (unsigned)({uint16_t _s=0; uint8_t* _q=GP(v+2u); if(_q) std::memcpy(&_s,_q,2); _s;})); fflush(stdout); } }
+    else if (g_watch_task && a == g_watch_task + 2u && g_taskst_n++ < 60) {
+      printf("[TASKST] task=%08X state=%u blk=%08X fib=%08X thr=%08X\n", g_watch_task, (unsigned)v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _r3=0; if ((v == 0x811F3124u || v == 0x811F3125u) && _r3++ < 20) {
       printf("[REG3124] st a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   { uint32_t _c = inputctx(); if (_c && a >= _c + 0x0Cu && a < _c + 0x1Cu && g_inpw_n++ < 40) {
@@ -3015,6 +3048,7 @@ int main(int argc, char** argv) {
   { const char* _pw = getenv("P5D_PUMP_WALLCLOCK"); g_pump_wallclock = (_pw && atoi(_pw) != 0) ? 1 : 0; }
   { const char* _cy = getenv("P5D_CB_YIELD"); g_cb_yield = (_cy && atoi(_cy) != 0) ? 1 : 0; }
 { const char* _tc = getenv("P5D_TEST_CB"); if (_tc && *_tc) g_test_cb = (uint32_t)strtoul(_tc, 0, 16); }
+{ const char* _lp = getenv("P5D_LOADPUMP"); g_loadpump = (_lp && atoi(_lp) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -3896,10 +3930,29 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       printf("[E59] enter 0x811E5970: r5=%08X r6=%08X r0=%08X r1=%08X r9=%08X sp=%08X\n",
              s.r[5],s.r[6],s.r[0],s.r[1],s.r[9],s.r[13]);
     }
+    if (g_loadpump && g_blkcnt_total > 1400000u) {
+      uint32_t _lt = 0; { uint8_t* _lq = GP(0x816CDA2Cu); if (_lq) std::memcpy(&_lt, _lq, 4); }
+      if (_lt) {
+        uint16_t _lst = 0; { uint8_t* _lq2 = GP(_lt + 2u); if (_lq2) std::memcpy(&_lst, _lq2, 2); }
+        if (_lst != 6u && (g_blkcnt_total % 20000u) == 0u) {
+          if (g_loadpump_n++ < 60) { printf("[LOADPUMP-MAINN] n=%u task=%08X state=%u fib=%08X -> run FUN_811E5928\n", g_blkcnt_total, _lt, (unsigned)_lst, g_cur_fiber); fflush(stdout); }
+          call_guest_cb(&s, 0x811E5928u, 0, 120000);
+          if (g_loadpump_n <= 60) { uint16_t _lst2=0; uint8_t* _lq3=GP(_lt+2u); if(_lq3) std::memcpy(&_lst2,_lq3,2);
+            printf("[LOADPUMP-MAINN]   -> state now=%u\n", (unsigned)_lst2); fflush(stdout); }
+        }
+      }
+    }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
     { static uint32_t _lastg=0; if (g_blkcnt_total - _lastg > 500000u) { _lastg = g_blkcnt_total;
         if (g_stall_n++ < 20) { printf("[STALLTRACE] n=%u pc=%08X blk=%08X fib=%08X loop=%d sp=%08X fex=%d\n", g_blkcnt_total, pc, g_cur_block, g_cur_fiber, g_loop_site, s.r[13], g_in_fex); fflush(stdout); } } }
+    if ((g_switch_pending || g_fiber_switch_to) && g_blkcnt_total > 1400000u) {
+      static int _msw2=0; if (_msw2++ < 48) { uint32_t _t2 = g_switch_pending ? g_switch_target : g_fiber_switch_to;
+        auto _it2 = g_fctx.find(_t2 & ~1u);
+        printf("[MSWREQ] n=%u cur=%08X target=%08X hasctx=%d ctxpc=%08X ctxsp=%08X ctxr0=%08X fex=%d fib=%08X\n",
+               g_blkcnt_total, g_cur_fiber, _t2, (int)(_it2!=g_fctx.end()),
+               _it2!=g_fctx.end()?_it2->second.r[15]:0u, _it2!=g_fctx.end()?_it2->second.r[13]:0u, _it2!=g_fctx.end()?_it2->second.r[0]:0u,
+               g_in_fex, g_cur_fiber); fflush(stdout); } }
     if (g_switch_pending || g_fiber_switch_to) {   // 18.4217: synchronous switch consumed at the dispatcher's safe point with the REAL next-pc (nx)
       uint32_t _t = g_switch_pending ? g_switch_target : g_fiber_switch_to;
       g_switch_pending = 0; g_fiber_switch_to = 0;
