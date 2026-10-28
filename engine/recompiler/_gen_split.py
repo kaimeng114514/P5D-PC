@@ -18,6 +18,24 @@ main_idx = src.index("out = []")
 ns = {}
 exec(compile(src[:main_idx], "_gen_batch2_semantics", "exec"), ns)
 emit = ns["emit"]; is_term = ns["is_term"]; base_m = ns["base_m"]
+# 18.4224: IT-block conditional execution. capstone reports the effective condition of each
+# instruction inside an IT block in ins.cc (ARM_CC_EQ=1..AL=15); wrap the emitted statements.
+_CCF = {1:"cond_eq(s)",2:"cond_ne(s)",3:"cond_cs(s)",4:"cond_cc(s)",5:"cond_mi(s)",6:"cond_pl(s)",
+        7:"cond_vs(s)",8:"cond_vc(s)",9:"cond_hi(s)",10:"cond_ls(s)",11:"cond_ge(s)",12:"cond_lt(s)",
+        13:"cond_gt(s)",14:"cond_le(s)"}
+def emit_cond(ins, sup):
+    m = base_m(ins.mnemonic)
+    if m in ("it","itt","ite","ittt","itet","itee","itttt","itett","itete","iteee"):
+        return []   # the IT instruction itself produces no code
+    e = emit(ins, sup)   # NOTE: emit() returns a LIST of statements
+    if not e:
+        return e
+    cc = getattr(ins, "cc", 15)
+    cf = _CCF.get(cc)
+    if cf and not is_term(ins):
+        return ["if (%s) { %s }" % (cf, " ".join(e))]
+    return e
+
 R = ns["R"]; COND = ns["COND"]; RIDX = ns["RIDX"]
 ridx = RIDX
 
@@ -259,14 +277,14 @@ def gen_batch(bi, batch):
             if (len(b["insns"]) == 1 and not is_term(_only) and _om in ("add","adds","sub","subs")
                     and _only.operands and _only.operands[0].type == ARM_OP_REG and _only.operands[0].reg == 12
                     and len(_only.operands) >= 2 and _only.operands[1].type == ARM_OP_IMM):
-                body += emit(_only, sup_all)
+                body += emit_cond(_only, sup_all)
                 body.append("return 0x%08Xu;" % (b["start"] + _only.size))
                 defs.append("static uint32_t blk_%08X(RecState* s) { g_cur_block = 0x%08Xu; " % (b["start"], b["start"]) + " ".join(body) + " }")
                 continue
             _last_ctrl = (is_term(_only) or _only.mnemonic in ("b","b.w","bl","blx","bx","pop","cbz","cbnz"))
             _seq = b["insns"] if not _last_ctrl else b["insns"][:-1]
             for ins in _seq:
-                body += emit(ins, sup_all)
+                body += emit_cond(ins, sup_all)
             if term.startswith("call"):
                 _, t, ff = term.split()
                 body.append("s->r[14] = 0x%su; return 0x%su; /* bl */" % (ff, t))

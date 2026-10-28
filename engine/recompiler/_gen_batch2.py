@@ -711,24 +711,28 @@ def emit(ins, sup):
             L.append("{ uint32_t _a = %s; uint32_t _b = %s; uint32_t _r = _a %s _b; %s = _r; %s }"
                      % (R(reg(0)), _shreg(1), "-" if neg else "+", R(reg(0)), " ".join(flagcall())))
     elif m in ("adc","adcs","sbc","sbcs"):
-        is_adc = m.startswith("adc")
+        is_adc = m.startswith("adc"); _S = m in ("adcs","sbcs")   # 18.4224: only S variants update flags
         C = "(uint32_t)((s->apsr >> 29) & 1u)"
-        if len(ops) == 3 and isr(1) and isi(2):
-            b = "0x%Xu" % imm(2)
-        elif len(ops) == 3 and isr(1) and isr(2):
-            b = R(reg(2))
+        if len(ops) == 3 and isr(1):
+            _a = R(reg(1)); b = ("0x%Xu" % imm(2)) if isi(2) else R(reg(2))   # 3-register form uses Rn
+        elif len(ops) >= 3 and isi(2):
+            _a = R(reg(1)); b = "0x%Xu" % imm(2)
         elif len(ops) == 2 and isi(1):
-            b = "0x%Xu" % imm(1)
+            _a = R(reg(0)); b = "0x%Xu" % imm(1)
         elif len(ops) == 2 and isr(1):
-            b = R(reg(1))
+            _a = R(reg(0)); b = R(reg(1))
         else:
-            b = "0u"
+            _a = R(reg(0)); b = "0u"
         if is_adc:
-            L.append("{ uint32_t _c = %s; uint32_t _a = %s; uint32_t _b = %s; uint32_t _r = _a + _b + _c; %s = _r; setf_add(s, _a, _b + _c, _r); }"
-                     % (C, R(reg(0)), b, R(reg(0))))
+            if _S:
+                L.append("{ uint32_t _c=%s; uint32_t _a=%s; uint32_t _b=%s; uint64_t _t=(uint64_t)_a+(uint64_t)_b+(uint64_t)_c; uint32_t _r=(uint32_t)_t; uint32_t _b2=_b+_c; %s=_r; s->apsr=(s->apsr & 0x0FFFFFFFu) | ((_r>>31)<<31) | ((_r==0u)?0x40000000u:0u) | (((uint32_t)(_t>>32)&1u)<<29) | ((((_a ^ _r) & (_b2 ^ _r))>>31)<<28); }" % (C, _a, b, R(reg(0))))
+            else:
+                L.append("{ uint32_t _c=%s; uint32_t _a=%s; uint32_t _b=%s; uint32_t _r=(uint32_t)((uint64_t)_a+(uint64_t)_b+(uint64_t)_c); %s=_r; }" % (C, _a, b, R(reg(0))))
         else:
-            L.append("{ uint32_t _c = %s; uint32_t _a = %s; uint32_t _b = %s + (1u - _c); uint32_t _r = _a - _b; %s = _r; setf_sub(s, _a, _b, _r); }"
-                     % (C, R(reg(0)), b, R(reg(0))))
+            if _S:
+                L.append("{ uint32_t _c=%s; uint32_t _a=%s; uint32_t _b=%s; uint32_t _b2=_b+(1u-_c); uint64_t _t=(uint64_t)_a-(uint64_t)_b2; uint32_t _r=(uint32_t)_t; %s=_r; s->apsr=(s->apsr & 0x0FFFFFFFu) | ((_r>>31)<<31) | ((_r==0u)?0x40000000u:0u) | (((_a>=_b2)?1u:0u)<<29) | ((((_a ^ _b2) & (_a ^ _r))>>31)<<28); }" % (C, _a, b, R(reg(0))))
+            else:
+                L.append("{ uint32_t _c=%s; uint32_t _a=%s; uint32_t _b=%s; uint32_t _r=(uint32_t)((uint64_t)_a-(uint64_t)(_b+(1u-_c))); %s=_r; }" % (C, _a, b, R(reg(0))))
     elif m == "adr":
         L.append("%s = 0x%Xu;" % (R(reg(0)), (((ins.address + 4) & 0xFFFFFFFC) + imm(1)) & 0xFFFFFFFF))
     elif m in ("rev","rev32","rev16"):
