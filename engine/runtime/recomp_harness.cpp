@@ -21,6 +21,7 @@
 struct RecState { uint32_t r[16]; uint32_t apsr; uint8_t* base; uint32_t mem_size; uint64_t d[32]; };
 extern "C" uint32_t g_cur_block = 0;
 static int g_hacks = 0;
+static int g_pump_wallclock = 0;   // 18.4209: deterministic-by-default pump scheduling (set P5D_PUMP_WALLCLOCK=1 for the old wall-clock budget)
 static int g_loop_site = -1;
 static uint32_t g_f2_seen = 0;   // 18.4208b: last fiber whose context was really saved by execution (used to decide whether the pump may reset fiber2 to its entry)   // 18.4208: which dispatch loop executed the current block (0=fiber_exec,1=thread pump,2=main,3=fiber2 pump)   // 18.4205: semantic patch stack (XSKIP/REFNULL/NULLOBJ/RET/RETFAM/DUMMYPROG/NULLDESC/ABORTSKIP) - OFF by default for a clean baseline; P5D_HACKS=1 enables
 typedef uint32_t (*BlockFn)(RecState*);
@@ -478,6 +479,20 @@ static void initwatch_probe(RecState* s, uint32_t pcv) {   // 18.4207: count ent
   if (g_iw_n[slot]++ < 6) { printf("[INITW] %s #%d loop=%d lr=%08X sp=%08X fib=%08X r0=%08X", nm, g_iw_n[slot], g_loop_site, s->r[14], s->r[13], g_cur_fiber, s->r[0]);
     if (slot == 6) { printf(" chain:"); for (int k = 0; k < 24; ++k) { uint8_t* q = GP(s->r[13] + (uint32_t)k * 4u); if (!q) break; uint32_t w = 0; std::memcpy(&w, q, 4); uint32_t a = w & ~1u; if (a >= 0x81000000u && a < 0x81330000u) printf(" %08X", a); } }
     printf("\n"); fflush(stdout); }
+}
+
+static int g_h7344_n = 0;
+static void h7344_probe(RecState* s, uint32_t pcv) {   // 18.4209: who passes r0=2 to 0x81207344?
+  uint32_t p = pcv & ~1u;
+  if (p != 0x81207344u && p != 0x81207352u) return;
+  const bool bad = (s->r[0] < 0x80000000u);
+  if (bad || g_h7344_n < 12) {
+    ++g_h7344_n;
+    printf("[H7344]%s pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X loop=%d", bad?"-BAD":"", p, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14], s->r[13], g_cur_fiber, g_loop_site);
+    printf(" ring:"); for (int k = 64 - 20; k < 64; ++k) printf(" %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)k) & 63u]);
+    printf(" bt:"); for (int k = 0; k < 20; ++k) { uint8_t* q = GP(s->r[13] + (uint32_t)k * 4u); if (!q) break; uint32_t w = 0; std::memcpy(&w, q, 4); uint32_t a = w & ~1u; if (a >= 0x81000000u && a < 0x81330000u) printf(" %08X", a); }
+    printf("\n"); fflush(stdout);
+  }
 }
 
 static int assert_hle(RecState* s, uint32_t pcv) {   // 18.4205: platform ASSERT decision stub (0x8115F7E0) - emulates the dialog default "ignore"
@@ -1785,7 +1800,8 @@ if (nulldesc_skip(s, pc)) continue;
 if (assert_hle(s, pc)) continue;
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
-g_loop_site = 0; BlockFn fn = gbn(pc);
+g_loop_site = 0; h7344_probe(s, pc);
+BlockFn fn = gbn(pc);
     if (!fn) { int back = 0; uint32_t bq = gbn_back(pc, &back);
       if (bq && back <= 16) { fn = gbn(bq); if (fn) { if (g_fback_n++ < 8) printf("[FBACK] pc=%08X -> block %08X (back %d)\n", pc, bq, back); pc = bq; } } }
     if (!fn) { printf("[FIBER-EXEC] no block for pc=%08X (cur=%08X)\n", pc, g_cur_fiber); fiber_save(s); break; }
@@ -2337,7 +2353,8 @@ if (nulldesc_skip(s, pc)) continue;
 if (assert_hle(s, pc)) continue;
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
-g_loop_site = 1; BlockFn fn = gbn(pc);
+g_loop_site = 1; h7344_probe(s, pc);
+BlockFn fn = gbn(pc);
       if (!fn) { int _back = 0; uint32_t _rp = gbn_back(pc, &_back); if (_rp) { pc = _rp; fn = gbn(pc); } }
       if (!fn) { if (g_thr_log_n++ < 40) printf("[THR-BAD] tid=%08X pc=%08X\\n", kv.first, pc); t.alive = 0; break; }
       uint32_t np = fn(s);
@@ -2377,6 +2394,7 @@ static LONG WINAPI dsh_crash_filter(EXCEPTION_POINTERS* ep) {
 
 int main(int argc, char** argv) {
   SetUnhandledExceptionFilter(dsh_crash_filter);
+  { const char* _pw = getenv("P5D_PUMP_WALLCLOCK"); g_pump_wallclock = (_pw && atoi(_pw) != 0) ? 1 : 0; }
   { const char* _hx = getenv("P5D_HACKS"); g_hacks = (_hx && atoi(_hx) != 0) ? 1 : 0;
     printf("[HACKS] semantic patch stack %s\n", g_hacks ? "ENABLED (P5D_HACKS=1)" : "DISABLED (clean baseline)"); fflush(stdout); }
   g_target_alloc = 0x8534B160u;   // 18.4194: trace who allocates the object whose +0x20 is null
@@ -2963,7 +2981,8 @@ if (nulldesc_skip(&s, pc)) continue;
 if (assert_hle(&s, pc)) continue;
 assert_msg_probe(&s, pc);
 initwatch_probe(&s, pc);
-g_loop_site = 2; BlockFn fn = gbn(pc);
+g_loop_site = 2; h7344_probe(&s, pc);
+BlockFn fn = gbn(pc);
     { uint32_t gpc = pc; if ((gpc & ~1u) == 0x81206BDCu && s.r[0] != 0u && s.r[0] < 0x80000000u) {
         // 18.3871: diagnostic guard - the stub is being entered with a small/garbage r0 (M330: r0=2).
         printf("[GUARD-RG] stub r0=%08X r13=%08X r14=%08X r7=%08X r1=%08X cur=%08X pump=%d ring:", s.r[0], s.r[13], s.r[14], s.r[7], s.r[1], g_cur_fiber, g_pumping2);
@@ -3077,13 +3096,16 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         assert_msg_probe(&s, ppc);
         initwatch_probe(&s, ppc);
         g_loop_site = 3;
+        h7344_probe(&s, ppc);
         BlockFn f2fn = gbn(ppc);
         if (!f2fn) { int back = 0; uint32_t bq = gbn_back(ppc, &back); if (bq && back <= 16) { f2fn = gbn(bq); ppc = bq; } }
         if (!f2fn) { if (g_pump2_n <= 8) printf("[PMP2] fiber2 no block pc=%08X\n", ppc); break; }
         if (pb < 12) printf("[PMP2B] ppc=%08X r0=%08X sp=%08X\n", ppc, s.r[0], s.r[13]);
-        if ((pb & 0x3F) == 0) {   // 18.4181: wall-clock budget for the pump pass
-          auto _now = std::chrono::steady_clock::now();
-          if (std::chrono::duration_cast<std::chrono::milliseconds>(_now - g_pump_t0).count() > 80) { g_pump_timeout_n++; break; }
+        if ((pb & 0x3F) == 0) {   // 18.4181 / 18.4209: wall-clock budget for the pump pass - DISABLED by default so runs are deterministic (P5D_PUMP_WALLCLOCK=1 restores it)
+          if (g_pump_wallclock) {
+            auto _now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(_now - g_pump_t0).count() > 80) { g_pump_timeout_n++; break; }
+          }
         }
         uint32_t nx = f2fn(&s); ++pb;
         if (g_yield_to_main || (g_blkcnt_total - g_pump_total0) > 200000u) { g_yield_to_main = 0;
@@ -3101,7 +3123,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_cur_fiber = f1; g_pumping2 = 0; g_pump_cool = 1000;   // 18.4181: pump cooldown so the main loop can advance
       if (g_pump2_n++ < 8) printf("[PMP2] pass #%d blocks=%u\n", g_pump2_n, pb);
       // 18.3988: fix stale fn - re-evaluate pc/fn from the RESTORED fiber1 context (the stale fn made the loop dispatch the pump-trigger block and jump back into the loader chain -> BADMEM 0x94)
-      pc = s.r[15]; fn = gbn(pc);
+      pc = s.r[15]; h7344_probe(&s, pc); fn = gbn(pc);
     }
     if (!fn) {
       // 18.3804: unknown pc right after the main thread returned = fiber return address into non-AOT space.
