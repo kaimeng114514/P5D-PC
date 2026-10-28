@@ -1362,6 +1362,20 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (sp) guest_wr32(sp + 4u, obj); g_vprog_last = obj;
       if (g_gxm_new_n++ < 8) printf("[GXM-CVP] id=%u hdr=%08X -> vprog=%08X lr=%08X\n", id, hdr, obj, s->r[14]);
       r0 = 0; break; }
+    case 0x812B11D0u: {                                               // 18.4260: sceGxmCreateContext(params, outObj) -> fake 0x4000 context
+      uint32_t obj = hle_malloc(0x4000); if (obj) std::memset(GP(obj), 0, 0x4000);
+      if (s->r[1]) guest_wr32(s->r[1], obj);
+      if (g_gxm_new_n++ < 8) printf("[GXM-CTX] params=%08X out=%08X -> obj=%08X lr=%08X\n", s->r[0], s->r[1], obj, s->r[14]);
+      r0 = 0; break; }
+    case 0x812B14B0u: {                                               // 18.4260: sceGxmGetNotificationRegion -> stable fake region
+      static uint32_t nreg = 0; if (!nreg) nreg = hle_malloc(0x40);
+      r0 = nreg; break; }
+    case 0x812B1370u: {                                               // 18.4260: sceGxmProgramParameterGetResourceIndex(param) -> resourceIndex@+0xC
+      uint32_t po = s->r[0]; r0 = po ? guest_rd32(po + 0xCu) : 0u; break; }
+    case 0x812B1210u: case 0x812B1240u: case 0x812B1280u: case 0x812B1310u: case 0x812B1330u:
+    case 0x812B1380u: case 0x812B1570u: case 0x812B16E0u: case 0x812B17D0u:
+      r0 = 0; break;                                                  // 18.4260: sceGxm init/state setters -> no-op success
+    case 0x812B17C0u:                                                 // 18.4260: Map*UsseMemory (second variant) - same as 11C0
     case 0x812B11C0u: {                                               // 18.4259: sceGxmMapFragmentUsseMemory(base,size,offsetOut) -> *out=0
       if (s->r[2]) guest_wr32(s->r[2], 0u);
       r0 = 0; break; }
@@ -2516,10 +2530,13 @@ static void init_job_pools() {
 
 
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  static int g_chw_n = 0;
   static int n = 0;
   if (g_obj20_addr && a == g_obj20_addr && g_obj20w_n++ < 60) {
     printf("[OBJ20W] a=%08X v=%08X blk=%08X fib=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_snap_r[13]); fflush(stdout); }
 
+  if (a >= 0x84C0A480u && a < 0x84C0A600u && g_chw_n++ < 300) {   // 18.4260: watch root reader / child stream object init writes
+    printf("[CHW] a=%08X v=%08X blk=%08X fib=%08X sp=%08X fex=%d\n", a, v, g_cur_block, g_cur_fiber, g_snap_r[13], g_in_fex); fflush(stdout); }
   if (a >= 0x84CE12B0u && a < 0x84CE1370u && g_objh_n++ < 200) {
     printf("[OBJH] a=%08X v=%08X blk=%08X fib=%08X sp=%08X fex=%d\n", a, v, g_cur_block, g_cur_fiber, g_snap_r[13], g_in_fex); fflush(stdout); }
 
@@ -3765,7 +3782,7 @@ if (0) { uint32_t _fc = 0; uint8_t* _fq = GP(0x816CC63Cu); if (_fq) std::memcpy(
   { std::vector<std::pair<int,uint32_t>> v; for (auto& kv : g_hlecnt) v.push_back({kv.second, kv.first});
     std::sort(v.begin(), v.end());
     printf("[HLECOUNT] unique=%zu total=%d\n", v.size(), g_hle_n);
-    for (int i = (int)v.size()-1, k = 0; i >= 0 && k < 40; --i, ++k) printf("  %08X x%d\n", v[i].second, v[i].first); }
+    for (int i = (int)v.size()-1, k = 0; i >= 0 && k < 200; --i, ++k) printf("  %08X x%d\n", v[i].second, v[i].first); }
   printf("done: blocks=%d pc=%08X last_block=0x%08X r0=%08X r9=%08X\n", n, pc, g_cur_block, s.r[0], s.r[9]);
   printf("[CNT] 81198BEA=%d 811E5CDA=%d 811E5928=%d 8120683C=%d 81206860=%d FSLOT=%d\n",
          g_c_bea, g_c_5cda, g_c_5928, g_c_683c, g_c_6860, g_fslot_att);
