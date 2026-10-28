@@ -455,7 +455,8 @@ static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg
 static void fiber_restore_thread(RecState* s);
 static FCtx g_caller_ctx;   // 18.4216: caller context saved around nested fiber execution
 static void rc_save(RecState* s) { std::memcpy(g_caller_ctx.r, s->r, sizeof(s->r)); g_caller_ctx.apsr = s->apsr; }
-static void rc_restore(RecState* s) { std::memcpy(s->r, g_caller_ctx.r, sizeof(s->r)); s->apsr = g_caller_ctx.apsr; }
+static void ctxchk(int tag, uint32_t fib, RecState* s);
+static void rc_restore(RecState* s) { std::memcpy(s->r, g_caller_ctx.r, sizeof(s->r)); s->apsr = g_caller_ctx.apsr; ctxchk(6, 0u, s); }
 static BlockFn gbn(uint32_t pc);
 static uint32_t gbn_back(uint32_t t, int* pback);
 static int g_stall_n = 0;
@@ -762,7 +763,8 @@ static int g_ctxchk_n[8] = {0,0,0,0,0,0,0,0};
 static void ctxchk(int tag, uint32_t fib, RecState* s) {
   uint32_t p = s->r[15] & ~1u;
   if (p >= 0x8127C0C0u && p <= 0x8127C100u) {
-    if (g_dly_n++ < 20) { printf("[REST-DLY] tag=%d fib=%08X pc=%08X sp=%08X lr=%08X r4=%08X\n", tag, fib, s->r[15], s->r[13], s->r[14], s->r[4]); fflush(stdout); } }
+    if (g_dly_n++ < 400) { printf("[REST-DLY] tag=%d fib=%08X pc=%08X sp=%08X lr=%08X r4=%08X ring:", tag, fib, s->r[15], s->r[13], s->r[14], s->r[4]);
+      for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
   if (p >= 0x811E5E80u && p <= 0x811E5EF2u) {
     int i = tag & 7;
     if (g_ctxchk_n[i]++ < 20) {
@@ -1784,7 +1786,7 @@ static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg
     if (c.r[0] < 0x80000000u) c.r[0] = fiber;   // 18.3891: never restore a garbage fiber object pointer
     if ((c.r[15] & ~1u) == 0x81206BDCu && c.r[13] == 0u) c.r[13] = 0xA0E00000u;
   }
-  std::memcpy(s->r, c.r, sizeof(c.r)); s->apsr = c.apsr;
+  std::memcpy(s->r, c.r, sizeof(c.r)); s->apsr = c.apsr; ctxchk(7, fiber, s);
 }
 static void fiber_restore_thread(RecState* s) {
   fiber_save(s);
@@ -2534,7 +2536,7 @@ BlockFn fn = gbn(pc);
       fiber_load(s, sfib, g_fiber_entry, g_fiber_arg);
       fiber_exec_to_completion(s);
       auto itf = g_fctx.find(ffib);
-      if (itf != g_fctx.end()) { std::memcpy(s->r, itf->second.r, sizeof(s->r)); s->apsr = itf->second.apsr; }
+      if (itf != g_fctx.end()) { std::memcpy(s->r, itf->second.r, sizeof(s->r)); s->apsr = itf->second.apsr; ctxchk(9, 0u, s); }
       g_cur_fiber = save_cur;
       g_in_frame_pump = 0;
       if (g_fslot_n++ < 8) printf("[FSLOT] frame pump done fibers=%zu f1=%08X f2=%08X\n",
@@ -2571,7 +2573,7 @@ BlockFn fn = gbn(pc);
         if (it2->second.r[15] != 0u) {
           fiber_save(s);
           g_cur_fiber = t;
-          std::memcpy(s->r, it2->second.r, sizeof(it2->second.r)); s->apsr = it2->second.apsr;
+          std::memcpy(s->r, it2->second.r, sizeof(it2->second.r)); s->apsr = it2->second.apsr; ctxchk(10, 0u, s);
           if (g_slice_n < 4000) printf("[SLICE] -> %08X pc=%08X sp=%08X\n", t, s->r[15], s->r[13]);
           continue;
         }
@@ -2973,7 +2975,7 @@ static void hle_thr_pump(RecState* s, int quantum) {
     HThread& t = kv.second;
     if (!t.alive || !t.ready) continue;
     RecState saved = *s;
-    std::memcpy(s->r, t.ctx.r, sizeof(t.ctx.r)); s->apsr = t.ctx.apsr;
+    std::memcpy(s->r, t.ctx.r, sizeof(t.ctx.r)); s->apsr = t.ctx.apsr; ctxchk(11, kv.first, s);
     g_cur_thr = kv.first; g_thr_blocked = 0;
     uint32_t pc = t.ctx.r[15] ? t.ctx.r[15] : (t.entry & ~1u);
     if (g_thrtrace) { for (int _k=0;_k<16;++_k) { } if (g_thrtrace && g_thrtr_n++ < 160) { printf("[THRTR] tid=%08X entry=%08X sp=%08X r0=%08X r1=%08X r9=%08X pc=%08X\n", kv.first, t.entry, t.ctx.r[13], t.ctx.r[0], t.ctx.r[1], t.ctx.r[9], pc); fflush(stdout); } }
@@ -3655,7 +3657,7 @@ int main(int argc, char** argv) {
         if (g_schedresume && fb == 0x848468E0u) {
           auto _ri = g_fctx.find(fb);
           if (_ri != g_fctx.end() && _ri->second.r[15] != 0u && _ri->second.r[15] != 0xFFFFFFF0u) {
-            std::memcpy(s.r, _ri->second.r, sizeof(s.r)); s.apsr = _ri->second.apsr;
+            std::memcpy(s.r, _ri->second.r, sizeof(s.r)); s.apsr = _ri->second.apsr; ctxchk(12, fb, &s);
             g_cur_fiber = fb; g_in_fiber_exec = 0;
             pc = s.r[15] & ~1u;
             if (g_schedresume_n++ < 8) { printf("[SCHEDRESUME] fiber=%08X sp=%08X pc=%08X\n", fb, s.r[13], pc); fflush(stdout); }
@@ -3920,7 +3922,7 @@ BlockFn fn = gbn(pc);
         if (g_pump2_n <= 6) printf("[PMP2] fiber2 RESUME saved ctx pc=%08X (f2_ran=%d)\n", c2.r[15], (int)f2_ran);
         pump_first = 0;
       }
-      std::memcpy(s.r, c2.r, sizeof(s.r)); s.apsr = c2.apsr; g_cur_fiber = f2;
+      std::memcpy(s.r, c2.r, sizeof(s.r)); s.apsr = c2.apsr; g_cur_fiber = f2; ctxchk(13, f2, &s);
       auto g_pump_t0 = std::chrono::steady_clock::now();
       int budget = 20000; uint32_t pb = 0;   // 18.4182: larger pump budget
       uint32_t g_pump_total0 = g_blkcnt_total;   // 18.4180: nested progress base
@@ -4003,7 +4005,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         if (c.r[15] != g_p2_last && g_p2_chg_n++ < 200) { g_p2_last = c.r[15];
           printf("[P2PC] pass=%d pc=%08X lr=%08X r1=%08X\n", g_p2_pass, c.r[15], c.r[14], c.r[1]); fflush(stdout); }
         if ((++g_p2_pass % 100) == 0 && g_p2_log++ < 300) { printf("[P2PROG] pass=%d pc=%08X lr=%08X r1=%08X pb=%u total=%u\n", g_p2_pass, c.r[15], c.r[14], c.r[1], pb, g_blkcnt_total); fflush(stdout); } } if (g_seq_n++ < 60) { uint32_t _v = 0; auto _it = g_fctx.find(f2); if (_it != g_fctx.end()) _v = _it->second.r[15]; printf("[SEQ] #%d save_f2_r15=%08X\n", g_seq_n, _v); }
-      { std::memcpy(s.r, f1_pre.r, sizeof(s.r)); s.apsr = f1_pre.apsr; }   // 18.4210: restore the pre-pump snapshot
+      { std::memcpy(s.r, f1_pre.r, sizeof(s.r)); s.apsr = f1_pre.apsr; ctxchk(14, 0u, &s); }   // 18.4210: restore the pre-pump snapshot
       { uint32_t _cb815 = 0; uint8_t* _q815 = GP(0x81513DECu); if (_q815) std::memcpy(&_cb815, _q815, 4);
         if (g_p2r_n < 12 || f1_pre_pc != 0x81198BF2u) { if (g_p2r_n++ < 60) printf("[PMP2RESTORE] n=%d pre_pc=%08X pre_lr=%08X pre_r0=%08X pre_sp=%08X restored_pc=%08X cb=%08X f2_pc=%08X\n", g_p2r_n, f1_pre_pc, f1_pre.r[14], f1_pre.r[0], f1_pre.r[13], s.r[15], _cb815, g_fctx[f2].r[15]); fflush(stdout); } }
       if (g_seq_n++ < 60) printf("[SEQ] #%d restore_f1_r15=%08X\n", g_seq_n, s.r[15]);
