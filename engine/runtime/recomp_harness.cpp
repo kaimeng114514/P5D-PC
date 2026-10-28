@@ -455,6 +455,14 @@ static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg
 static void fiber_restore_thread(RecState* s);
 static FCtx g_caller_ctx;   // 18.4216: caller context saved around nested fiber execution
 static void rc_save(RecState* s) { std::memcpy(g_caller_ctx.r, s->r, sizeof(s->r)); g_caller_ctx.apsr = s->apsr; }
+static int g_fw742 = 0;
+static int fw742_dup(uint32_t pc, uint32_t sp) {
+  static uint32_t lp=0, lsp=0; if (pc == lp && sp == lsp) return 0; lp=pc; lsp=sp; return 1;
+}
+static void fw742_note(const char* tag, uint32_t fib, uint32_t pc, uint32_t sp, uint32_t lr, uint32_t r4) {
+  if (fw742_dup(pc, sp) && g_fw742++ < 80) { printf("[FWRITE] %s fib=%08X pc=%08X sp=%08X lr=%08X r4=%08X ring:", tag, fib, pc, sp, lr, r4);
+    for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+}
 static void ctxchk(int tag, uint32_t fib, RecState* s);
 static void rc_restore(RecState* s) { std::memcpy(s->r, g_caller_ctx.r, sizeof(s->r)); s->apsr = g_caller_ctx.apsr; ctxchk(6, 0u, s); }
 static BlockFn gbn(uint32_t pc);
@@ -747,7 +755,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_heaptgt_n = 0; static int g_c0f8_n = 0; static int g_dly_n = 0, g_dly_save_n = 0; static uint32_t g_dly_last_pc = 0, g_dly_last_sp = 0, g_dly_last_w0 = 0, g_dly_last_w1 = 0; static int g_dly_chg_n = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_heaptgt_n = 0; static int g_c0f8_n = 0; static int g_f1pcfix = 0; static int g_f1guard = 0; static int g_dly_n = 0, g_dly_save_n = 0; static uint32_t g_dly_last_pc = 0, g_dly_last_sp = 0, g_dly_last_w0 = 0, g_dly_last_w1 = 0; static int g_dly_chg_n = 0;
 static int g_dframe_active = 0, g_dframe_n = 0, g_dframe_wr_n = 0; static uint32_t g_dframe_sp = 0, g_dframe_v0 = 0, g_dframe_v1 = 0; static int g_schedresume = 0, g_schedresume_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
@@ -1732,7 +1740,7 @@ static FinderFn ALL_FINDERS[26] = {
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
-  if (g_cur_fiber) { g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr;
+  if (g_cur_fiber) { g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr; if (g_cur_fiber == 0x848468E0u) fw742_note("SAVE", g_cur_fiber, c.r[15], c.r[13], c.r[14], c.r[4]);
     if (((c.r[15] & ~1u) >= 0x8127C0C0u && (c.r[15] & ~1u) <= 0x8127C100u) && g_dly_save_n++ < 20) {
       uint32_t _w0=0,_w1=0; uint8_t* _q=GP(c.r[13]); if(_q) std::memcpy(&_w0,_q,4); _q=GP(c.r[13]+4u); if(_q) std::memcpy(&_w1,_q,4);
       if ((c.r[15] & ~1u) != g_dly_last_pc || c.r[13] != g_dly_last_sp || _w0 != g_dly_last_w0 || _w1 != g_dly_last_w1) {
@@ -3199,6 +3207,8 @@ int main(int argc, char** argv) {
   { const char* _ss = getenv("P5D_SCHEDRUNSMART"); g_schrunsmart = (_ss && atoi(_ss) != 0) ? 1 : 0; }
   { const char* _si = getenv("P5D_SCHEDIDX"); if (_si) g_schedidx = atoi(_si); }
   { const char* _sr = getenv("P5D_SCHEDRESUME"); g_schedresume = (_sr && atoi(_sr) != 0) ? 1 : 0; }
+  { const char* _fg1 = getenv("P5D_F1GUARD"); g_f1guard = (_fg1 && atoi(_fg1) != 0) ? 1 : 0; }
+  { const char* _fp = getenv("P5D_F1PCFIX"); g_f1pcfix = (_fp && atoi(_fp) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -3901,7 +3911,16 @@ BlockFn fn = gbn(pc);
         printf("\n"); fflush(stdout);
       }
 
-      { FCtx& c = g_fctx[f1]; std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr; }
+      { FCtx& c = g_fctx[f1];
+  // 18.4311: never overwrite f1's saved context with ANOTHER fiber's live state (the pump can be inside f2
+  // when this save runs; that stored a blend (pc=0x8127C0F8 with caller sp/lr) and corrupted the main fiber).
+  if (!g_f1guard || g_cur_fiber == f1) { std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr;
+    // 18.4311b: s.r[15] can be STALE here (the dispatcher tracks pc locally); store the REAL current pc so the
+    // saved context is consistent with sp/lr and cannot resume a callee tail with a caller frame.
+    if (g_f1pcfix) c.r[15] = pc;
+    if (f1 == 0x848468E0u) fw742_note("PUMP-F1", f1, c.r[15], c.r[13], c.r[14], c.r[4]); }
+  else if (g_f1guard) { if (f1 == 0x848468E0u && g_fw742++ < 80) { printf("[F1GUARD] skip f1 save cur=%08X f1=%08X s_pc=%08X s_sp=%08X keep_pc=%08X keep_sp=%08X\n", g_cur_fiber, f1, s.r[15], s.r[13], c.r[15], c.r[13]); fflush(stdout); } }
+}
       FCtx f1_pre = g_fctx[f1]; uint32_t f1_pre_pc = f1_pre.r[15];   // 18.4210: pre-pump snapshot of the suspended fiber (the pump must not perturb it)
       static int g_p2r_n = 0;
       FCtx& c2 = g_fctx[f2];
@@ -3999,7 +4018,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       if (g_cur_fiber != f2) {   // 18.4212: never store another fiber's live context into f2 (f2_pc=0x81207344 corruption entry)
         static int g_fsrej_n = 0;
         if (g_fsrej_n++ < 10) { printf("[FSAVE-REJECT] cur=%08X f2=%08X pc=%08X r0=%08X\n", g_cur_fiber, f2, s.r[15], s.r[0]); fflush(stdout); }
-      } else { std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr; }
+      } else { std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr; if (f2 == 0x848468E0u) fw742_note("PUMP-F2", f2, c.r[15], c.r[13], c.r[14], c.r[4]); }
       {
         g_p2_prog = c.r[14];
         if (c.r[15] != g_p2_last && g_p2_chg_n++ < 200) { g_p2_last = c.r[15];
@@ -4304,7 +4323,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       uint32_t _t = g_switch_pending ? g_switch_target : g_fiber_switch_to;
       g_switch_pending = 0; g_fiber_switch_to = 0;
       if (_t && _t != g_cur_fiber) {
-        if (g_cur_fiber) { FCtx& _c = g_fctx[g_cur_fiber]; std::memcpy(_c.r, s.r, sizeof(s.r)); _c.apsr = s.apsr; _c.r[15] = nxt; }
+        if (g_cur_fiber) { FCtx& _c = g_fctx[g_cur_fiber]; std::memcpy(_c.r, s.r, sizeof(s.r)); _c.apsr = s.apsr; _c.r[15] = nxt; if (g_cur_fiber == 0x848468E0u) fw742_note("SW-SAVE", g_cur_fiber, _c.r[15], _c.r[13], _c.r[14], _c.r[4]); }
         auto _it = g_fctx.find(_t);
         if (_it == g_fctx.end() || _it->second.r[15] == 0u) {
           uint32_t _off = _t - IMG_VA_BASE, _ent = 0, _arg = 0;
