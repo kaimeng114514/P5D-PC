@@ -16,9 +16,11 @@
 #include <vector>
 static int g_loadclear_env = 0;
 static int g_hostthreads = 0;
+static volatile int g_shutdown = 0;
 static uint32_t g_last_alloc_sz = 0, g_last_alloc_fp = 0;
 static int g_allocf_n = 0;
 static int g_free2_n = 0;
+static int g_big2n = 0;
 static int g_vblank_n = 0;
 static uint32_t g_fb_pitch = 0;
 static std::mutex g_hle_mtx;
@@ -448,6 +450,7 @@ static inline uint8_t* GP(uint32_t va) {
   uint32_t off;
   if (va >= 0x80600000u && va < 0x84600000u) off = va - 0x80600000u;
   else if (va >= 0xA0000000u && va < 0xA2000000u) off = (va - 0xA0000000u) + 0x28000000u;   // 18.4184: Region B extended to 32MB at a fresh host offset
+  else if (va >= 0xA2000000u && va < 0xA8000000u) off = (va - 0xA2000000u) + 0x2A000000u;   // 18.4251: 96MB extra guest window (host tail) for memblock capacity
   else if (va >= 0x84600000u && va < 0x8C600000u) off = (va - 0x84600000u) + 0x4000000u;   // heap arena 96MB
   else if (va >= 0x8C600000u && va < 0xA0000000u) off = (va - 0x8C600000u) + 0x10000000u;  // 18.4165: 320MB large-block arena
   else if (va >= 0x9F000000u && va < 0xA0000000u) off = (va - 0x9F000000u) + 0x10000000u;  // 18.4162: 16MB Vita user-memblock window (fibers/scratch below Region B)
@@ -484,7 +487,8 @@ static uint32_t g_heapA_end = 0x8C600000u;
 static uint32_t g_heap2_ptr = 0xA0000000u;  // secondary bump heap in region B (below fiber stacks)
 static uint32_t g_heap2_end = 0xA0DF0000u;  // 18.3862: enlarged 6MB -> 14MB
 static uint32_t g_heap4_ptr = 0x82E00000u, g_heap4_end = 0x83600000u;
-static uint32_t g_resA_ptr = 0x81700000u, g_resA_end = 0x82800000u;   // 18.4250: reserve arena in the unused image window (batch P() maps this VA range)  // 18.3862: free low-image window (8MB)
+static uint32_t g_resA_ptr = 0x81700000u, g_resA_end = 0x82800000u;
+static uint32_t g_big2_ptr = 0xA2000000u, g_big2_end = 0xA8000000u;   // 18.4251: +96MB capacity window   // 18.4250: reserve arena in the unused image window (batch P() maps this VA range)  // 18.3862: free low-image window (8MB)
 static uint32_t g_heap5_ptr = 0x84000000u, g_heap5_end = 0x84600000u;  // 18.3862: free low-image window (6MB)
 static uint32_t g_target_alloc = 0;
 static int g_objalloc_n = 0;
@@ -532,6 +536,9 @@ static uint32_t hle_malloc(uint32_t n) {
   if ((uint64_t)r5 + sz64 < (uint64_t)g_heap5_end) { g_heap5_ptr = r5 + sz; std::memset(GP(r5), 0, sz);
     if (g_hm5_n++ < 8) printf("[HM5] heap5 n=%u -> %08X\n", n, r5);
     return hle_malloc_ret(r5); }
+  { uint32_t b2 = (g_big2_ptr + 15u) & ~15u;   // 18.4251: 96MB extra window (VA 0xA2000000-0xA8000000)
+    if ((uint64_t)b2 + sz64 < (uint64_t)g_big2_end) { g_big2_ptr = b2 + sz; std::memset(GP(b2), 0, sz);
+      if (g_big2n++ < 30) { printf("[BIG2] n=%08X -> %08X\n", n, b2); fflush(stdout); } return hle_malloc_ret(b2); } }
   printf("[HLE] malloc OOM n=%u (all heaps full)\n", n); return 0;
 }
 static int g_hle_n = 0;
@@ -740,7 +747,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr
     case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread: otherwise host threads and main race on guest heap)
       if (g_hostthreads) { uint32_t me = tl_ht_tid ? tl_ht_tid : 0x40010000u; uint32_t w = s->r[0]; auto& e = g_lwm_real[w];
-        for (;;) { if (e.first == 0u || e.first == me) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
+        for (;;) { if (e.first == 0u || e.first == me || g_shutdown) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
         e.first = me; ++e.second; }
       r0 = 0; break; }
     case 0x812B28A0u: {                                               // sceKernelUnlockLwMutex (real lock in host-thread mode, including main thread)
@@ -1141,7 +1148,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           t.gctx.r[0] = t.ctx.r[0]; t.gctx.r[1] = t.ctx.r[1]; t.gctx.r[9] = t.ctx.r[9];
           { uint32_t tls = hle_malloc(0x400u); if (tls) { uint8_t* tq = GP(tls); if (tq) std::memset(tq, 0, 0x400); } t.gctx.r[9] = tls; }
           t.exit_flag = 0;
-          if (!t.hth) { t.hth = new std::thread(guest_thread_run, tid); t.hth->detach(); }
+          if (!t.hth) { t.hth = new std::thread(guest_thread_run, tid); }   // 18.4251: keep joinable for clean shutdown
           if (g_ht_n++ < 20) { printf("[HT-START] tid=%08X entry=%08X sp=%08X\n", tid, t.ctx.r[15], t.ctx.r[13]); fflush(stdout); }
         }
         if (t.entry != 0x811E68C9u && t.entry != 0x8120767Du) printf("[THR2] start tid=%08X entry=%08X arglen=%u argp=%08X lr=%08X sp=%08X\n", tid, t.entry, arglen, argp, s->r[14], t.stack);
@@ -1159,7 +1166,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       auto it = g_sema.find(obj);
       uint32_t have = (it == g_sema.end()) ? 0u : it->second;
       if (g_thr_log_n++ < 80) printf("[SEM] wait obj=%08X need=%u have=%u cur_thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]);
-      if (tl_ht_tid) { for (;;) { uint32_t _h = (g_sema.count(obj) ? g_sema[obj] : 0u); if (_h >= need) { g_sema[obj] = _h - need; break; } std::this_thread::sleep_for(std::chrono::microseconds(200)); } r0 = 0; break; }
+      if (tl_ht_tid) { for (;;) { if (g_shutdown) break; uint32_t _h = (g_sema.count(obj) ? g_sema[obj] : 0u); if (_h >= need) { g_sema[obj] = _h - need; break; } std::this_thread::sleep_for(std::chrono::microseconds(200)); } r0 = 0; break; }
       if (g_sem2_n++ < 60) { printf("[SEM2] wait obj=%08X need=%u have=%u thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]); fflush(stdout); }
       if (have >= need) { if (it != g_sema.end()) it->second = have - need; r0 = 0; }
       else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = 0; r0 = 0; }
@@ -1197,7 +1204,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       auto eval = [&](uint32_t curv) -> bool { return bits == 0u || (orMode ? ((curv & bits) != 0u) : ((curv & bits) == bits)); };
       uint32_t cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u);
       bool ok = eval(cur);
-      if (tl_ht_tid) { for (;;) { cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); if (ok) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
+      if (tl_ht_tid) { for (;;) { if (g_shutdown) break; cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); if (ok) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
         if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &cur, 4); }
         if (mode & 4u) g_eflag[obj] = 0u; else if (mode & 2u) g_eflag[obj] = cur & ~bits;
         r0 = 0; break; }
@@ -2187,7 +2194,7 @@ static void guest_thread_run(uint32_t tid) {
   RecState* s = &t->gctx;
   uint32_t pc = s->r[15];
   if (g_ht_n++ < 40) { printf("[HT-RUN] tid=%08X pc=%08X sp=%08X r0=%08X r1=%08X r4=%08X r5=%08X r9=%08X lr=%08X\n", tid, pc, s->r[13], s->r[0], s->r[1], s->r[4], s->r[5], s->r[9], s->r[14]); fflush(stdout); }
-  while (!t->exit_flag) {
+  while (!t->exit_flag && !g_shutdown) {
     if ((pc & ~1u) >= 0xFFFFFF00u || pc == 0u) { if (g_ht_bad_n++ < 20) { printf("[HT-SENTINEL] tid=%08X pc=%08X r0=%08X r1=%08X sp=%08X\n", tid, pc, s->r[0], s->r[1], s->r[13]); fflush(stdout); } break; }
     tl_pc_ring[tl_pc_n & 63u] = pc; ++tl_pc_n;
     { static int _a6=0; if ((pc==0x8122C6B6u||pc==0x8122C6DCu||pc==0x8122C6F6u||pc==0x8122C718u) && _a6++ < 24) { printf("[A6B6] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X tid=%08X\n", pc, s->r[0],s->r[1],s->r[2],s->r[3],s->r[4],s->r[5],s->r[6],s->r[7],s->r[13],s->r[14],tid); fflush(stdout); } }
@@ -2598,8 +2605,14 @@ static LONG WINAPI dsh_crash_filter(EXCEPTION_POINTERS* ep) {
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
+static void shutdown_threads() {
+  g_shutdown = 1;
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  for (auto& kv : g_thr) { if (kv.second.hth) { if (kv.second.hth->joinable()) kv.second.hth->join(); } }
+}
 int main(int argc, char** argv) {
   SetUnhandledExceptionFilter(dsh_crash_filter);
+  std::atexit(shutdown_threads);
   if (!g_wd_thread) { g_wd_thread = 1; std::thread([](){
       for (;;) { std::this_thread::sleep_for(std::chrono::seconds(2));
         printf("[WD] loop=%d cnt=%u/%u/%u/%u total=%u blk=%08X fib=%08X fex=%d ex=%d pump=%d curpc=%08X\n",
