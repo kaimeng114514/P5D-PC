@@ -555,6 +555,7 @@ static inline uint32_t guest_rd32(uint32_t va) { uint32_t v = 0; uint8_t* p = GP
 static inline void guest_wr32(uint32_t va, uint32_t v) { uint8_t* p = GP(va); if (p) std::memcpy(p, &v, 4); }
 static int g_gxm_new_n = 0;
 static int g_hle_n = 0;
+static int g_touch_n = 0;
 static int g_big_n = 0;
 
 static uint32_t hle_canary_emulated_ret(RecState* s) { return s->r[0]; }
@@ -1336,6 +1337,14 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           bool _ok = kv.second.wait_bits == 0u || (_or ? ((cur2 & kv.second.wait_bits) != 0u) : ((cur2 & kv.second.wait_bits) == kv.second.wait_bits));
           if (_ok) { kv.second.waiting = 0; kv.second.ready = 1; } } }
       r0 = 0; break; }
+    case 0x812B1930u: {                                               // 18.4266: sceTouchRead(port,pData,nBuf) - old-runtime semantics (clear 16-byte header + nBuf*0x20 reports, return nBuf?1:0). DO NOT clear 0x140: nBuf buffers sit right before appJobQueue slots (appJobQueue.c:194 assert).
+      uint32_t nBuf = s->r[2];
+      uint32_t reps = nBuf > 8u ? 8u : nBuf;
+      uint32_t bytes = 16u + reps * 0x20u;
+      uint8_t* q = GP(s->r[1]);
+      if (q) std::memset(q, 0, bytes);
+      if (g_touch_n++ < 8) { printf("[TOUCH] Read port=%u pData=%08X nBuf=%u -> %u\n", s->r[0], s->r[1], nBuf, nBuf ? 1u : 0u); fflush(stdout); }
+      r0 = nBuf ? 1u : 0u; break; }
     case 0x812B2AB0u: r0 = 0; break;                                  // sceKernelDeleteSema
     case 0x812B1250u: r0 = 0; break;                                  // 18.4259: DepthStencilSurfaceSetForceStoreMode / gxm no-op
     case 0x812B1290u: {                                               // 18.4259: sceGxmCreateRenderTarget(params, outObj)
