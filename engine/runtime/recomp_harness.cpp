@@ -30,6 +30,7 @@ static int g_ht_n = 0;
 static std::mutex g_lwm_mtx;
 static std::map<uint32_t, std::pair<uint32_t,uint32_t> > g_lwm_real;   // work -> (owner_tid, count)
 static int g_lwm_log_n = 0, g_trophy_log_n = 0, g_fdclass_log_n = 0, g_appmgr_log_n = 0, g_drm_n = 0, g_tick_log_n = 0;
+static uint64_t g_mema_total = 0; static int g_mema_n = 0, g_malloc_fail_n = 0;
 static thread_local uint32_t tl_ht_tid = 0;
 static thread_local uint32_t tl_pc_ring[64];
 static thread_local unsigned tl_pc_n = 0;
@@ -111,7 +112,7 @@ extern "C" const void* get_table_023(unsigned* cnt);
 extern "C" const void* get_table_024(unsigned* cnt);
 extern "C" const void* get_table_025(unsigned* cnt);
 static const uint32_t IMG_VA_BASE = 0x80600000;
-static const uint32_t IMG_SIZE = 0x30000000;   // 18.4164: 768MB - low image 64MB + heap 96MB + big arena 256MB at 0x20000000 + region B
+static const uint32_t IMG_SIZE = 0x38000000;   // 18.4279: 896MB - extended 224MB tail window for memblock capacity
 static const uint32_t REGIONB_OFF = 0x7000000u;  // region B base -> image+0x7A00000 (VA 0x88000000), no aliasing
 static uint32_t g_fiber_entry = 0;
 static int g_fiber_dbg = 0;
@@ -465,7 +466,7 @@ static inline uint8_t* GP(uint32_t va) {
   uint32_t off;
   if (va >= 0x80600000u && va < 0x84600000u) off = va - 0x80600000u;
   else if (va >= 0xA0000000u && va < 0xA2000000u) off = (va - 0xA0000000u) + 0x28000000u;   // 18.4184: Region B extended to 32MB at a fresh host offset
-  else if (va >= 0xA2000000u && va < 0xA8000000u) off = (va - 0xA2000000u) + 0x2A000000u;   // 18.4251: 96MB extra guest window (host tail) for memblock capacity
+  else if (va >= 0xA2000000u && va < 0xB0000000u) off = (va - 0xA2000000u) + 0x2A000000u;   // 18.4279: 224MB tail window (96->224MB extension)
   else if (va >= 0x84600000u && va < 0x8C600000u) off = (va - 0x84600000u) + 0x4000000u;   // heap arena 96MB
   else if (va >= 0x8C600000u && va < 0xA0000000u) off = (va - 0x8C600000u) + 0x10000000u;  // 18.4165: 320MB large-block arena
   else if (va >= 0x9F000000u && va < 0xA0000000u) off = (va - 0x9F000000u) + 0x10000000u;  // 18.4162: 16MB Vita user-memblock window (fibers/scratch below Region B)
@@ -510,7 +511,7 @@ static uint32_t g_heap2_ptr = 0xA0000000u;  // secondary bump heap in region B (
 static uint32_t g_heap2_end = 0xA0DF0000u;  // 18.3862: enlarged 6MB -> 14MB
 static uint32_t g_heap4_ptr = 0x82E00000u, g_heap4_end = 0x83600000u;
 static uint32_t g_resA_ptr = 0x81700000u, g_resA_end = 0x82800000u;
-static uint32_t g_big2_ptr = 0xA2000000u, g_big2_end = 0xA8000000u;   // 18.4251: +96MB capacity window   // 18.4250: reserve arena in the unused image window (batch P() maps this VA range)  // 18.3862: free low-image window (8MB)
+static uint32_t g_big2_ptr = 0xA2000000u, g_big2_end = 0xB0000000u;   // 18.4251: +96MB capacity window   // 18.4250: reserve arena in the unused image window (batch P() maps this VA range)  // 18.3862: free low-image window (8MB)
 static uint32_t g_heap5_ptr = 0x84000000u, g_heap5_end = 0x84600000u;  // 18.3862: free low-image window (6MB)
 static uint32_t g_target_alloc = 0;
 static int g_objalloc_n = 0;
@@ -1189,6 +1190,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t addr = hle_malloc(size + align + 0x100u);
       addr = (addr + align - 1u) & ~(align - 1u);
       uint32_t uid = ++g_memuid;
+      g_mema_total += (uint64_t)size; ++g_mema_n;
+      if (g_mema_n <= 12 || (g_mema_n % 10) == 0) { printf("[MEMA-TOT] n=%d uid=%08X size=%08X total=%lluMB addr=%08X type=%08X\n", g_mema_n, uid, size, (unsigned long long)(g_mema_total >> 20), addr, type); fflush(stdout); }
+      if (addr == 0u) { printf("[MEMA-OOM] size=%08X total=%lluMB uid=%08X\n", size, (unsigned long long)(g_mema_total >> 20), uid); fflush(stdout); }
       g_memblks[uid] = std::make_pair(addr, size);
       printf("[MEMA] AllocMemBlock uid=%08X size=%08X addr=%08X name=%08X lr=%08X\n", uid, size, addr, s->r[0], s->r[14]); fflush(stdout);
       if (g_memdbg_n++ < 12) printf("[MEMBLK] uid=%08X size=%08X addr=%08X name=%08X\n", uid, size, addr, s->r[0]);
