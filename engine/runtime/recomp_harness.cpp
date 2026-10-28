@@ -739,6 +739,7 @@ static int g_inpw_n = 0, g_inp_init_n = 0, g_inp_update_n = 0, g_inp_update2_n =
 
 static int g_fsm_n = 0, g_fsm6_n = 0, g_fsmw_n = 0;
 static int g_waitcall_n = 0;
+static int g_pcall_n = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _o = (g_watch_task ? g_watch_task : g_cur_wait_obj);
     if (_o) {
@@ -4045,6 +4046,11 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     if (g_schedfix && g_cur_block == 0x812067A0u && !g_switch_pending && !g_fiber_switch_to) {
       for (auto& _kv : g_fctx) { if (_kv.first != g_cur_fiber && _kv.second.r[15] != 0u) { g_fiber_switch_to = _kv.first;
         if (g_schedfix_n++ < 12) { printf("[SCHEDFIX] n=%d cur=%08X -> force switch to %08X pc=%08X sp=%08X\n", g_schedfix_n, g_cur_fiber, _kv.first, _kv.second.r[15], _kv.second.r[13]); fflush(stdout); } break; } } }
+    if ((n % 2000000) == 0 && g_pcall_n++ < 40) {
+      printf("[PCALL] n=%d pc=%08X blk=%08X fib=%08X thr=%08X flag=%08X blkcnt=%u r0=%08X sp=%08X\n", n, pc, g_cur_block, g_cur_fiber, g_cur_thr,
+             (uint32_t)(GP(0x816CC630u)?*(uint32_t*)GP(0x816CC630u):0xDEADu), g_blkcnt_total, s.r[0], s.r[13]); fflush(stdout);
+      for (auto& _kv : g_fctx) { printf("[CTX] fib=%08X pc=%08X sp=%08X r0=%08X r4=%08X r5=%08X lr=%08X\n", _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[0], _kv.second.r[4], _kv.second.r[5], _kv.second.r[14]); }
+      fflush(stdout); }
     if (g_loadpump && g_wait_task && !g_cur_thr && g_disp_depth == 0 && ((pc & ~1u) == 0x811E5EC6u)) {
       uint32_t _t = g_wait_task; uint16_t _st = 0xFFFF; uint32_t _w4 = 0;
       { uint8_t* _q = GP(_t + 2u); if (_q) std::memcpy(&_st, _q, 2); }
