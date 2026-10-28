@@ -7,6 +7,7 @@
 //   0x812B22A0 malloc etc.
 #include <cstdio>
 #include <thread>
+static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
 #include "gxm_vulkan.h"
 #include <cstdint>
@@ -20,8 +21,11 @@
 
 struct RecState { uint32_t r[16]; uint32_t apsr; uint8_t* base; uint32_t mem_size; uint64_t d[32]; };
 extern "C" uint32_t g_cur_block = 0;
-static void r5hoist(RecState* s, uint32_t pc) { if ((pc & ~1u) == 0x8120682Au && s->r[5] == 0u) { s->r[5] = 0x812B414Cu; } }   // 18.4223: restore the canary pointer when this epilogue is reached through a context that lost r5
+static void fix682a(RecState* s, uint32_t* ppc);
 static int g_swsusp_n = 0;   // 18.4222 context-mix probe counter
+static int g_stall2_n = 0;
+static unsigned g_loop_cnt[4] = {0u,0u,0u,0u};
+static int g_wd_thread = 0;
 static int g_hacks = 0;
 static int g_pump_wallclock = 0;
 static int g_cb_yield = 0;
@@ -396,6 +400,7 @@ static void rc_save(RecState* s) { std::memcpy(g_caller_ctx.r, s->r, sizeof(s->r
 static void rc_restore(RecState* s) { std::memcpy(s->r, g_caller_ctx.r, sizeof(s->r)); s->apsr = g_caller_ctx.apsr; }
 static BlockFn gbn(uint32_t pc);
 static uint32_t gbn_back(uint32_t t, int* pback);
+static int g_stall_n = 0;
 static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg);
 static uint8_t* gp_img = nullptr;
 static inline uint8_t* GP(uint32_t va) {
@@ -412,6 +417,19 @@ static inline uint8_t* GP(uint32_t va) {
     for (int i = 0; i < 32; ++i) fprintf(stderr, " %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)i) & 63u]);
     fprintf(stderr, "\n"); return nullptr; }
   return gp_img + off;
+}
+static int g_682a_skip_n = 0;
+static void fix682a(RecState* s, uint32_t* ppc) {   // 18.4226: canary-epilogue guard (r5 restore + skip inconsistent frame)
+  uint32_t pc = *ppc & ~1u;
+  if (pc != 0x8120682Au) return;
+  if (s->r[5] == 0u) s->r[5] = 0x812B414Cu;
+  uint32_t sp = s->r[13], v1 = 0, cv = 0;
+  uint8_t* q = GP(sp + 4u); if (q) std::memcpy(&v1, q, 4);
+  q = GP(0x812B414Cu); if (q) std::memcpy(&cv, q, 4);
+  if (v1 != cv) {   // frame belongs to another context -> do not run the canary epilogue; return to lr
+    if (g_682a_skip_n++ < 12) { printf("[682A-SKIP] sp=%08X [sp+4]=%08X canary=%08X lr=%08X fib=%08X\n", sp, v1, cv, s->r[14], g_cur_fiber); fflush(stdout); }
+    *ppc = s->r[14];
+  }
 }
 static uint32_t g_heap_ptr = 0x82800000u;
 static uint32_t g_big_ptr = 0x8C600000u, g_big_end = 0xA0000000u;   // 18.4165: big arena 320MB   // bump allocator area inside the image (8MB below image end)
@@ -669,6 +687,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B28A0u: r0 = 0; break;                                   // sceKernelUnlockLwMutex
     case 0x812B1910u: r0 = 0; break;                                   // sceAppUtilInit
     case 0x812B11B0u: {                                               // 18.4086: pre-registration init writes a NON-ZERO output
+      { static int _gr=0; if (_gr++ < 4) { printf("[GXMREG] r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X\n", s->r[0],s->r[1],s->r[2],s->r[3],s->r[14]); fflush(stdout); } }
       uint32_t _out = s->r[0];
       uint8_t* _p = GP(_out);
       if (_p) { uint32_t _one = 1u; std::memcpy(_p, &_one, 4); }
@@ -1325,6 +1344,9 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       printf("[E59F] enter 0x811E5970: r5=%08X r6=%08X r0=%08X r1=%08X r9=%08X sp=%08X cur=%08X\n",
              s->r[5],s->r[6],s->r[0],s->r[1],s->r[9],s->r[13],g_cur_fiber); }
     if (pc == 0u || pc == 0xFFFFFFF0u) {
+      // 18.4225: mark the finished fiber's saved context as finished (pc=0). Otherwise the outer restart logic
+      // keeps restoring the stale pre-return context (pc=0x8120682A) and livelocks on [8120682A, 81206832].
+      if (g_cur_fiber) { FCtx& _c = g_fctx[g_cur_fiber]; _c.r[15] = 0u; }
       // 18.3766: when a fiber finishes (pc=0), publish the completion bit [fiber+0x80] |= 2 so the game's
       // main loop (0x812067A0/0x8120683C) observes it and can continue the init sequence.
       if (pc == 0u && g_cur_fiber) {
@@ -1830,8 +1852,8 @@ if (nulldesc_skip(s, pc)) continue;
 if (assert_hle(s, pc)) continue;
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
-g_loop_site = 0; h7344_probe(s, pc);
-    r5hoist(s, pc);
+g_loop_site = 0; ++g_loop_cnt[0]; g_current_loop_pc = (int)pc; h7344_probe(s, pc);
+    fix682a(s, &pc);
 BlockFn fn = gbn(pc);
     if (!fn) { int back = 0; uint32_t bq = gbn_back(pc, &back);
       if (bq && back <= 16) { fn = gbn(bq); if (fn) { if (g_fback_n++ < 8) printf("[FBACK] pc=%08X -> block %08X (back %d)\n", pc, bq, back); pc = bq; } } }
@@ -2384,8 +2406,8 @@ if (nulldesc_skip(s, pc)) continue;
 if (assert_hle(s, pc)) continue;
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
-g_loop_site = 1; h7344_probe(s, pc);
-    r5hoist(s, pc);
+g_loop_site = 1; ++g_loop_cnt[1]; g_current_loop_pc = (int)pc; h7344_probe(s, pc);
+    fix682a(s, &pc);
 BlockFn fn = gbn(pc);
       if (!fn) { int _back = 0; uint32_t _rp = gbn_back(pc, &_back); if (_rp) { pc = _rp; fn = gbn(pc); } }
       if (!fn) { if (g_thr_log_n++ < 40) printf("[THR-BAD] tid=%08X pc=%08X\\n", kv.first, pc); t.alive = 0; break; }
@@ -2426,6 +2448,14 @@ static LONG WINAPI dsh_crash_filter(EXCEPTION_POINTERS* ep) {
 
 int main(int argc, char** argv) {
   SetUnhandledExceptionFilter(dsh_crash_filter);
+  if (!g_wd_thread) { g_wd_thread = 1; std::thread([](){
+      for (;;) { std::this_thread::sleep_for(std::chrono::seconds(2));
+        printf("[WD] loop=%d cnt=%u/%u/%u/%u total=%u blk=%08X fib=%08X fex=%d ex=%d pump=%d curpc=%08X\n",
+               g_loop_site, g_loop_cnt[0], g_loop_cnt[1], g_loop_cnt[2], g_loop_cnt[3], g_blkcnt_total, g_cur_block, g_cur_fiber, g_in_fex, g_in_fiber_exec, g_pumping2, g_current_loop_pc);
+        printf("[WDRING]"); for (int i = 52; i < 64; ++i) printf(" %08X", g_pc_ring[(g_pc_ring_n + (unsigned)i) & 63u]); printf("\n");
+        for (auto& kv : g_fctx) { printf("[WDCTX] fib=%08X pc=%08X sp=%08X r0=%08X r5=%08X\n", kv.first, kv.second.r[15], kv.second.r[13], kv.second.r[0], kv.second.r[5]); }
+        fflush(stdout);
+      } }).detach(); }
   { const char* _pw = getenv("P5D_PUMP_WALLCLOCK"); g_pump_wallclock = (_pw && atoi(_pw) != 0) ? 1 : 0; }
   { const char* _cy = getenv("P5D_CB_YIELD"); g_cb_yield = (_cy && atoi(_cy) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
@@ -3017,8 +3047,8 @@ if (nulldesc_skip(&s, pc)) continue;
 if (assert_hle(&s, pc)) continue;
 assert_msg_probe(&s, pc);
 initwatch_probe(&s, pc);
-g_loop_site = 2; h7344_probe(&s, pc);
-    r5hoist(&s, pc);
+g_loop_site = 2; ++g_loop_cnt[2]; g_current_loop_pc = (int)pc; h7344_probe(&s, pc);
+    fix682a(&s, &pc);
 BlockFn fn = gbn(pc);
     { uint32_t gpc = pc; if ((gpc & ~1u) == 0x81206BDCu && s.r[0] != 0u && s.r[0] < 0x80000000u) {
         // 18.3871: diagnostic guard - the stub is being entered with a small/garbage r0 (M330: r0=2).
@@ -3117,6 +3147,8 @@ BlockFn fn = gbn(pc);
       uint32_t g_pump_total0 = g_blkcnt_total;   // 18.4180: nested progress base
       while (budget-- > 0) {
         uint32_t ppc = s.r[15];
+        { static uint32_t _lg2=0; if (g_blkcnt_total - _lg2 > 300000u) { _lg2 = g_blkcnt_total;
+            if (g_stall2_n++ < 24) { printf("[PMPTRACE] n=%u ppc=%08X blk=%08X fib=%08X sp=%08X\n", g_blkcnt_total, ppc, g_cur_block, g_cur_fiber, s.r[13]); fflush(stdout); } } }
         if (g_hacks && (ppc & ~1u) == 0x8115F9D0u) { s.r[0] = 0u; }  // [ABORTSKIP3] fiber2 pump loop
         if ((ppc & ~1u) == 0x81207734u && g_allocbig2_n++ < 80) {
           printf("[ALLOCBIG2] #%d r0(size)=%08X r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X\n", g_allocbig2_n, s.r[0], s.r[1], s.r[2], s.r[3], s.r[14], s.r[13], g_cur_fiber); fflush(stdout);
@@ -3150,9 +3182,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         if (assert_hle(&s, ppc)) { ppc = s.r[15]; continue; }
         assert_msg_probe(&s, ppc);
         initwatch_probe(&s, ppc);
-        g_loop_site = 3;
+        g_loop_site = 3; ++g_loop_cnt[3]; g_current_loop_pc = (int)ppc;
         h7344_probe(&s, ppc);
-        r5hoist(&s, ppc);
+        fix682a(&s, &ppc);
         BlockFn f2fn = gbn(ppc);
         if (!f2fn) { int back = 0; uint32_t bq = gbn_back(ppc, &back); if (bq && back <= 16) { f2fn = gbn(bq); ppc = bq; } }
         if (!f2fn) { if (g_pump2_n <= 8) printf("[PMP2] fiber2 no block pc=%08X\n", ppc); break; }
@@ -3199,7 +3231,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_cur_fiber = f1; g_pumping2 = 0; g_pump_cool = 1000;   // 18.4181: pump cooldown so the main loop can advance
       if (g_pump2_n++ < 8) printf("[PMP2] pass #%d blocks=%u\n", g_pump2_n, pb);
       // 18.3988: fix stale fn - re-evaluate pc/fn from the RESTORED fiber1 context (the stale fn made the loop dispatch the pump-trigger block and jump back into the loader chain -> BADMEM 0x94)
-      pc = s.r[15]; r5hoist(&s, pc); h7344_probe(&s, pc); fn = gbn(pc);
+      pc = s.r[15]; fix682a(&s, &pc); h7344_probe(&s, pc); fn = gbn(pc);
     }
     if (!fn) {
       // 18.3804: unknown pc right after the main thread returned = fiber return address into non-AOT space.
@@ -3303,6 +3335,8 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
+    { static uint32_t _lastg=0; if (g_blkcnt_total - _lastg > 500000u) { _lastg = g_blkcnt_total;
+        if (g_stall_n++ < 20) { printf("[STALLTRACE] n=%u pc=%08X blk=%08X fib=%08X loop=%d sp=%08X fex=%d\n", g_blkcnt_total, pc, g_cur_block, g_cur_fiber, g_loop_site, s.r[13], g_in_fex); fflush(stdout); } } }
     if (g_switch_pending || g_fiber_switch_to) {   // 18.4217: synchronous switch consumed at the dispatcher's safe point with the REAL next-pc (nx)
       uint32_t _t = g_switch_pending ? g_switch_target : g_fiber_switch_to;
       g_switch_pending = 0; g_fiber_switch_to = 0;
@@ -3338,7 +3372,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     }
     if ((n % 5000) == 0) {
       { uint32_t _fw[4] = {0,0,0,0}; uint8_t* _fq0 = GP(0x816CC630u); if (_fq0) std::memcpy(_fw, _fq0, 16);
-  printf("[FRAMEDUMP] n=%d flags=%08X t4=%u t8=%u ctr=%u pc=%08X blk=%08X sp=%08X fib=%08X\n", n, _fw[0], _fw[1], _fw[2], _fw[3], nxt, g_cur_block, s.r[13], g_cur_fiber); }
+  printf("[FRAMEDUMP] n=%d flags=%08X t4=%u t8=%u ctr=%u pc=%08X blk=%08X sp=%08X fib=%08X gxm(b/e/p)=%d/%d/%d\n", n, _fw[0], _fw[1], _fw[2], _fw[3], nxt, g_cur_block, s.r[13], g_cur_fiber, g_gxm_begin_n, g_gxm_end_n, g_gxm_present_n); }
 if (0) { uint32_t _fc = 0; uint8_t* _fq = GP(0x816CC63Cu); if (_fq) std::memcpy(&_fc, _fq, 4);
   printf("[FRAMECTR-old] %u\n", _fc); }
     }
