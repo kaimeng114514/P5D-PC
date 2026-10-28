@@ -1636,7 +1636,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from DelayThread fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_delay_n++ < 8) printf("[DELAY] usec=%u lr=%08X fib=%08X\n", s->r[0], s->r[14], g_cur_fiber);
       if (g_in_fex == 0 && !g_in_fiber_exec) { if (g_thry_n++ < 6) { printf("[THRYIELD] DelayThread -> pump thr (thr count=%zu)\n", g_thr.size()); fflush(stdout); } hle_thr_pump(s, 20000); }
-      else if (g_thrpump_env && !g_cur_thr) { if (g_thry_n++ < 6) { printf("[THRYIELD] env DelayThread -> pump thr (count=%zu fib=%08X)\n", g_thr.size(), g_cur_fiber); fflush(stdout); } hle_thr_pump(s, 20000); }
+      else if (g_thrpump_env && !g_cur_thr && g_blkcnt_total > 1500000u) { if (g_thry_n++ < 6) { printf("[THRYIELD] env+postcut DelayThread -> pump thr (count=%zu fib=%08X n=%u)\n", g_thr.size(), g_cur_fiber, g_blkcnt_total); fflush(stdout); } hle_thr_pump(s, 20000); }
       if (g_in_fex > 0 && g_in_fiber_exec && !g_fiber_switch_to && g_fiber_list.size() > 1) {
         uint32_t cur = g_cur_fiber ? g_cur_fiber : g_last_fiber;
         for (size_t k = 1; k <= g_fiber_list.size(); ++k) {
@@ -2813,7 +2813,9 @@ static void init_job_pools() {
 
 
 static int g_w16_n = 0;
+static int g_schedfix = 0, g_schedfix_n = 0;
 static int g_dd4bc_n = 0, g_dd4c8_n = 0;
+static int g_sched_n = 0;
 static int g_de912_n = 0, g_de9ba_n = 0;
 extern "C" void wr16_watch(uint32_t a, uint32_t v) {
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u) {
@@ -3094,6 +3096,7 @@ int main(int argc, char** argv) {
   { const char* _cy = getenv("P5D_CB_YIELD"); g_cb_yield = (_cy && atoi(_cy) != 0) ? 1 : 0; }
 { const char* _tc = getenv("P5D_TEST_CB"); if (_tc && *_tc) g_test_cb = (uint32_t)strtoul(_tc, 0, 16); }
 { const char* _lp = getenv("P5D_LOADPUMP"); g_loadpump = (_lp && atoi(_lp) != 0) ? 1 : 0; }
+{ const char* _sf = getenv("P5D_SCHEDFIX"); g_schedfix = (_sf && atoi(_sf) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -3970,6 +3973,12 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       printf("[FX] pc=%08X r0=%08X r4=%08X r5=%08X sp=%08X lr=%08X block=%08X\n",
              pc, s.r[0],s.r[4],s.r[5],s.r[13],s.r[14],g_cur_block);
     }
+    if ((pc & ~1u) == 0x81207632u && g_sched_n < 30) { ++g_sched_n;
+      uint32_t _a20=0, _a18=0, _a1c=0; uint8_t* _q=GP(0x816CC628u); if(_q) std::memcpy(&_a20,_q,4);
+      _q=GP(0x816CC620u); if(_q) std::memcpy(&_a18,_q,4); _q=GP(0x816CC624u); if(_q) std::memcpy(&_a1c,_q,4);
+      printf("[SCHED32] n=%u a18=%08X a1c=%08X a20=%08X fib=%08X thr=%08X r0=%08X lr=%08X\n", g_blkcnt_total, _a18,_a1c,_a20,g_cur_fiber,g_cur_thr,s.r[0],s.r[14]); fflush(stdout); }
+    if ((pc & ~1u) == 0x8120765Cu && g_sched_n < 60) { ++g_sched_n;
+      printf("[SCHED32C] n=%u r4=%08X r0=%08X fib=%08X thr=%08X\n", g_blkcnt_total, s.r[4], s.r[0], g_cur_fiber, g_cur_thr); fflush(stdout); }
     if ((pc & ~1u) == 0x811DE912u && g_de912_n < 24) { ++g_de912_n;
       printf("[DE912] enter n=%d r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X\n", g_de912_n, s.r[0],s.r[1],s.r[2],s.r[14],s.r[13],g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x811DE9BAu && g_de9ba_n < 24) { ++g_de9ba_n;
@@ -3999,6 +4008,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         }
       }
     }
+    if (g_schedfix && g_cur_block == 0x812067A0u && !g_switch_pending && !g_fiber_switch_to) {
+      for (auto& _kv : g_fctx) { if (_kv.first != g_cur_fiber && _kv.second.r[15] != 0u) { g_fiber_switch_to = _kv.first;
+        if (g_schedfix_n++ < 12) { printf("[SCHEDFIX] n=%d cur=%08X -> force switch to %08X pc=%08X sp=%08X\n", g_schedfix_n, g_cur_fiber, _kv.first, _kv.second.r[15], _kv.second.r[13]); fflush(stdout); } break; } } }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
     { static uint32_t _lastg=0; if (g_blkcnt_total - _lastg > 500000u) { _lastg = g_blkcnt_total;
