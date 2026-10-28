@@ -46,6 +46,7 @@ static int g_tidp_n = 0;   // 18.4228c
 static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
 #include "gxm_vulkan.h"
+#include "gxm_abi.h"
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -470,6 +471,7 @@ static uint32_t gbn_back(uint32_t t, int* pback);
 static int g_stall_n = 0;
 static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg);
 static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int maxblocks);
+static int g_gxmabi = 0, g_gxmabi_n = 0;
 static uint8_t* gp_img = nullptr;
 static inline uint8_t* GP(uint32_t va) {
   uint32_t off;
@@ -890,6 +892,16 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   if (((s->r[14] & 0xFFFF0000u) == 0x811E0000u || (s->r[14] & 0xFFFF0000u) == 0x811EB000u) && g_hea_n++ < 30) {
     printf("[HLE-EA] va=%08X lr=%08X r0=%08X r1=%08X r2=%08X r3=%08X blk=%08X sp=%08X fib=%08X\n", stub_va, s->r[14], s->r[0], s->r[1], s->r[2], s->r[3], g_cur_block, s->r[13], g_cur_fiber); fflush(stdout); }
   ++g_hlecnt[stub_va];
+  if (g_gxmabi) {
+    const gxm_abi_entry* _ge = gxm_abi_lookup(stub_va);
+    if (_ge) {
+      uint32_t _stk[8];
+      for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
+      uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
+      if (g_gxmabi_n++ < 60) { printf("[GXMABI] %s va=%08X r0=%08X ret=%08X lr=%08X blk=%08X\n", _ge->name, stub_va, s->r[0], _rv, s->r[14], g_cur_block); fflush(stdout); }
+      s->r[0] = _rv; return s->r[14];
+    }
+  }
   if (stub_va == 0x812B2810u) {   // __stack_chk_fail: REPAIR the canary slot and RETRY the compare block
     {
       uint32_t sp = s->r[13];
@@ -2777,6 +2789,20 @@ static uint32_t gbn_back(uint32_t t, int* pback) {
   return 0;
 }
 
+// 18.4313: strong host translation hooks for the auto-generated GXM ABI layer (gxm_abi.cpp weak defaults).
+extern "C" uint64_t p5d_abi_translate64(uint32_t va) { uint8_t* p = GP(va); return (uint64_t)(uintptr_t)p; }
+extern "C" uint32_t p5d_abi_translate(uint32_t va) { uint8_t* p = GP(va); return (uint32_t)(uintptr_t)p; }
+extern "C" uint32_t p5d_abi_untranslate(const void* hp) {
+  const uint8_t* p = (const uint8_t*)hp; if (!p || !gp_img) return 0u;
+  int64_t off = (int64_t)(p - gp_img); if (off < 0) return 0u;
+  uint64_t o = (uint64_t)off;
+  if (o < 0x4000000ull) return (uint32_t)(0x80600000ull + o);
+  if (o < 0xA000000ull) return (uint32_t)(0x84600000ull + (o - 0x4000000ull));
+  if (o < 0x28000000ull) return (uint32_t)(0x8C600000ull + (o - 0x10000000ull));
+  if (o < 0x2A000000ull) return (uint32_t)(0xA0000000ull + (o - 0x28000000ull));
+  if (o < 0x38000000ull) return (uint32_t)(0xA2000000ull + (o - 0x2A000000ull));
+  return 0u;
+}
 extern "C" void harness_badmem(uint32_t va) {
   { printf("[SNAP] blk=%08X r0=%08X r1=%08X r2=%08X r4=%08X r5=%08X r7=%08X r8=%08X r9=%08X r13=%08X r14=%08X\n", g_snap_blk, g_snap_r[0],g_snap_r[1],g_snap_r[2],g_snap_r[4],g_snap_r[5],g_snap_r[7],g_snap_r[8],g_snap_r[9],g_snap_r[13],g_snap_r[14]); fflush(stdout); }
   // 18.3870: dump the run_guest pc ring when a batch P() access faults (M329: block attribution was misleading).
@@ -3208,6 +3234,7 @@ int main(int argc, char** argv) {
   { const char* _si = getenv("P5D_SCHEDIDX"); if (_si) g_schedidx = atoi(_si); }
   { const char* _sr = getenv("P5D_SCHEDRESUME"); g_schedresume = (_sr && atoi(_sr) != 0) ? 1 : 0; }
   { const char* _fg1 = getenv("P5D_F1GUARD"); g_f1guard = (_fg1 && atoi(_fg1) != 0) ? 1 : 0; }
+  { const char* _ga = getenv("P5D_GXMABI"); g_gxmabi = (_ga && atoi(_ga) != 0) ? 1 : 0; }
   { const char* _fp = getenv("P5D_F1PCFIX"); g_f1pcfix = (_fp && atoi(_fp) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
@@ -3228,7 +3255,7 @@ int main(int argc, char** argv) {
   uint32_t start = argc > 1 ? (uint32_t)strtoul(argv[1], nullptr, 0) : 0x81198464u;
   int maxb = argc > 2 ? atoi(argv[2]) : 50000;
   if (!load_elf("C:\\dev\\p5d_build\\p5d_true.elf")) return 2;
-  gxmvk_init();
+  if (!g_gxmabi) gxmvk_init();
   init_job_pools();
   { uint32_t o = 0x8130CC68u - IMG_VA_BASE; uint32_t v = 0;
     if (o + 4 <= IMG_SIZE) std::memcpy(&v, g_img.data() + o, 4);
