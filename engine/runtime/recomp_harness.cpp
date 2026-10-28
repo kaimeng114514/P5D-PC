@@ -899,7 +899,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
       uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
       { int _always = 0;
-        if (strstr(_ge->name, "BeginScene") || strstr(_ge->name, "EndScene") || strstr(_ge->name, "DisplayQueueAddEntry") || strstr(_ge->name, "Present")) { if (g_gxmabi_scene_n++ < 400) _always = 1; }
+        if (strstr(_ge->name, "BeginScene") || strstr(_ge->name, "EndScene") || strstr(_ge->name, "DisplayQueueAddEntry") || strstr(_ge->name, "Present")) { if (g_gxmabi_scene_n++ < 800) _always = 1; }
         else if (strstr(_ge->name, "Draw")) { if (g_gxmabi_draw_n++ < 40) _always = 1; }
         if (_always || g_gxmabi_n++ < 60) { printf("[GXMABI] %s va=%08X r0=%08X r1=%08X r2=%08X r3=%08X ret=%08X lr=%08X blk=%08X sp=%08X\n", _ge->name, stub_va, s->r[0], s->r[1], s->r[2], s->r[3], _rv, s->r[14], g_cur_block, s->r[13]); fflush(stdout); } }
       s->r[0] = _rv; return s->r[14];
@@ -2792,19 +2792,36 @@ static uint32_t gbn_back(uint32_t t, int* pback) {
   return 0;
 }
 
-// 18.4313: strong host translation hooks for the auto-generated GXM ABI layer (gxm_abi.cpp weak defaults).
-extern "C" uint64_t p5d_abi_translate64(uint32_t va) { uint8_t* p = GP(va); return (uint64_t)(uintptr_t)p; }
-extern "C" uint32_t p5d_abi_translate(uint32_t va) { uint8_t* p = GP(va); return (uint32_t)(uintptr_t)p; }
+// 18.4315: strong host translation hooks for the auto-generated GXM ABI layer (gxm_abi.cpp weak defaults).
+// Host pointers inside the 5 guest windows are translated directly; BACKEND-CREATED host objects (outside
+// those windows) get a stable OPAQUE guest handle from a dedicated range (0x71000000+) via a bidirectional
+// map, so out-handles written back to guest memory are never 0 and round-trip correctly.
+static std::vector<std::pair<const void*, uint32_t> > g_handle_map;
+static int g_handle_map_n = 0;
+static bool host_in_windows(const uint8_t* p) {
+  if (!p || !gp_img) return false; int64_t off = (int64_t)(p - gp_img);
+  return off >= 0 && (uint64_t)off < 0x38000000ull;
+}
+extern "C" uint64_t p5d_abi_translate64(uint32_t va) {
+  for (size_t _i = 0; _i < g_handle_map.size(); ++_i) if (g_handle_map[_i].second == va) return (uint64_t)(uintptr_t)g_handle_map[_i].first;
+  return (uint64_t)(uintptr_t)GP(va);
+}
+extern "C" uint32_t p5d_abi_translate(uint32_t va) { return (uint32_t)p5d_abi_translate64(va); }
 extern "C" uint32_t p5d_abi_untranslate(const void* hp) {
-  const uint8_t* p = (const uint8_t*)hp; if (!p || !gp_img) return 0u;
-  int64_t off = (int64_t)(p - gp_img); if (off < 0) return 0u;
-  uint64_t o = (uint64_t)off;
-  if (o < 0x4000000ull) return (uint32_t)(0x80600000ull + o);
-  if (o < 0xA000000ull) return (uint32_t)(0x84600000ull + (o - 0x4000000ull));
-  if (o < 0x28000000ull) return (uint32_t)(0x8C600000ull + (o - 0x10000000ull));
-  if (o < 0x2A000000ull) return (uint32_t)(0xA0000000ull + (o - 0x28000000ull));
-  if (o < 0x38000000ull) return (uint32_t)(0xA2000000ull + (o - 0x2A000000ull));
-  return 0u;
+  const uint8_t* p = (const uint8_t*)hp; if (!p) return 0u;
+  if (host_in_windows(p)) {
+    uint64_t o = (uint64_t)(int64_t)(p - gp_img);
+    if (o < 0x4000000ull) return (uint32_t)(0x80600000ull + o);
+    if (o < 0xA000000ull) return (uint32_t)(0x84600000ull + (o - 0x4000000ull));
+    if (o < 0x28000000ull) return (uint32_t)(0x8C600000ull + (o - 0x10000000ull));
+    if (o < 0x2A000000ull) return (uint32_t)(0xA0000000ull + (o - 0x28000000ull));
+    return (uint32_t)(0xA2000000ull + (o - 0x2A000000ull));
+  }
+  for (size_t _i = 0; _i < g_handle_map.size(); ++_i) if (g_handle_map[_i].first == hp) return g_handle_map[_i].second;
+  uint32_t _gv = 0x71000000u + (uint32_t)(g_handle_map_n++ & 0xFFFFF) * 4u;
+  g_handle_map.push_back(std::make_pair(hp, _gv));
+  if (g_handle_map_n <= 8) { printf("[HANDLE] host=%p -> guest=%08X (opaque)\n", hp, _gv); fflush(stdout); }
+  return _gv;
 }
 extern "C" void harness_badmem(uint32_t va) {
   { printf("[SNAP] blk=%08X r0=%08X r1=%08X r2=%08X r4=%08X r5=%08X r7=%08X r8=%08X r9=%08X r13=%08X r14=%08X\n", g_snap_blk, g_snap_r[0],g_snap_r[1],g_snap_r[2],g_snap_r[4],g_snap_r[5],g_snap_r[7],g_snap_r[8],g_snap_r[9],g_snap_r[13],g_snap_r[14]); fflush(stdout); }
