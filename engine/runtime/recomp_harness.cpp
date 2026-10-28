@@ -7,6 +7,7 @@
 //   0x812B22A0 malloc etc.
 #include <cstdio>
 #include <thread>
+static int g_tidp_n = 0;   // 18.4228c
 static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
 #include "gxm_vulkan.h"
@@ -21,6 +22,8 @@ static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 
 struct RecState { uint32_t r[16]; uint32_t apsr; uint8_t* base; uint32_t mem_size; uint64_t d[32]; };
 extern "C" uint32_t g_cur_block = 0;
+static int g_thry_n = 0;
+static int g_fact_bit = 0;
 static void fix682a(RecState* s, uint32_t* ppc);
 static int g_swsusp_n = 0;   // 18.4222 context-mix probe counter
 static int g_stall2_n = 0;
@@ -696,7 +699,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B11A0u: r0 = 0; break;                                  // 18.4086: registration setup -> success
     case 0x812B2210u: r0 = 0; break;                                   // abort (should not happen)
     case 0x812B1860u: r0 = 0; break;                                   // sceSysmoduleLoadModule -> 0 success
-    case 0x812B27B0u: r0 = 0x100u; break;                              // sceKernelGetThreadId -> plausible tid
+    case 0x812B27B0u: {   // 18.4228c: the guest uses GetThreadId result as a POINTER base (BADMEM va = tid+2) -> return a real TLS-like guest object
+      static uint32_t g_tid_ptr = 0; if (!g_tid_ptr) g_tid_ptr = hle_malloc(0x80u);
+      if (g_tidp_n++ < 6) { printf("[TIDPTR] GetThreadId -> %08X (was 0x100/0x4001)\n", g_tid_ptr); fflush(stdout); }
+      r0 = g_tid_ptr ? g_tid_ptr : 0x100u; break; }                              // sceKernelGetThreadId -> plausible tid
     case 0x812B22C0u: {
       printf("[EXITLOG] libc exit called lr=%08X hle_total=%d\n", s->r[14], g_hle_n);
       int cnt = g_hle_ring_n < 64 ? g_hle_ring_n : 64;
@@ -1157,6 +1163,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_in_fex == 1 && ((++g_yield_main_tick & 0x3F) == 0)) { g_yield_to_main = 1;
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from DelayThread fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_delay_n++ < 8) printf("[DELAY] usec=%u lr=%08X fib=%08X\n", s->r[0], s->r[14], g_cur_fiber);
+      if (g_in_fex == 0 && !g_in_fiber_exec) { if (g_thry_n++ < 6) { printf("[THRYIELD] DelayThread -> pump thr (thr count=%zu)\n", g_thr.size()); fflush(stdout); } hle_thr_pump(s, 20000); }
       if (g_in_fex > 0 && g_in_fiber_exec && !g_fiber_switch_to && g_fiber_list.size() > 1) {
         uint32_t cur = g_cur_fiber ? g_cur_fiber : g_last_fiber;
         for (size_t k = 1; k <= g_fiber_list.size(); ++k) {
@@ -1189,8 +1196,8 @@ static void fiber_save(RecState* s) {
 static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg) {
   // 18.3773: mark the fiber ACTIVE ([fiber+0x80] bit0) on first run - the game's fiber manager checks this bit
   // (ands r1,r0,#1) to decide whether to unlink/track the fiber; a zero state made it spin forever.
-  { uint8_t* q = GP(fiber + 0x80u); if (q) { uint32_t v; std::memcpy(&v, q, 4);
-      if (!(v & 1u)) { v |= 1u; std::memcpy(q, &v, 4); if (g_fact_n++ < 10) printf("[FACT] fiber=%08X state|=1 -> %08X\n", fiber, v); } } }
+  if (g_fact_bit) { uint8_t* q = GP(fiber + 0x80u); if (q) { uint32_t v; std::memcpy(&v, q, 4);
+      if (!(v & 1u)) { v |= 1u; std::memcpy(q, &v, 4); if (g_fact_n++ < 10) printf("[FACT] fiber=%08X state|=1 -> %08X\n", fiber, v); } } }   // 18.4229 P0-B: OFF by default (P5D_FACTBIT=1 restores) - guest scheduler reads bit0 as finished
   if (g_cur_fiber == 0) { std::memcpy(g_thread_regs, s->r, sizeof(g_thread_regs)); g_thread_apsr = s->apsr; }
   g_cur_fiber = fiber; g_last_fiber = fiber;
   if (g_watch2 == 0) { g_watch2 = 0x816CBEA8u; uint32_t o2 = g_watch2 - IMG_VA_BASE; if (o2 + 4 <= IMG_SIZE) std::memcpy(&g_watch2_val, gp_img + o2, 4); }
@@ -2252,7 +2259,7 @@ extern "C" void wr32_watch(uint32_t a, uint32_t v) {
 
 
 static void hle_thr_pump(RecState* s, int quantum) {
-  if (g_cur_thr || g_in_fiber_exec || g_cur_fiber) return;   // never nest inside fiber/thread execution   // 18.4175: pump-during-fiber reverted (caused >10min livelock)
+  if (g_cur_thr || g_in_fiber_exec) return;   // 18.4228: allow the pump from the main-loop world (g_cur_fiber is the app fiber there); never nest inside thread execution
   for (auto& kv : g_thr) {
     HThread& t = kv.second;
     if (!t.alive || !t.ready) continue;
