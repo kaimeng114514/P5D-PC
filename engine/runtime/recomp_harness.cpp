@@ -746,7 +746,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
 static void mainctx_note(const char* tag, uint32_t sp) {
@@ -3184,6 +3184,7 @@ int main(int argc, char** argv) {
   { const char* _ns = getenv("P5D_NOSCHEDRUN"); g_noschedrun = (_ns && atoi(_ns) != 0) ? 1 : 0; }
   { const char* _ss = getenv("P5D_SCHEDRUNSMART"); g_schrunsmart = (_ss && atoi(_ss) != 0) ? 1 : 0; }
   { const char* _si = getenv("P5D_SCHEDIDX"); if (_si) g_schedidx = atoi(_si); }
+  { const char* _sr = getenv("P5D_SCHEDRESUME"); g_schedresume = (_sr && atoi(_sr) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -3626,6 +3627,18 @@ int main(int argc, char** argv) {
         uint32_t off = fb - IMG_VA_BASE, fentry = 0, farg = 0;
         if (off + 0x90u <= IMG_SIZE) { std::memcpy(&fentry, gp_img+off+0x84u, 4); std::memcpy(&farg, gp_img+off+0x88u, 4); }
         printf("[SCHEDRUN] #%d run fiber=%08X entry=%08X arg=%08X\n", g_schedrun_n, fb, fentry, farg); fflush(stdout);
+        // 18.4303: SCHEDRESUME - for the MAIN fiber (0x848468E0) resume its saved context IN THE DISPATCHER
+        // instead of nested fiber_exec_to_completion. Keeps sp/pc consistent and removes the reset-induced drift.
+        if (g_schedresume && fb == 0x848468E0u) {
+          auto _ri = g_fctx.find(fb);
+          if (_ri != g_fctx.end() && _ri->second.r[15] != 0u && _ri->second.r[15] != 0xFFFFFFF0u) {
+            std::memcpy(s.r, _ri->second.r, sizeof(s.r)); s.apsr = _ri->second.apsr;
+            g_cur_fiber = fb; g_in_fiber_exec = 0;
+            pc = s.r[15] & ~1u;
+            if (g_schedresume_n++ < 8) { printf("[SCHEDRESUME] fiber=%08X sp=%08X pc=%08X\n", fb, s.r[13], pc); fflush(stdout); }
+            continue;
+          }
+        }
         {   // [SCHEDRUN3] force-reset the fiber context: never resume at a mid-function PC with stale registers
           // 18.4301: SMART mode - if a valid saved context already exists, load it AS-IS (mid-frame state must
           // survive; the blunt reset to stack top A0D80000 was the source of the 0x18 base mismatch).
