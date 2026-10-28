@@ -21,7 +21,16 @@
 struct RecState { uint32_t r[16]; uint32_t apsr; uint8_t* base; uint32_t mem_size; uint64_t d[32]; };
 extern "C" uint32_t g_cur_block = 0;
 static int g_hacks = 0;
-static int g_pump_wallclock = 0;   // 18.4209: deterministic-by-default pump scheduling (set P5D_PUMP_WALLCLOCK=1 for the old wall-clock budget)
+static int g_pump_wallclock = 0;
+static int g_cb_yield = 0;
+static int g_nested_stop_n = 0;
+static int g_fiber_nested = 0;
+static uint32_t g_nested_until = 0;   // 18.4219 hybrid: allow nested fiber exec only until this block count   // 18.4213: 0 = old-runtime semantics (defer fiber switch, no nested exec); P5D_FIBER_NESTED=1 restores old nested-exec path   // 18.4212: 0 = CheckCallback noop (old runtime n_noop); P5D_CB_YIELD=1 restores cooperative yield   // 18.4209: deterministic-by-default pump scheduling (set P5D_PUMP_WALLCLOCK=1 for the old wall-clock budget)
+static int g_fsw_n = 0;
+static int g_switch_pending = 0;   // 18.4217: synchronous fiber switch request (consumed by the outer dispatcher with next-pc)
+static uint32_t g_switch_target = 0;
+static int g_fiblog_n = 0;
+static int g_boot_thunk = 0;   // 18.4218: start the pump fiber from the real boot thunk (g_fiber_entry=0x81206BDD) like the nested path did (that path reached GXM=12)
 static int g_loop_site = -1;
 static uint32_t g_f2_seen = 0;   // 18.4208b: last fiber whose context was really saved by execution (used to decide whether the pump may reset fiber2 to its entry)   // 18.4208: which dispatch loop executed the current block (0=fiber_exec,1=thread pump,2=main,3=fiber2 pump)   // 18.4205: semantic patch stack (XSKIP/REFNULL/NULLOBJ/RET/RETFAM/DUMMYPROG/NULLDESC/ABORTSKIP) - OFF by default for a clean baseline; P5D_HACKS=1 enables
 typedef uint32_t (*BlockFn)(RecState*);
@@ -289,6 +298,7 @@ static uint32_t g_dfe_pc[20] = {0}, g_dfe_r0[20] = {0}, g_dfe_sp[20] = {0}, g_df
 static uint32_t g_drg_pc[20] = {0}, g_drg_r0[20] = {0}, g_drg_sp[20] = {0}, g_drg_n = 0;
 static uint32_t g_dr_n = 0;
 static uint32_t g_blkcnt_total = 1;
+static bool nested_allowed(void) { return g_fiber_nested || (g_nested_until && g_blkcnt_total < g_nested_until); }
 static int g_gxm_n = 0;
 static int g_hm3_n = 0;
 static int g_hm4_n = 0, g_hm5_n = 0;
@@ -379,6 +389,9 @@ static uint32_t g_fiber_switch_to = 0;
 static uint32_t fiber_exec_to_completion(RecState* s);
 static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg);
 static void fiber_restore_thread(RecState* s);
+static FCtx g_caller_ctx;   // 18.4216: caller context saved around nested fiber execution
+static void rc_save(RecState* s) { std::memcpy(g_caller_ctx.r, s->r, sizeof(s->r)); g_caller_ctx.apsr = s->apsr; }
+static void rc_restore(RecState* s) { std::memcpy(s->r, g_caller_ctx.r, sizeof(s->r)); s->apsr = g_caller_ctx.apsr; }
 static BlockFn gbn(uint32_t pc);
 static uint32_t gbn_back(uint32_t t, int* pback);
 static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg);
@@ -683,10 +696,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       if (g_in_fex >= 1) { g_fiber_switch_to = fb; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
       if (g_in_fiber_exec) { g_fiber_switch_to = fb; r0 = 0; break; }
+      if (!nested_allowed()) { g_switch_pending = 1; g_switch_target = fb; r0 = 0; break; }   // 18.4217: synchronous switch request; consumed by the dispatcher
       g_in_fiber_exec = 1;
-      fiber_load(s, fb, g_fiber_entry, g_fiber_arg);
+      rc_save(s); fiber_load(s, fb, g_fiber_entry, g_fiber_arg);
       r0 = fiber_exec_to_completion(s);   // 18.4168: arbitrary-block slicing reverted (unsafe resume); g_fex_budget stays 0
-      fiber_restore_thread(s);
+      rc_restore(s);
       g_in_fiber_exec = 0;
       // cooperative round-robin: every 3rd run, also advance another fiber (task deliverer / loader)
       if (g_fiber_list.size() > 1 && (++g_run_alt % 3) == 0) {
@@ -695,11 +709,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (fb2 != fb) {
       if (g_in_fex >= 1) { g_fiber_switch_to = fb2; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
           g_in_fiber_exec = 1;
-          fiber_load(s, fb2, g_fiber_entry, g_fiber_arg);
+          rc_save(s); fiber_load(s, fb2, g_fiber_entry, g_fiber_arg);
           printf("[SWR2] loaded fb2=%08X pc=%08X sp=%08X gbn=%d entry=%08X\n",
                  fb2, s->r[15], s->r[13], gbn(s->r[15]) ? 1 : 0, g_fiber_entry);
           fiber_exec_to_completion(s);
-          fiber_restore_thread(s);
+          rc_restore(s);
           g_in_fiber_exec = 0;
         }
       }
@@ -711,7 +725,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_sw_dbg < 12) { ++g_sw_dbg; printf("[SWD] list=%zu in=%d alt=%d fb=%08X cur=%08X\n",
           g_fiber_list.size(), g_in_fiber_exec, g_sw_alt2, s->r[0] & ~1u, g_cur_fiber); }
       // cooperative round-robin at the main-loop level: every 100th switch also run another fiber
-      if (!g_in_fiber_exec && g_fiber_list.size() > 1 && (++g_sw_alt2 % 100) == 0) {
+      if (false) {   // 18.4213: disable nested-exec round-robin (old-runtime semantics)
         uint32_t idx = (uint32_t)((g_sw_alt2 / 100) % g_fiber_list.size());
         uint32_t fb2 = g_fiber_list[idx];
         if (g_sw_trig < 12) { ++g_sw_trig; printf("[SWRR] alt2=%d list=%zu idx=%u fb2=%08X cur=%08X entry=%08X\n",
@@ -719,7 +733,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (fb2 != g_cur_fiber) {
       if (g_in_fex >= 1) { g_fiber_switch_to = fb2; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
           g_in_fiber_exec = 1;
-          fiber_load(s, fb2, g_fiber_entry, g_fiber_arg);
+          rc_save(s); fiber_load(s, fb2, g_fiber_entry, g_fiber_arg);
           printf("[SWR3] loaded fb2=%08X pc=%08X sp=%08X gbn=%d\n", fb2, s->r[15], s->r[13], gbn(s->r[15]) ? 1 : 0);
           fiber_exec_to_completion(s);
           printf("[SWR4] after exec pc=%08X r0=%08X cur=%08X\n", s->r[15], s->r[0], g_cur_fiber);
@@ -734,7 +748,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
               printf("[SWRRESTART] fb2=%08X entry=%08X\n", fb2, entry2);
             }
           }
-          fiber_restore_thread(s);
+          rc_restore(s);
           g_in_fiber_exec = 0;
         }
       }
@@ -750,25 +764,26 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       if (fb == g_cur_fiber) {                                         // self-switch/yield
         // cooperative round-robin: every 50th self-switch, run the next fiber (task deliverer / loader)
-        if (!g_in_fiber_exec && g_fiber_list.size() > 1 && (++g_sw_alt % 50) == 0) {
+        if (false) {   // 18.4213: disable nested-exec round-robin (old-runtime semantics)
           uint32_t idx = (uint32_t)((g_sw_alt / 50) % g_fiber_list.size());
           uint32_t fb2 = g_fiber_list[idx];
           if (fb2 != g_cur_fiber) {
       if (g_in_fex >= 1) { g_fiber_switch_to = fb2; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
             g_in_fiber_exec = 1;
-            fiber_load(s, fb2, g_fiber_entry, g_fiber_arg);
+            rc_save(s); fiber_load(s, fb2, g_fiber_entry, g_fiber_arg);
             fiber_exec_to_completion(s);
-            fiber_restore_thread(s);
+            rc_restore(s);
             g_in_fiber_exec = 0;
           }
         }
         r0 = 0; break; }
       if (g_in_fex >= 1) { g_fiber_switch_to = fb; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
       if (g_in_fiber_exec) { g_fiber_switch_to = fb; r0 = 0; break; }   // handled by the outer exec loop
+      if (!nested_allowed()) { g_switch_pending = 1; g_switch_target = fb; r0 = 0; break; }   // 18.4217: synchronous switch request; consumed by the dispatcher with the real next-pc
       g_in_fiber_exec = 1;
-      fiber_load(s, fb, g_fiber_entry, g_fiber_arg);
+      rc_save(s); fiber_load(s, fb, g_fiber_entry, g_fiber_arg);
       r0 = fiber_exec_to_completion(s);
-      fiber_restore_thread(s);
+      rc_restore(s);
       g_in_fiber_exec = 0;
       break; }
     case 0x812B1B60u: r0 = 0; g_fiber_flag_return = 1; break;         // sceFiberReturnToThread
@@ -781,6 +796,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t fb0_return = s->r[0];
       { uint32_t fb0 = s->r[0]; bool found = false; for (uint32_t x : g_fiber_list) if (x == fb0) found = true;
         if (!found) g_fiber_list.push_back(fb0); }
+      if (g_fiblog_n++ < 10) { printf("[FIBINIT] fiber=%08X entry=%08X arg=%08X list=%zu\n", s->r[0], s->r[2], s->r[3], g_fiber_list.size()); fflush(stdout); }
       g_fiber_entry = s->r[2]; g_fiber_arg = s->r[3]; r0 = 0; break; }   // 0 = success (wrapper checks cmp r0,#0)
     case 0x812B1B70u:                                                 // sceFiberGetSelf(out): return the CURRENT fiber object
       { // 18.3768: real sceFiberGetSelf returns the CURRENT fiber, i.e. 0 when not running inside a fiber.
@@ -932,6 +948,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_fb_set_n++ < 10) printf("[DISPLAY] SetFrameBuf addr=%08X pitch=%08X fmt=%08X sync=%08X\n", s->r[0], s->r[1], s->r[2], s->r[3]);
       g_fb_addr = s->r[0]; r0 = 0; break; }
     case 0x812B16F0u: r0 = 0; g_gxm_ctx_n++; if (g_gxm_ctx_n <= 3) printf("[GXM-CTX] CreateContext n=%d\n", g_gxm_ctx_n); break;
+      { static int _gb=0; if (_gb++ < 4) { printf("[GXMBLK] #%d n=%u pc=%08X\n", _gb, g_blkcnt_total, g_cur_block); fflush(stdout); } }
     case 0x812B1470u: gxmvk_begin_frame(); r0 = 0; g_gxm_begin_n++; if (g_gxm_begin_n <= 3) printf("[GXM-BEGIN] BeginScene n=%d\n", g_gxm_begin_n); break;
     case 0x812B17F0u: gxmvk_end_frame(); r0 = 0; g_gxm_end_n++; if (g_gxm_end_n <= 5) printf("[GXM-ENDSCENE] EndScene n=%d\n", g_gxm_end_n); break;
     case 0x812B1720u: gxmvk_present_now(); r0 = 0; g_gxm_present_n++; if (g_gxm_present_n <= 10) printf("[GXM-PRESENT] DisplayQueueAddEntry n=%d\n", g_gxm_present_n); break;
@@ -1093,8 +1110,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B1270u: {                                               // sceGxmProgramParameterGetCategory(param) -> category
       r0 = 1u;                                                       // 1 = vector-ish category so the loader table keeps the param
       break; }
-    case 0x812B2AC0u: {                                               // sceKernelCheckCallback -> cooperative yield point
+    case 0x812B2AC0u: {                                               // sceKernelCheckCallback -> noop (18.4212, old-runtime n_noop); P5D_CB_YIELD=1 restores the old cooperative-yield behaviour
       r0 = 0;
+      if (!g_cb_yield) break;
       if (g_in_fex == 1 && ((++g_yield_main_tick & 0x3F) == 0)) { g_yield_to_main = 1;
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from CheckCallback fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_in_fex > 0 && g_in_fiber_exec && !g_fiber_switch_to && g_fiber_list.size() > 1) {
@@ -1215,6 +1233,11 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
     printf("[FSTAT] runs=%d switches=%d returns=%d fibers=%zu cur=%08X\n", g_fiber_runs, g_fiber_switches, g_fiber_returns, g_fctx.size(), g_cur_fiber);
   int slice = 0;
   while (guard++ < 2000000) {
+    if (g_nested_until && g_blkcnt_total >= g_nested_until && g_in_fiber_exec) {   // 18.4220: stop a nested fiber exec cleanly at the hybrid cutoff (saves its context, returns to the outer dispatcher)
+      fiber_save(s);
+      if (g_nested_stop_n++ < 6) { printf("[NESTED-STOP] total=%u pc=%08X cur=%08X\n", g_blkcnt_total, s->r[15], g_cur_fiber); fflush(stdout); }
+      break;
+    }
     if (g_yield_to_main && g_in_fex == 1) { g_yield_to_main = 0; fiber_save(s);
       if (g_ytest_n++ < 8) { printf("[YMAIN] unwind fiber=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
     if (g_fex_budget > 0 && ++slice > g_fex_budget) {
@@ -2045,7 +2068,7 @@ extern "C" void harness_badmem(uint32_t va) {
   for (int i = 0; i < 20 && g_gsr_n >= 20u; ++i) { uint32_t ix = (g_gsr_n - 20u + (uint32_t)i) % 24u;
     std::fprintf(stderr, " [%u/%08X/%08X]", g_gsr_in[ix], g_gsr_out[ix], g_gsr_f[ix]); }
   std::fprintf(stderr, "\n");
-  std::fprintf(stderr, " ctx: in_fex=%d in_fiber_exec=%d cur=%08X blk=%08X\n", g_in_fex, g_in_fiber_exec, g_cur_fiber, g_cur_block);
+  std::fprintf(stderr, " ctx: in_fex=%d in_fiber_exec=%d cur=%08X blk=%08X total=%u r5=%08X r7=%08X\n", g_in_fex, g_in_fiber_exec, g_cur_fiber, g_cur_block, g_blkcnt_total, g_snap_r[5], g_snap_r[7]);
   std::fprintf(stderr, " fe_ring(pc/r0/sp):");
   for (int i = 0; i < 10 && g_dfe_n >= 10u; ++i) { uint32_t ix = (g_dfe_n - 10u + (uint32_t)i) % 20u;
     std::fprintf(stderr, " [%08X/%08X/%08X]", g_dfe_pc[ix], g_dfe_r0[ix], g_dfe_sp[ix]); }
@@ -2395,6 +2418,10 @@ static LONG WINAPI dsh_crash_filter(EXCEPTION_POINTERS* ep) {
 int main(int argc, char** argv) {
   SetUnhandledExceptionFilter(dsh_crash_filter);
   { const char* _pw = getenv("P5D_PUMP_WALLCLOCK"); g_pump_wallclock = (_pw && atoi(_pw) != 0) ? 1 : 0; }
+  { const char* _cy = getenv("P5D_CB_YIELD"); g_cb_yield = (_cy && atoi(_cy) != 0) ? 1 : 0; }
+  { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
+  { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
+  { const char* _bt = getenv("P5D_BOOT_THUNK"); g_boot_thunk = (_bt && atoi(_bt) != 0) ? 1 : 0; }
   { const char* _hx = getenv("P5D_HACKS"); g_hacks = (_hx && atoi(_hx) != 0) ? 1 : 0;
     printf("[HACKS] semantic patch stack %s\n", g_hacks ? "ENABLED (P5D_HACKS=1)" : "DISABLED (clean baseline)"); fflush(stdout); }
   g_target_alloc = 0x8534B160u;   // 18.4194: trace who allocates the object whose +0x20 is null
@@ -3035,17 +3062,34 @@ BlockFn fn = gbn(pc);
  if ((pc & ~1u) == 0x811E6A1Eu) { g_e6a1e_sp[g_e6a1e_n++ & 7u] = s.r[13]; }
     if (fn) ++g_blkcnt[pc];   // 18.3829: also count run_guest (main-thread) blocks, not only fiber_exec's
     g_pc_ring[g_pc_ring_n++ & 63u] = pc;   // 18.3869: ring for crash attribution in run_guest too
-    if (((pc & ~1u) == 0x811E5CDAu || (n % 20000) == 0) && !g_pumping2 && g_fiber_list.size() > 1 && g_pump_cool == 0) {
+    if (((pc & ~1u) == 0x811E5CDAu || (n % 2000) == 0) && !g_pumping2 && g_fiber_list.size() > 1 && g_pump_cool == 0) {   // 18.4217: pump more often so the loader fiber gets enough time to run GXM init
       // 18.3860: fiber2 pump v4 - per-frame task; FIRST pump force-resets fiber2's FCtx to the user entry
       // (M319: the leftover FCtx had a non-zero pc=0x8115D7C4 which corrupted every pass).
       if (!g_pump_disabled_ab) g_pumping2 = 1; if (g_seq_n++ < 60) printf("[SEQ] #%d pump_start\n", g_seq_n);
       static int pump_first = 1;
       uint32_t f1 = g_cur_fiber ? g_cur_fiber : g_fiber_list[0];
       uint32_t f2 = (g_fiber_list[1] == f1) ? g_fiber_list[0] : g_fiber_list[1];
+      if (g_fiblog_n++ < 10) {
+        printf("[FIBLIST] pump-start count=%zu:", g_fiber_list.size());
+        for (size_t _i = 0; _i < g_fiber_list.size(); ++_i) {
+          uint32_t _fb = g_fiber_list[_i], _off = _fb - IMG_VA_BASE, _e84 = 0, _e88 = 0;
+          if (_off + 0x90 <= IMG_SIZE) { std::memcpy(&_e84, gp_img + _off + 0x84, 4); std::memcpy(&_e88, gp_img + _off + 0x88, 4); }
+          uint32_t _cp = 0, _cr0 = 0, _csp = 0; auto _it = g_fctx.find(_fb); if (_it != g_fctx.end()) { _cp = _it->second.r[15]; _cr0 = _it->second.r[0]; _csp = _it->second.r[13]; }
+          printf(" [%zu]=%08X entry=%08X arg=%08X ctxpc=%08X r0=%08X sp=%08X", _i, _fb, _e84, _e88, _cp, _cr0, _csp);
+        }
+        printf("\n"); fflush(stdout);
+      }
+
       { FCtx& c = g_fctx[f1]; std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr; }
+      FCtx f1_pre = g_fctx[f1]; uint32_t f1_pre_pc = f1_pre.r[15];   // 18.4210: pre-pump snapshot of the suspended fiber (the pump must not perturb it)
+      static int g_p2r_n = 0;
       FCtx& c2 = g_fctx[f2];
       const bool f2_ran = (g_f2_seen == f2);
-      if ((pump_first && !f2_ran) || c2.r[15] == 0u) {
+      if (pump_first && g_boot_thunk && g_fiber_entry) {   // 18.4218: run the boot thunk as the nested path did
+        std::memset(&c2, 0, sizeof(c2));
+        c2.r[0] = f2; c2.r[13] = 0xA0E00000u; c2.r[14] = 0xFFFFFFF0u; c2.r[15] = g_fiber_entry & ~1u;
+        if (g_pump2_n <= 6) { printf("[BOOTTHUNK] fiber=%08X entry=%08X sp=%08X\n", f2, c2.r[15], c2.r[13]); fflush(stdout); }
+      } else if ((pump_first && !f2_ran) || c2.r[15] == 0u) {
         pump_first = 0;
         uint32_t off2 = f2 - IMG_VA_BASE, arg2 = 0;
         if (off2 + 0x90 <= IMG_SIZE) std::memcpy(&arg2, gp_img + off2 + 0x88, 4);
@@ -3108,18 +3152,38 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
           }
         }
         uint32_t nx = f2fn(&s); ++pb;
+        if (g_fiber_switch_to || g_switch_pending || g_fiber_flag_return) {   // 18.4210b / 18.4214 / 18.4217
+          if (false && g_fiber_switch_to && g_fiber_switch_to != f2) {   // 18.4215 disabled (18.4216): pure deferral is faster and equally non-progressing switch target is the main fiber (idle in the main loop) -> keep the loader fiber running (no useful state lost)
+            static int g_pumpcont_n = 0;
+            if (g_pumpcont_n++ < 6) { printf("[PUMPCONT] keep f2: requested=%08X cur=%08X ppc=%08X resume=%08X\n", g_fiber_switch_to, f2, ppc, nx); fflush(stdout); }
+            g_fiber_switch_to = 0;
+            s.r[15] = nx;
+            continue;
+          }
+          s.r[15] = nx;   // CRITICAL 18.4214: save the RESUME pc (next block) - saving the switch-call block makes the pump re-enter the same switch forever
+          static int g_pumpsw_n = 0;
+          if (g_pumpsw_n++ < 10) { printf("[PUMPSW] stop pump pass: switch_to=%08X flag_return=%d ppc=%08X resume=%08X\n", g_fiber_switch_to, g_fiber_flag_return, ppc, nx); fflush(stdout); }
+          break; }
         if (g_yield_to_main || (g_blkcnt_total - g_pump_total0) > 200000u) { g_yield_to_main = 0;
           if (g_pump_brk_n++ < 8) { printf("[PMPBREAK] pass=%d pb=%u total_delta=%u\n", g_pump2_n, pb, g_blkcnt_total - g_pump_total0); fflush(stdout); } break; }
         if (pb <= 12) printf("[PMP2C] nx=%08X r0=%08X\n", nx, s.r[0]);
         if (nx == 0u || nx == 0xFFFFFFF0u || nx == 0x81555E98u) { s.r[15] = 0u; break; }   // 18.3954: fiber2 task completion marker
         s.r[15] = nx;
       }
-      { FCtx& c = g_fctx[f2]; std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr;
+      FCtx& c = g_fctx[f2];
+      if (g_cur_fiber != f2) {   // 18.4212: never store another fiber's live context into f2 (f2_pc=0x81207344 corruption entry)
+        static int g_fsrej_n = 0;
+        if (g_fsrej_n++ < 10) { printf("[FSAVE-REJECT] cur=%08X f2=%08X pc=%08X r0=%08X\n", g_cur_fiber, f2, s.r[15], s.r[0]); fflush(stdout); }
+      } else { std::memcpy(c.r, s.r, sizeof(c.r)); c.apsr = s.apsr; }
+      {
         g_p2_prog = c.r[14];
         if (c.r[15] != g_p2_last && g_p2_chg_n++ < 200) { g_p2_last = c.r[15];
           printf("[P2PC] pass=%d pc=%08X lr=%08X r1=%08X\n", g_p2_pass, c.r[15], c.r[14], c.r[1]); fflush(stdout); }
         if ((++g_p2_pass % 100) == 0 && g_p2_log++ < 300) { printf("[P2PROG] pass=%d pc=%08X lr=%08X r1=%08X pb=%u total=%u\n", g_p2_pass, c.r[15], c.r[14], c.r[1], pb, g_blkcnt_total); fflush(stdout); } } if (g_seq_n++ < 60) { uint32_t _v = 0; auto _it = g_fctx.find(f2); if (_it != g_fctx.end()) _v = _it->second.r[15]; printf("[SEQ] #%d save_f2_r15=%08X\n", g_seq_n, _v); }
-      { FCtx& c = g_fctx[f1]; std::memcpy(s.r, c.r, sizeof(s.r)); s.apsr = c.apsr; } if (g_seq_n++ < 60) printf("[SEQ] #%d restore_f1_r15=%08X\n", g_seq_n, s.r[15]);
+      { std::memcpy(s.r, f1_pre.r, sizeof(s.r)); s.apsr = f1_pre.apsr; }   // 18.4210: restore the pre-pump snapshot
+      { uint32_t _cb815 = 0; uint8_t* _q815 = GP(0x81513DECu); if (_q815) std::memcpy(&_cb815, _q815, 4);
+        if (g_p2r_n < 12 || f1_pre_pc != 0x81198BF2u) { if (g_p2r_n++ < 60) printf("[PMP2RESTORE] n=%d pre_pc=%08X pre_lr=%08X pre_r0=%08X pre_sp=%08X restored_pc=%08X cb=%08X f2_pc=%08X\n", g_p2r_n, f1_pre_pc, f1_pre.r[14], f1_pre.r[0], f1_pre.r[13], s.r[15], _cb815, g_fctx[f2].r[15]); fflush(stdout); } }
+      if (g_seq_n++ < 60) printf("[SEQ] #%d restore_f1_r15=%08X\n", g_seq_n, s.r[15]);
       g_cur_fiber = f1; g_pumping2 = 0; g_pump_cool = 1000;   // 18.4181: pump cooldown so the main loop can advance
       if (g_pump2_n++ < 8) printf("[PMP2] pass #%d blocks=%u\n", g_pump2_n, pb);
       // 18.3988: fix stale fn - re-evaluate pc/fn from the RESTORED fiber1 context (the stale fn made the loop dispatch the pump-trigger block and jump back into the loader chain -> BADMEM 0x94)
@@ -3227,6 +3291,25 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
+    if (g_switch_pending || g_fiber_switch_to) {   // 18.4217: synchronous switch consumed at the dispatcher's safe point with the REAL next-pc (nx)
+      uint32_t _t = g_switch_pending ? g_switch_target : g_fiber_switch_to;
+      g_switch_pending = 0; g_fiber_switch_to = 0;
+      if (_t && _t != g_cur_fiber) {
+        if (g_cur_fiber) { FCtx& _c = g_fctx[g_cur_fiber]; std::memcpy(_c.r, s.r, sizeof(s.r)); _c.apsr = s.apsr; _c.r[15] = nxt; }
+        auto _it = g_fctx.find(_t);
+        if (_it == g_fctx.end() || _it->second.r[15] == 0u) {
+          uint32_t _off = _t - IMG_VA_BASE, _ent = 0, _arg = 0;
+          if (_off + 0x90 <= IMG_SIZE) { std::memcpy(&_ent, gp_img + _off + 0x84, 4); std::memcpy(&_arg, gp_img + _off + 0x88, 4); }
+          FCtx _cc; std::memset(&_cc, 0, sizeof(_cc));
+          _cc.r[0] = _arg ? _arg : _t; _cc.r[13] = 0xA0E00000u; _cc.r[14] = 0xFFFFFFF0u; _cc.r[15] = _ent ? (_ent & ~1u) : 0u;
+          if (_cc.r[15]) { g_fctx[_t] = _cc; _it = g_fctx.find(_t); }
+        }
+        if (_it != g_fctx.end() && _it->second.r[15] != 0u) {
+          std::memcpy(s.r, _it->second.r, sizeof(s.r)); s.apsr = _it->second.apsr; g_cur_fiber = _t; nxt = s.r[15];
+          if (g_fsw_n++ < 12) { printf("[MSW] sync switch -> %08X pc=%08X r0=%08X\n", _t, s.r[15], s.r[0]); fflush(stdout); }
+        }
+      }
+    }
     if (s.r[10] != rb[10] && g_r10n < 40) {
       printf("[R10CHG] block=0x%08X old=%08X new=%08X n=%d next=%08X\n", g_cur_block, rb[10], s.r[10], n+1, nxt);
       ++g_r10n;

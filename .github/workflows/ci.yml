@@ -1,0 +1,92 @@
+# CI for P5D-PC.
+#
+# Two responsibilities:
+#   1. RELEASE COMPLIANCE (hard gate): the published repository/tree must never contain
+#      any game file or game-derived data (see docs/RELEASE_COMPLIANCE.md). If the
+#      release audit fails, this workflow MUST fail. Never add continue-on-error here.
+#   2. DOCUMENTATION AUDITS (non-blocking): tools/kb_audit.py and
+#      tools/verify_doc_integrity.ps1 were written on the development machine and
+#      hardcode C:\dev\p5dsrc\... paths. CI stages the repository documentation at that
+#      dev-machine path (never overwriting an existing dev layout) so the scripts can
+#      check the published docs. They remain dev-machine-only in spirit: failures are
+#      logged as "dev-machine-only audit" and do NOT block the job (continue-on-error).
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  release-audit:
+    name: Release compliance & documentation audits
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # HARD GATE: scanning the checked-out release tree for game files / game-derived
+      # data. A failure here must fail CI, so this step has NO continue-on-error.
+      - name: Release compliance audit (hard gate)
+        working-directory: ${{ github.workspace }}
+        run: py -3 tools/release_audit.py .
+
+      # The documentation scripts hardcode the dev-machine path C:\dev\p5dsrc\docs.
+      # Stage the repository docs there when the layout is absent (GitHub-hosted runner),
+      # so the audits actually validate docs/P5D_MASTER.md. Existing layouts on
+      # self-hosted runners are left untouched. Staging failure only skips the audits.
+      - name: Stage dev machine doc layout for audit scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          try {
+            $devDocs = 'C:\dev\p5dsrc\docs'
+            $master = Join-Path $devDocs 'P5D_MASTER.md'
+            $bak = Join-Path $devDocs '_MASTER_BAK'
+            if (Test-Path -LiteralPath $master) {
+              Write-Output "Dev-machine doc layout already present at $devDocs; leaving it untouched."
+            } else {
+              New-Item -ItemType Directory -Force -Path $devDocs | Out-Null
+              Copy-Item -LiteralPath 'docs\P5D_MASTER.md' -Destination $master -Force
+              New-Item -ItemType Directory -Force -Path $bak | Out-Null
+              Copy-Item -LiteralPath 'docs\P5D_MASTER.md' -Destination (Join-Path $bak 'P5D_MASTER.md.bak') -Force
+              Write-Output "Staged repository docs at $devDocs (the audit scripts hardcode this dev path)."
+            }
+            "DEV_DOCS_STAGED=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } catch {
+            Write-Output "::warning::Could not stage dev-machine doc layout: $($_.Exception.Message)"
+            "DEV_DOCS_STAGED=0" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+      # Best effort / dev-machine-only: failure is reported but does not fail CI.
+      - name: Documentation audit - tools/kb_audit.py (dev-machine-only audit, non-blocking)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if ($env:DEV_DOCS_STAGED -ne '1') {
+            Write-Output 'NOTE: dev-machine-only audit - SKIPPED (C:\dev\p5dsrc layout unavailable on this runner).'
+            exit 0
+          }
+          Write-Output 'NOTE: dev-machine-only audit - running tools/kb_audit.py against the staged repository master doc.'
+          py -3 tools/kb_audit.py
+
+      # Best effort / dev-machine-only: failure is reported but does not fail CI.
+      - name: Documentation integrity - tools/verify_doc_integrity.ps1 (dev-machine-only audit, non-blocking)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if ($env:DEV_DOCS_STAGED -ne '1') {
+            Write-Output 'NOTE: dev-machine-only audit - SKIPPED (C:\dev\p5dsrc layout unavailable on this runner).'
+            exit 0
+          }
+          Write-Output 'NOTE: dev-machine-only audit - running tools/verify_doc_integrity.ps1 against the staged repository master doc.'
+          pwsh -File tools/verify_doc_integrity.ps1
