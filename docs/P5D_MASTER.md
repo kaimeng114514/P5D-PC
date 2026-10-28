@@ -479363,3 +479363,44 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M745 FSAVE5EC REST5EC CB5EC all zero; helper range 0x811E5EC2..0x811E5EF2; FSAVE lines far pcs; WLPRO=0; direct loop-label entry 0x811E5EC6; two activation modes sp=A0D7FDA8 vs A0D7FDB8; next EC6-SPCHG and pc-set audit; default 30M green.
 
 LOOKUP: 0x811E5EC6, fiber_save -> §18.4289 [relevant: owner tracking], §18.4288 [relevant: frame ownership], §18.4287 [relevant: GSC buffer return]
+| M747 | §18.4292: ★★★★ **HONEST CORRECTION OF M746 + NEW LEAD: THE `__stack_chk_fail` REPAIR PATH NEVER FIRES (`[CHKFIX2]=0`), SO THE CANARY-FALL-THROUGH HYPOTHESIS IS REFUTED; THE WAIT LOOP STILL LEAKS 0x18 BYTES PER ITERATION, SO THE LEAK MUST COME FROM ANOTHER BLOCK IN THE ITERATION PATH.** Added the correct retry mapping in the existing `__stack_chk_fail` handler (0x812B2810): if `lr == 0x8120767A` (helper 0x81207632's fail call) -> retry at its own epilogue `0x81207672` (add sp,#0xc; pop {r4,r5,pc}); otherwise legacy `0x8120682A`; new `[CHKFIX2]` log prints lr/retry/sp/saved_lr. RESULT: `[CHKFIX2]=0` in both default and lp+wemu 30M runs => the canary checks are NOT failing and the M746 hypothesis ("canary fail path falls through") is **wrong/unverified** - corrected here. The stack drift itself is still real: `[EC6-SPCHG]` shows default-mode wait-loop iterations dropping sp by 0x18 each time (`A0D7FDA8 -> ... -> A0D7FBC8`) while `r4` changes from the task to `0x84600000`; the iteration ring passes through `... 81207632 812B1B70 81207648 8120764C 812B27B0 8120765C 81207660 812067A0 ... 8120682A 81206832 81207664 812B2A50 8120766A 81207672 811E5EE8 811E5EC6` and DOES include helper 0x81207632's epilogue (`0x81207672/0x81207674`), so the 0x18-byte leak is produced by a different block in that path (candidates: the scheduler path 0x812067A0/0x812068xx, or the DelayThread wrapper 0x8120760C). In lp+wemu mode `[EC6-SPCHG]=0` (tracking reset by the early epilogue) while `[ODDPC]=20` remains, i.e. the corrupted-frame return persists. VERIFIED: default 30M `exit=0, GXM=12, FSW=16, BADMEM=0`; lp+wemu 30M `exit=0, BADMEM=0, HLE-BADMEM=13`. NEXT: add a `[SPTRACE]` per-block (pc, sp) trace for one complete wait-loop iteration (triggered on 0x811E5EC6, ~48 blocks) to pin the exact block that fails to restore sp; then fix that block's stack handling (translation bug or HLE callback leaking stack). |
+| §18.4292 | ★★★★ honest correction of M746 + new lead: the __stack_chk_fail repair path never fires ([CHKFIX2]=0) so the canary-fall-through hypothesis is refuted; the wait loop still leaks 0x18 bytes per iteration so the leak must come from another block in the iteration path; added the correct retry mapping in the existing __stack_chk_fail handler (0x812B2810): if lr == 0x8120767A (helper 0x81207632's fail call) -> retry at its own epilogue 0x81207672 (add sp,#0xc; pop {r4,r5,pc}) otherwise legacy 0x8120682A; new CHKFIX2 log prints lr/retry/sp/saved_lr; RESULT CHKFIX2=0 in both default and lp+wemu 30M runs => the canary checks are NOT failing and the M746 hypothesis canary fail path falls through is wrong/unverified corrected here; the stack drift itself is still real: EC6-SPCHG shows default-mode wait-loop iterations dropping sp by 0x18 each time (A0D7FDA8 -> ... -> A0D7FBC8) while r4 changes from task to 0x84600000; iteration ring passes through ...81207632 812B1B70 81207648 8120764C 812B27B0 8120765C 81207660 812067A0 ... 8120682A 81206832 81207664 812B2A50 8120766A 81207672 811E5EE8 811E5EC6 and DOES include helper 0x81207632 epilogue (0x81207672/0x81207674) so the 0x18-byte leak is produced by a different block in that path (candidates scheduler path 0x812067A0/0x812068xx or DelayThread wrapper 0x8120760C); in lp+wemu mode EC6-SPCHG=0 (tracking reset by early epilogue) while ODDPC=20 remains i.e. corrupted-frame return persists; VERIFIED default 30M exit=0 GXM=12 FSW=16 BADMEM=0; lp+wemu 30M exit=0 BADMEM=0 HLE-BADMEM=13; NEXT add SPTRACE per-block (pc,sp) trace for one complete wait-loop iteration (triggered on 0x811E5EC6 ~48 blocks) to pin exact block failing to restore sp then fix that block stack handling (translation bug or HLE callback leaking stack). |
+
+### 18.4292 PORT M747: CORRECTION - CANARY-FAIL HYPOTHESIS REFUTED; 0x18-BYTE LEAK COMES FROM ANOTHER BLOCK IN THE WAIT-LOOP ITERATION PATH.
+
+Change made (kept; harmless and more correct than before):
+```
+__stack_chk_fail handler (0x812B2810): after repairing the canary slot, choose the retry PC by lr:
+  lr == 0x8120767A (helper 0x81207632's fail call) -> retry 0x81207672 (its own epilogue add sp,#0xc; pop)
+  otherwise -> legacy 0x8120682A
+new probe [CHKFIX2] prints failpc_lr, retry, sp, saved_lr, fib
+```
+RESULT: `[CHKFIX2] = 0` in default AND lp+wemu 30M runs => **the canary checks are not failing**; M746's
+"canary fail-path falls through" explanation is REFUTED and corrected here.
+
+The leak is still real in default mode:
+```
+[EC6-START] sp=A0D7FDA8 lr=8120766A r4=84BF3870 (task 1)
+[EC6-SPCHG] A0D7FDA8 -> A0D7FD90 -> A0D7FD78 -> ... -> A0D7FBC8   (0x18 per iteration), r4 -> 0x84600000
+```
+Iteration ring:
+```
+811E5EE8 811E5EC6 811E5ECE 8120760C 812B2A50 81207612 811E5ED4 811E5EE4
+81207632 812B1B70 81207648 8120764C 812B27B0 8120765C 81207660 812067A0
+... 8120682A 81206832 81207664 812B2A50 8120766A 81207672 811E5EE8 811E5EC6
+```
+The ring DOES include helper 0x81207632's epilogue (`0x81207672`/`0x81207674`), so the 0x18-byte leak is not
+from that helper either; it must be another block on the path (candidates: the scheduler chain
+`0x812067A0`/`0x812068xx`, or the DelayThread wrapper `0x8120760C`). In lp+wemu mode `[EC6-SPCHG]=0` (the
+tracking gets reset by the early epilogue) while `[ODDPC]=20` remains - the corrupted-frame return persists.
+
+VERIFIED: default 30M `exit=0, GXM=12, FSW=16, BADMEM=0`; lp+wemu 30M `exit=0, BADMEM=0, HLE-BADMEM=13`.
+
+NEXT:
+1. add `[SPTRACE]` - a per-block (pc, sp) trace for one complete wait-loop iteration (triggered when 0x811E5EC6
+   executes, ~48 blocks) to pin the exact block after which sp does not return to its expected value;
+2. fix that block's stack handling (AOT translation bug or an HLE callback/guest-call that leaks or moves sp).
+
+ANTI-FORGETTING ENTRY. Keywords: M747 correction M746 refuted; CHKFIX2=0 canary not failing; retry mapping lr 0x8120767A -> 0x81207672; EC6-SPCHG 0x18 leak; iteration ring includes 81207672 epilogue; candidates scheduler 812067A0/812068xx DelayThread wrapper 8120760C; next SPTRACE per-block pc/sp trace; default 30M green.
+
+LOOKUP: 0x81207632, 0x812067A0, 0x8120760C -> §18.4291 [relevant: refuted hypothesis], §18.4290 [relevant: EC6 entry], §18.4289 [relevant: owner tracking], §18.4291 [relevant: canary fail]

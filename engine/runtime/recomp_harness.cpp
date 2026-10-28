@@ -743,7 +743,8 @@ static int g_pcall_n = 0;
 static int g_canpc_n = 0;
 static int g_oddpc_n = 0;
 static int g_ret_epi_n = 0;
-static int g_wl_active = 0, g_wl_n = 0; static int g_fs5ec_n = 0, g_rs5ec_n = 0, g_cb5ec_n = 0, g_cb5ec2 = 0, g_cb5ec6 = 0, g_cb5ef0 = 0; static int g_wlpro_n = 0, g_wlentry_n = 0, g_wlec6_n = 0;
+static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0; static int g_fs5ec_n = 0, g_rs5ec_n = 0, g_cb5ec_n = 0, g_cb5ec2 = 0, g_cb5ec6 = 0, g_cb5ef0 = 0;
+static uint32_t g_ec6_sp = 0, g_ec6_lr = 0, g_ec6_fib = 0; static int g_ec6_n = 0, g_ec6_chg = 0; static int g_wlpro_n = 0, g_wlentry_n = 0, g_wlec6_n = 0;
 static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own_sp = 0, g_own_lr = 0; static int g_own_cnt = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _o = (g_watch_task ? g_watch_task : g_cur_wait_obj);
@@ -860,7 +861,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       // write the expected canary value (contents of the global canary pointer cell) into [sp+4]
       uint32_t cval=0; uint8_t* cq=GP(0x812B414Cu); if(cq) std::memcpy(&cval,cq,4);
       uint8_t* dst=GP(sp+4u); if(dst) std::memcpy(dst,&cval,4);
-      s->r[15] = 0x8120682Au;      // re-run the compare block
+      // 18.4291: return to the CALLER'S OWN epilogue, not a generic address. lr holds the instruction after
+      // the blx __stack_chk_fail call; map known fail sites to their frame-restoring epilogue so the push/sub
+      // frame is popped (helper 0x81207632: fail blx at 0x81207676, lr=0x8120767A -> epilogue 0x81207672).
+      { uint32_t _lr = s->r[14];
+        if (_lr == 0x8120767Au) s->r[15] = 0x81207672u;      // helper 81207632 epilogue: add sp,#0xc; pop {r4,r5,pc}
+        else s->r[15] = 0x8120682Au;                          // legacy behaviour (scheduler compare block)
+        if (g_chkfix_n++ < 20) { printf("[CHKFIX2] failpc_lr=%08X -> retry=%08X sp=%08X saved_lr=%08X fib=%08X\n", _lr, s->r[15], sp, slr, g_cur_fiber); fflush(stdout); } }
       s->r[0] = 0u;
     }
     return hle_canary_emulated_ret(s);
@@ -4095,6 +4102,15 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       if (_cur != g_wl_lr && g_wl_n++ < 12) { printf("[WLFRAME] prevblk=%08X nowblk=%08X slot=%08X exp=%08X got=%08X sp=%08X fib=%08X ring:", g_wl_prevblk, pc, g_wl_sp+4u, g_wl_lr, _cur, s.r[13], g_cur_fiber);
         for (int _k=0;_k<20;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 20u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); g_wl_active = 0; }
     }
+    if ((pc & ~1u) == 0x811E5EC6u) {
+      if (g_ec6_sp == 0u) { g_ec6_sp = s.r[13]; g_ec6_lr = s.r[14]; g_ec6_fib = g_cur_fiber;
+        if (g_ec6_n++ < 20) { printf("[EC6-START] sp=%08X lr=%08X r4=%08X fib=%08X ring:", s.r[13], s.r[14], s.r[4], g_cur_fiber);
+          for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+      else if (s.r[13] != g_ec6_sp && g_ec6_chg++ < 20) {
+        printf("[EC6-SPCHG] from=%08X to=%08X lr=%08X r4=%08X fib=%08X ring:", g_ec6_sp, s.r[13], s.r[14], s.r[4], g_cur_fiber);
+        for (int _k=0;_k<20;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 20u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout);
+        g_ec6_sp = s.r[13]; g_ec6_lr = s.r[14]; }
+    }
     if (((pc & ~1u) == 0x811E5EC6u) && g_own_valid) {
       if (g_own_fib != g_cur_fiber || s.r[13] != g_own_sp) {
         if (g_ownmix_n++ < 20) { printf("[WLOWN-MIX] pc=%08X own_fib=%08X cur_fib=%08X own_sp=%08X cur_sp=%08X own_lr=%08X cur_lr=%08X r4=%08X ring:", pc, g_own_fib, g_cur_fiber, g_own_sp, s.r[13], g_own_lr, s.r[14], s.r[4]);
@@ -4107,11 +4123,11 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       if (g_wlpro_n++ < 12) { printf("[WLPRO] sp=%08X lr=%08X savedLR=%08X fib=%08X n=%d\n", s.r[13], s.r[14], ({uint32_t _v=0; uint8_t* _q=GP(s.r[13]+4u); if(_q) std::memcpy(&_v,_q,4); _v;}), g_cur_fiber, g_wlpro_n); fflush(stdout); } }
     if (g_cur_block == 0x811E5EC6u && g_wlec6_n++ < 16) { uint32_t _lr=0,_r4=0; uint8_t* _q=GP(s.r[13]+4u); if(_q) std::memcpy(&_lr,_q,4); _q=GP(s.r[13]); if(_q) std::memcpy(&_r4,_q,4);
       printf("[WLEC6] active=%d sp=%08X [sp]=%08X [sp+4]=%08X regLR=%08X r4=%08X fib=%08X\n", g_wl_active, s.r[13], _r4, _lr, s.r[14], s.r[4], g_cur_fiber); fflush(stdout); }
-    else if (g_cur_block == 0x811E5EF0u) { g_wl_active = 0; g_own_valid = 0; }
+    else if (g_cur_block == 0x811E5EF0u) { g_wl_active = 0; g_own_valid = 0; g_ec6_sp = 0; }
     else if (g_wl_active) { g_wl_prevblk = g_cur_block; }
     { static uint32_t _lastg=0; if (g_blkcnt_total - _lastg > 500000u) { _lastg = g_blkcnt_total;
         if (g_stall_n++ < 20) { printf("[STALLTRACE] n=%u pc=%08X blk=%08X fib=%08X loop=%d sp=%08X fex=%d\n", g_blkcnt_total, pc, g_cur_block, g_cur_fiber, g_loop_site, s.r[13], g_in_fex); fflush(stdout); } } }
-    if (nxt == 0x811E5EC6u && g_wlentry_n++ < 20) {
+    if (nxt == 0x811E5EC6u && g_wlentry_n++ < 200) {
       printf("[WLENTRY] from blk=%08X fib=%08X thr=%08X r0=%08X r1=%08X r4=%08X r5=%08X sp=%08X lr=%08X words:", g_cur_block, g_cur_fiber, g_cur_thr, s.r[0],s.r[1],s.r[4],s.r[5],s.r[13],s.r[14]);
       for (int _k=0;_k<6;++_k) { uint32_t _w=0; uint8_t* _q=GP(s.r[13]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); }
       printf("\n"); fflush(stdout); }
