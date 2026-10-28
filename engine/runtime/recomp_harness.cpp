@@ -748,6 +748,14 @@ static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
 static int g_deferfsw = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
+static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
+static void mainctx_note(const char* tag, uint32_t sp) {
+  if (sp != 0u && sp != g_mainctx_last) {
+    g_mainctx_last = sp;
+    if (g_mainctx_n++ < 120) { printf("[MAINCTX] %s main_sp=%08X n=%d\n", tag, sp, g_mainctx_n); fflush(stdout); }
+  }
+}
+
 static int g_driftdump_n = 0; static int g_swlog = 0, g_swlog_n = 0;
 static int g_ctxchk_n[8] = {0,0,0,0,0,0,0,0};
 static void ctxchk(int tag, uint32_t fib, RecState* s) {
@@ -1149,6 +1157,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         r0 = 0; break; }
       if (g_in_fex >= 1) { g_fiber_switch_to = fb; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
       if (g_in_fiber_exec) { g_fiber_switch_to = fb; r0 = 0; break; }   // handled by the outer exec loop
+      { auto _mi = g_fctx.find(0x848468E0u); if (_mi != g_fctx.end()) mainctx_note("SW-REQ", _mi->second.r[13]); }
       if (!nested_allowed()) { g_switch_pending = 1; g_switch_target = fb; r0 = 0; break; }   // 18.4217: synchronous switch request; consumed by the dispatcher with the real next-pc
       { uint32_t _cb = g_cur_block & ~1u;
         if ((g_deferfsw == 1 || g_deferfsw == 2) && g_ec6_sp != 0u) {
@@ -1156,6 +1165,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       g_in_fiber_exec = 1;
       rc_save(s); fiber_load(s, fb, g_fiber_entry, g_fiber_arg);
       r0 = fiber_exec_to_completion(s);
+      { auto _mi = g_fctx.find(0x848468E0u); if (_mi != g_fctx.end()) mainctx_note("SW-AFTER", _mi->second.r[13]); }
       rc_restore(s);
       g_in_fiber_exec = 0;
       break; }
@@ -1716,6 +1726,7 @@ struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
   if (g_cur_fiber) { g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr;
+    if (g_cur_fiber == 0x848468E0u) { mainctx_note("SAVE", c.r[13]); if (g_mainctx_n <= 40) { printf("[MAINCTX-SAVE] sp=%08X pc=%08X lr=%08X r4=%08X ring:", c.r[13], c.r[15], c.r[14], c.r[4]); for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     { uint32_t _p = c.r[15] & ~1u; if ((_p >= 0x811E5E80u && _p <= 0x811E5EF2u) && g_fs5ec_n++ < 16) {
         printf("[FSAVE5EC] fiber=%08X savepc=%08X curblk=%08X sp=%08X lr=%08X r4=%08X r5=%08X r7=%08X\n", g_cur_fiber, c.r[15], g_cur_block, c.r[13], c.r[14], c.r[4], c.r[5], c.r[7]); fflush(stdout); } }
     if (g_fsv_n++ < 40) printf("[FSAVE] fiber=%08X pc=%08X sp=%08X r5=%08X\n", g_cur_fiber, c.r[15], c.r[13], c.r[5]);
@@ -1723,6 +1734,7 @@ static void fiber_save(RecState* s) {
       printf("[FSAVE-BAD] fiber=%08X r0=%08X r13=%08X r15=%08X\n", g_cur_fiber, c.r[0], c.r[13], c.r[15]); }
 }
 static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg) {
+  if (fiber == 0x848468E0u) { auto _mi = g_fctx.find(fiber); if (_mi != g_fctx.end()) mainctx_note("LOAD", _mi->second.r[13]); }
   // 18.3773: mark the fiber ACTIVE ([fiber+0x80] bit0) on first run - the game's fiber manager checks this bit
   // (ands r1,r0,#1) to decide whether to unlink/track the fiber; a zero state made it spin forever.
   if (g_fact_bit) { uint8_t* q = GP(fiber + 0x80u); if (q) { uint32_t v; std::memcpy(&v, q, 4);
