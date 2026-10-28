@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # verify_doc_integrity.ps1 - anti-corruption checks for the authoritative master document
 $ErrorActionPreference = 'Stop'
 $master = 'C:\dev\p5dsrc\docs\P5D_MASTER.md'

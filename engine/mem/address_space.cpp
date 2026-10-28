@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // PSV 原生移植 - 全局虚拟地址空间注册表实现
 #include "address_space.h"
 #include <vector>

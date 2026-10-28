@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // PSV 原生移植 - 全局虚拟地址空间注册表
 // 把 PSV 32位虚拟地址区间映射到宿主 malloc 的 buffer。
 // 用途：sceKernel 分配的内存块 / ELF 段 / sceGxmMapMemory 的显存块统一在此登记，

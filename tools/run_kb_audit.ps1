@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 ﻿# run_kb_audit.ps1 - verification line 15: anti-forgetting coverage audit
 $ErrorActionPreference = "Stop"
 $py = "C:\dev\p5dsrc\tools\kb_audit.py"

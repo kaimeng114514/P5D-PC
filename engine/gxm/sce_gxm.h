@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // sceGxm 图形API翻译层
 // 将PSV GXM调用翻译为Vulkan
 // 基于vita-headers NID数据库生成，共267个函数

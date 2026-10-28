@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """aot_difftest.py - instruction-semantics differential test for the P5D static AOT recompiler.

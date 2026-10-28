@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // PSV原生移植 - 日志系统
 #pragma once
 #include <cstdio>

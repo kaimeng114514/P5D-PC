@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # -*- coding: utf-8 -*-
 # 18.3634 static-recomp split generation/compile pipeline: emit translated C++ in batches (default 500 functions
 # per .cpp) and compile each batch separately (parallel via subprocess), then report timings and object sizes.

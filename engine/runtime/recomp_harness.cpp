@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // 18.3648: REAL libc HLE implementations in the harness (the placeholder returning one scratch pointer broke
 // memcpy/memset/strlen/strcpy/malloc/free on the boot path). Stub VAs verified against vitasdk yml:
 //   0x812B2370 _sce_set_dso_handle_main, 0x812B22A0 malloc, 0x812B2270 memcpy, 0x812B2260 memset,
@@ -1690,6 +1691,21 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       g_switch_budget = 3000;   // 18.3822: time-slice the switched-to fiber so it cannot monopolize the exec
       continue; }
     uint32_t pc = s->r[15];
+    { uint32_t _fp = pc & ~1u;
+      if (_fp == 0x811E5928u || _fp == 0x811E5A9Au || _fp == 0x811E5AECu || _fp == 0x811E5B9Au) {
+        static int _sm2 = 0, _sm2b = 0;
+        if (_fp == 0x811E5928u) { uint32_t _t0 = 0; uint8_t* _q0 = GP(0x816CDA2Cu); if (_q0) std::memcpy(&_t0, _q0, 4);
+            if (_t0 != 0 && _sm2++ < 200) { uint32_t _t = _t0;
+            uint16_t _st = 0xFFFF; uint8_t* _w = _t ? GP(_t + 2u) : nullptr; if (_w) std::memcpy(&_st, _w, 2);
+            printf("[FIOSSM2] RUN task=%08X state=%u blk=%u fib=%08X thr=%08X\n", _t, (unsigned)_st, g_blkcnt_total, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+        else if (_fp == 0x811E5A9Au) { static int _s6=0; if (_s6++ < 40) { printf("[FIOSSM2] STATE6-DONE blk=%u fib=%08X\n", g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+        else if (_fp == 0x811E5AECu) { if (_sm2b++ < 20) { uint32_t _t = 0; uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_t, _q, 4);
+            uint16_t _st = 0xFFFF; uint8_t* _w = _t ? GP(_t + 2u) : nullptr; if (_w) std::memcpy(&_st, _w, 2);
+            printf("[FIOSSM2] STATEGT8 task=%08X state=%u blk=%u fib=%08X\n", _t, (unsigned)_st, g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+        else { if (_sm2b++ < 20) { uint32_t _t = 0; uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_t, _q, 4);
+            uint16_t _st = 0xFFFF; uint8_t* _w = _t ? GP(_t + 2u) : nullptr; if (_w) std::memcpy(&_st, _w, 2);
+            printf("[FIOSSM2] WAIT-NOTASK task=%08X state=%u blk=%u fib=%08X\n", _t, (unsigned)_st, g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+      } }
     if (g_thrpump_env && !g_cur_thr && g_blkcnt_total > 1500000u && (g_blkcnt_total % 20000u) == 0u) { hle_thr_pump(s, 20000); pc = s->r[15]; }
     if (pc==0x811DA024u) { RecState* _ps = SPTR(s); g_last_alloc_sz = _ps->r[0]; g_last_alloc_fp = _ps->r[4]; }
     else if ((pc==0x811DA028u||pc==0x811DA02Au||pc==0x811DA030u||pc==0x811DA036u) && SPTR(s)->r[0]==0u && g_allocf_n++ < 24) { RecState* _ps = SPTR(s); printf("[ALLOCFAIL] pc=%08X size=%08X fp=%08X r0=%08X r1=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, g_last_alloc_sz, g_last_alloc_fp, _ps->r[0],_ps->r[1],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); }
@@ -2641,6 +2657,8 @@ static void init_job_pools() {
 
 
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { static int _ft=0; if ((a == 0x816CDA2Cu || a == 0x816CDA28u) && _ft++ < 20) {
+      printf("[FIRSTTASK] wr a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _r3=0; if ((v == 0x811F3124u || v == 0x811F3125u) && _r3++ < 20) {
       printf("[REG3124] st a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   { uint32_t _c = inputctx(); if (_c && a >= _c + 0x0Cu && a < _c + 0x1Cu && g_inpw_n++ < 40) {

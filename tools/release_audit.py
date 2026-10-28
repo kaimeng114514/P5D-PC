@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 """release_audit.py - 发布树合规扫描（P5D 静态重编译移植）
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 ﻿# kb_lookup.py - MANDATORY first step of every work round: search master doc for existing
 # conclusions relevant to current problem. Usage: py -3 tools\kb_lookup.py <kw|addr> ...
 import io, os, sys

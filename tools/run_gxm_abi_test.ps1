@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # run_gxm_abi_test.ps1 - standalone integration test for the generated SceGxm ABI layer.
 #
 # Compiles tests\gxm_abi_test.cpp together with the generated

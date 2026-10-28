@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """gxm_abi_gen.py -- generate the per-NID SceGxm HLE ABI wrapper layer.

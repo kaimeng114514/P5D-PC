@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 """run_checkpoints.py - 确定性检查点回归（效率+稳定性基础设施）
 

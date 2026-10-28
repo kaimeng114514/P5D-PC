@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // cpk_reader.h — CRIWARE CPK virtual filesystem + CRILAYLA decompressor.
 // Header-only, ported byte-for-byte from the VERIFIED prototype
 // tools/cpk_tools/cpk_extract_prototype.py (calibrated on P5D data.cpk).

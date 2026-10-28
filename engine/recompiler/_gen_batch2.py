@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # -*- coding: utf-8 -*-
 # 18.3633 static-recomp generator v2: normalized Thumb-2/VFP semantics, fixed VFP register mapping
 #   (capstone: ARM_REG_R0=66, ARM_REG_S0=79, ARM_REG_D0=14), wide forms, ubfx/bfi, mul/mla/smull, ror, b.w,

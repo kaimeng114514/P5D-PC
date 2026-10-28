@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // aot_difftest_host.cpp - host template for tools/aot_difftest.py (AOT differential test).
 //
 // This file is NOT compiled directly. tools/aot_difftest.py substitutes three markers:

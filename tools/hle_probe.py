@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """hle_probe.py — P5D 静态 AOT harness 的 HLE 桩调用探针（只读、离线）

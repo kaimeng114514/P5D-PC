@@ -56,6 +56,7 @@ docs/
   P5R_ANDROID_REFERENCE.md   同族引擎移植项目（P5R Android）参考研究
   RELEASE_COMPLIANCE.md      发布合规策略（红线/交付形态/本地缓存）
   _MD_INDEX.md               文档索引
+  REUSABLE_KNOWLEDGE.md      可复用知识清单（历史成果/工具/规格/负结果，按 ROI 排序）
 tools/
   release_audit.py           发布树合规扫描（禁止游戏文件/游戏衍生数据）
   kb_audit.py                知识库锚点审计（每个里程碑必须追加锚点）
@@ -92,7 +93,8 @@ engine/
 
 - 本仓库只包含**我们自己的引擎/工具源代码**与**研究记录**；不包含也不接受任何游戏文件、密钥、固件、由游戏数据翻译得到的二进制（如 SPIR-V 缓存）或游戏画面素材。
 - 本项目与 Atlus / SEGA / Sony 无关；仅用于**互操作性研究与个人备份游玩**。请使用自己合法持有的正版游戏。
-- 许可证：MIT（见 [LICENSE](LICENSE)）。
+- 许可证：**MIT**（宽松许可，见 [LICENSE](LICENSE)）。本仓库中的源代码、AOT 生成器、工具与研究文档均为 MIT；第三方组件许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- MIT 仅覆盖本仓库中我们原创的内容；游戏本体与游戏素材版权归 ATLUS / SEGA，**不在 MIT 授权范围内**，且本仓库不包含任何游戏数据。
 
 ## 相关记录
 

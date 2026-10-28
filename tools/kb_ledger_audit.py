@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # kb_ledger_audit.py - anti-forgetting ledger consistency audit.
 #
 # WHY: docs/P5D_MASTER.md starts with a CANONICAL STATE ledger whose milestone

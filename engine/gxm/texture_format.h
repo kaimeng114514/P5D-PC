@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // PSV原生移植 - 纹理格式与SceGxmTexture/GXP sampler/DDS 解析
 // 权威依据：Vita3K vita3k/gxm/include/gxm/types.h (ref 84184a3)
 #pragma once

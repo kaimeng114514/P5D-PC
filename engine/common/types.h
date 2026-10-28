@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // PSV原生移植 - 公共类型定义
 // 对应PSV的系统类型，确保二进制兼容
 #pragma once

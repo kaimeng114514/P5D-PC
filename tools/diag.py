@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 """diag.py - 一键分析一次 harness 运行日志（结构化、符号化、可自动化）
 

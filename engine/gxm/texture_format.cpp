@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // PSV原生移植 - 纹理格式与SceGxmTexture/GXP sampler/DDS 解析实现
 #include "texture_format.h"
 #include <vulkan/vulkan.h>
