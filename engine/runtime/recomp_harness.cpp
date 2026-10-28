@@ -746,6 +746,19 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
+static int g_ctxchk_n[8] = {0,0,0,0,0,0,0,0};
+static void ctxchk(int tag, uint32_t fib, RecState* s) {
+  uint32_t p = s->r[15] & ~1u;
+  if (p >= 0x811E5E80u && p <= 0x811E5EF2u) {
+    int i = tag & 7;
+    if (g_ctxchk_n[i]++ < 20) {
+      printf("[CTXCHK%d] fib=%08X pc=%08X sp=%08X lr=%08X r4=%08X\n",
+             tag, fib, s->r[15], s->r[13], s->r[14], s->r[4]);
+      fflush(stdout);
+    }
+  }
+}
+
 static int g_sptrace = 0, g_sptrace_active = 0, g_sptrace_n = 0, g_sptrace_traces = 0; static uint32_t g_sptrace_base = 0; static int g_fs5ec_n = 0, g_rs5ec_n = 0, g_cb5ec_n = 0, g_cb5ec2 = 0, g_cb5ec6 = 0, g_cb5ef0 = 0;
 static uint32_t g_ec6_sp = 0, g_ec6_lr = 0, g_ec6_fib = 0; static int g_ec6_n = 0, g_ec6_chg = 0; static int g_wlpro_n = 0, g_wlentry_n = 0, g_wlec6_n = 0;
 static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own_sp = 0, g_own_lr = 0; static int g_own_cnt = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
@@ -1816,7 +1829,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
         it = g_fctx.find(t);
         if (it == g_fctx.end()) { printf("[FIBER-SW] unknown target %08X (still after autoload)\n", t); break; }
       }
-      g_cur_fiber = t; std::memcpy(s->r, it->second.r, sizeof(it->second.r)); s->apsr = it->second.apsr;
+      g_cur_fiber = t; std::memcpy(s->r, it->second.r, sizeof(it->second.r)); s->apsr = it->second.apsr; ctxchk(3, t, s);
       { uint32_t _p = s->r[15] & ~1u; if ((_p >= 0x811E5E80u && _p <= 0x811E5EF2u) && g_rs5ec_n++ < 16) {
           printf("[REST5EC] fiber=%08X restorepc=%08X sp=%08X lr=%08X r4=%08X r5=%08X r7=%08X\n", t, s->r[15], s->r[13], s->r[14], s->r[4], s->r[5], s->r[7]); fflush(stdout); } }
       if ((s->r[15] == 0x8120682Au || s->r[5] == 0u) && g_blkcnt_total >= 1800000u && g_swsusp_n++ < 40) {   // 18.4222: suspicious restored context
@@ -2666,6 +2679,7 @@ static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int max
   uint32_t _ret = s->r[0];
   if (g_disp_n++ < 12) { printf("[DISPCALL] cb=%08X data=%08X blocks=%d ret=%08X\n", entry, arg, n, _ret); fflush(stdout); }
   if ((g_cb5ec2||g_cb5ec6||g_cb5ef0) && g_cb5ec_n++ < 20) { printf("[CB5EC] entry=%08X blocks=%d pro=%d loop=%d epi=%d\n", entry, n, g_cb5ec2, g_cb5ec6, g_cb5ef0); fflush(stdout); g_cb5ec2=0; g_cb5ec6=0; g_cb5ef0=0; }
+  { RecState _chk = *s; std::memcpy(_chk.r, save, sizeof(save)); ctxchk(5, 0u, &_chk); }
   std::memcpy(s->r, save, sizeof(save)); s->apsr = savea;
   return _ret;
 }
@@ -4190,7 +4204,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
           if (_cc.r[15]) { g_fctx[_t] = _cc; _it = g_fctx.find(_t); }
         }
         if (_it != g_fctx.end() && _it->second.r[15] != 0u) {
-          std::memcpy(s.r, _it->second.r, sizeof(s.r)); s.apsr = _it->second.apsr; g_cur_fiber = _t; nxt = s.r[15];
+          std::memcpy(s.r, _it->second.r, sizeof(s.r)); s.apsr = _it->second.apsr; g_cur_fiber = _t; nxt = s.r[15]; ctxchk(2, _t, &s);
           if (g_fsw_n++ < 12) { printf("[MSW] sync switch -> %08X pc=%08X r0=%08X\n", _t, s.r[15], s.r[0]); fflush(stdout); }
         }
       }
