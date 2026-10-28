@@ -15,7 +15,9 @@
 #include <string>
 #include <vector>
 static int g_loadclear_env = 0;
-static int g_hostthreads = 0;   // 18.4239: guest threads as real host threads (P5D_HOSTTHREADS=1)
+static int g_hostthreads = 0;
+static std::mutex g_hle_mtx;
+static uint32_t g_cur_hle_stub = 0;   // 18.4239: guest threads as real host threads (P5D_HOSTTHREADS=1)
 static int g_ht_n = 0;
 static std::mutex g_lwm_mtx;
 static std::map<uint32_t, std::pair<uint32_t,uint32_t> > g_lwm_real;   // work -> (owner_tid, count)
@@ -436,10 +438,10 @@ static inline uint8_t* GP(uint32_t va) {
   else if (va >= 0x84600000u && va < 0x8C600000u) off = (va - 0x84600000u) + 0x4000000u;   // heap arena 96MB
   else if (va >= 0x8C600000u && va < 0xA0000000u) off = (va - 0x8C600000u) + 0x10000000u;  // 18.4165: 320MB large-block arena
   else if (va >= 0x9F000000u && va < 0xA0000000u) off = (va - 0x9F000000u) + 0x10000000u;  // 18.4162: 16MB Vita user-memblock window (fibers/scratch below Region B)
-  else { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X blk=%08X ring:", va, g_cur_block);
+  else { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X blk=%08X stub=%08X tid=%u ring:", va, g_cur_block, g_cur_hle_stub, tl_ht_tid);
          for (int i = 0; i < 32; ++i) fprintf(stderr, " %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)i) & 63u]);
          fprintf(stderr, "\n"); return nullptr; }
-  if (off >= IMG_SIZE) { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X off=%08X blk=%08X ring:", va, off, g_cur_block);
+  if (off >= IMG_SIZE) { fprintf(stderr, "[HLE-BADMEM] hle access va=%08X off=%08X blk=%08X stub=%08X tid=%u ring:", va, off, g_cur_block, g_cur_hle_stub, tl_ht_tid);
     for (int i = 0; i < 32; ++i) fprintf(stderr, " %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)i) & 63u]);
     fprintf(stderr, "\n"); return nullptr; }
   return gp_img + off;
@@ -477,6 +479,7 @@ static uint32_t hle_malloc_ret(uint32_t p) {
   return p;
 }
 static uint32_t hle_malloc(uint32_t n) {
+  std::lock_guard<std::mutex> _hlk(g_hle_mtx);   // 18.4241: host-thread model - allocator must be thread-safe
   uint64_t sz64 = ((uint64_t)n + 15ull) & ~15ull;
   if (sz64 > 0x20000000ull) {   // 18.4191: reject absurd sizes - the 32-bit +15 wrap used to bypass the arena checks and memset() crashed natively
     printf("[HLE] malloc REJECT huge n=%08X\n", n); fflush(stdout); return 0;
@@ -627,6 +630,7 @@ static void ef2_probe(uint32_t pc, RecState* s, int site) {
 }
 
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
+  g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
   { g_hle_ring_va[g_hle_ring_n & 127] = stub_va; g_hle_ring_lr[g_hle_ring_n & 127] = s->r[14]; ++g_hle_ring_n; }
