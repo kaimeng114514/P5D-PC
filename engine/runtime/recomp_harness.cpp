@@ -346,7 +346,7 @@ static int g_gxm_ctx_n = 0, g_gxm_begin_n = 0, g_gxm_end_n = 0, g_gxm_present_n 
 static uint32_t g_display_cb = 0, g_display_cbds = 0, g_display_maxpend = 0, g_disp_pending = 0, g_disp_pending_cbd = 0;
 static uint32_t g_watch_task = 0; static int g_taskst_n = 0;
 static int g_loadpump = 0, g_loadpump_n = 0;
-static uint32_t g_wait_task = 0; static int g_waitlog_n = 0; static int g_stale_task_n = 0;
+static uint32_t g_wait_task = 0; static int g_waitlog_n = 0; static int g_waitpump_n = 0; static int g_stale_task_n = 0;
 static uint32_t g_cur_wait_obj = 0; static int g_waitobj_n = 0, g_taskobj_n = 0, g_taskobj2_n = 0;
 
 static uint32_t g_test_cb = 0; static int g_test_cb_done = 0;
@@ -480,8 +480,13 @@ static inline uint8_t* GP(uint32_t va) {
     fprintf(stderr, "\n"); return nullptr; }
   return gp_img + off;
 }
-static uint32_t loadpump_task(void) {   // 18.4275: pump ONLY a live Fios task (global head, valid state 0..8); never a stale/freed pointer
-  uint32_t _t = 0; uint8_t* _q2 = GP(0x816CDA2Cu); if (_q2) std::memcpy(&_t, _q2, 4);
+static uint32_t loadpump_task(void) {   // 18.4282: pump a live Fios task - prefer the MAIN WAIT-LOOP object (r4 at 0x811E5ED4) when its state is valid 0..8, else the global task head [0x816CDA2C]; never pump stale/freed pointers
+  uint32_t _t = g_wait_task;
+  if (_t) {
+    uint16_t _s0 = 0xFFFF; uint8_t* _q0 = GP(_t + 2u); if (_q0) std::memcpy(&_s0, _q0, 2);
+    if (_s0 <= 8u && _s0 != 6u) { if (g_waitpump_n++ < 12) { printf("[LOADPUMP-W] wait task=%08X state=%u (pump from wait-loop object)\n", _t, (unsigned)_s0); fflush(stdout); } return _t; }
+  }
+  _t = 0; uint8_t* _q2 = GP(0x816CDA2Cu); if (_q2) std::memcpy(&_t, _q2, 4);
   if (!_t) return 0;
   uint16_t _s2 = 0xFFFF; uint8_t* _q3 = GP(_t + 2u); if (_q3) std::memcpy(&_s2, _q3, 2);
   if (_s2 > 8u) { if (g_stale_task_n++ < 12) { printf("[LOADPUMP-SKIP] stale task=%08X state=%u (0x%X) - already completed/reused, not pumping\n", _t, (unsigned)_s2, _t); fflush(stdout); } return 0; }
@@ -743,7 +748,7 @@ static void job_probes(uint32_t pcv, RecState* s) {
     }
   }
   { uint32_t p = pcv & ~1u;
-    if (p == 0x811E5EC2u && s->r[4]) {
+    if (p == 0x811E5EC6u && s->r[4]) {
       if (g_wait_task != s->r[4]) {
         g_wait_task = s->r[4];
         if (g_waitlog_n++ < 40) { uint16_t _st=0; uint8_t* _q=GP(g_wait_task+2u); if(_q) std::memcpy(&_st,_q,2);
@@ -2814,6 +2819,7 @@ static void init_job_pools() {
 
 static int g_w16_n = 0;
 static int g_schedfix = 0, g_schedfix_n = 0;
+static int g_wl2_n = 0, g_wl2b_n = 0;
 static int g_dd4bc_n = 0, g_dd4c8_n = 0;
 static int g_sched_n = 0;
 static int g_de912_n = 0, g_de9ba_n = 0;
@@ -3973,6 +3979,14 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       printf("[FX] pc=%08X r0=%08X r4=%08X r5=%08X sp=%08X lr=%08X block=%08X\n",
              pc, s.r[0],s.r[4],s.r[5],s.r[13],s.r[14],g_cur_block);
     }
+    if ((pc & ~1u) == 0x811E5EC6u && g_wl2_n < 60) { ++g_wl2_n; uint32_t _r4=s.r[4]; uint16_t _st=0; uint8_t* _q=GP(_r4+2u); if(_q) std::memcpy(&_st,_q,2);
+      printf("[WL2] n=%u r4=%08X state=%u fib=%08X thr=%08X sp=%08X\n", g_blkcnt_total, _r4, (unsigned)_st, g_cur_fiber, g_cur_thr, s.r[13]); fflush(stdout); }
+    if (((pc & ~1u) == 0x811E5EF0u || (pc & ~1u) == 0x811E5EF2u) && g_wl2b_n < 20) { ++g_wl2b_n;
+      printf("[WL2R] n=%u WAIT-RETURN r4=%08X fib=%08X sp=%08X\n", g_blkcnt_total, s.r[4], g_cur_fiber, s.r[13]); fflush(stdout); }
+    if ((pc & ~1u) == 0x811E5ED4u && g_wl2b_n < 30) { ++g_wl2b_n; uint32_t _fl=0; uint8_t* _q=GP(0x816CC630u); if(_q) std::memcpy(&_fl,_q,4);
+      uint32_t _r4=s.r[4]; uint16_t _st=0; uint8_t* _q2=GP(_r4+2u); if(_q2) std::memcpy(&_st,_q2,2);
+      uint32_t _w0=0,_w4=0,_w8=0; _q2=GP(_r4); if(_q2) std::memcpy(&_w0,_q2,4); _q2=GP(_r4+4u); if(_q2) std::memcpy(&_w4,_q2,4); _q2=GP(_r4+8u); if(_q2) std::memcpy(&_w8,_q2,4);
+      printf("[WL2F] n=%u flag=%08X r4=%08X state=%u w=%08X %08X %08X fib=%08X sp=%08X\n", g_blkcnt_total, _fl, _r4, (unsigned)_st, _w0,_w4,_w8, g_cur_fiber, s.r[13]); fflush(stdout); }
     if ((pc & ~1u) == 0x81207632u && g_sched_n < 30) { ++g_sched_n;
       uint32_t _a20=0, _a18=0, _a1c=0; uint8_t* _q=GP(0x816CC628u); if(_q) std::memcpy(&_a20,_q,4);
       _q=GP(0x816CC620u); if(_q) std::memcpy(&_a18,_q,4); _q=GP(0x816CC624u); if(_q) std::memcpy(&_a1c,_q,4);
