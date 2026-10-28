@@ -118,6 +118,10 @@ static int g_dp_n = 0;
 static int g_ret1_n = 0;
 static int g_efe9a_n = 0;
 static uint32_t g_cur_hle_lr = 0;
+static thread_local uint32_t tl_last_malloc_n = 0;
+struct ARec { uint32_t p, sz, stub, lr; };
+static std::mutex g_arec_mtx;
+static std::vector<ARec> g_arec;
 static uint32_t g_obj20_addr = 0;
 static int g_obj20_n = 0;
 static int g_obj20w_n = 0;
@@ -484,13 +488,19 @@ static uint32_t g_heap5_ptr = 0x84000000u, g_heap5_end = 0x84600000u;  // 18.386
 static uint32_t g_target_alloc = 0;
 static int g_objalloc_n = 0;
 static uint32_t hle_malloc_ret(uint32_t p) {
+  if (p >= 0x84600000u && p < 0x8C600000u) {
+    { std::lock_guard<std::mutex> _lk(g_arec_mtx); g_arec.push_back({p, tl_last_malloc_n, g_cur_hle_stub, g_cur_hle_lr}); }
+    if (p == 0x8460F150u || (p >= 0x8460F000u && p < 0x84610000u)) {
+      printf("[AREC-TARGET] p=%08X sz=%08X stub=%08X lr=%08X\n", p, tl_last_malloc_n, g_cur_hle_stub, g_cur_hle_lr); fflush(stdout); }
+  }
   if (g_target_alloc && p == g_target_alloc && g_objalloc_n++ < 6) {
     printf("[OBJALLOC] p=%08X lr=%08X blk=%08X fib=%08X ring:", p, g_cur_hle_lr, g_cur_block, g_cur_fiber);
     for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
   return p;
 }
 static uint32_t hle_malloc(uint32_t n) {
-  std::lock_guard<std::mutex> _hlk(g_hle_mtx);   // 18.4241: host-thread model - allocator must be thread-safe
+  std::lock_guard<std::mutex> _hlk(g_hle_mtx);
+  tl_last_malloc_n = n;   // 18.4241: host-thread model - allocator must be thread-safe
   uint64_t sz64 = ((uint64_t)n + 15ull) & ~15ull;
   if (sz64 > 0x20000000ull) {   // 18.4191: reject absurd sizes - the 32-bit +15 wrap used to bypass the arena checks and memset() crashed natively
     printf("[HLE] malloc REJECT huge n=%08X\n", n); fflush(stdout); return 0;
@@ -2219,6 +2229,10 @@ extern "C" void harness_badmem(uint32_t va) {
   // 18.3870: dump the run_guest pc ring when a batch P() access faults (M329: block attribution was misleading).
   std::fprintf(stderr, " tid=%u stub=%08X tlring:", tl_ht_tid, g_cur_hle_stub);
   for (int i = 0; i < 28; ++i) std::fprintf(stderr, " %08X", tl_pc_ring[(tl_pc_n - 28u + (unsigned)i) & 63u]);
+  std::fprintf(stderr, " heapAalloc:");
+  { std::lock_guard<std::mutex> _lk(g_arec_mtx);
+    for (auto& _a : g_arec) if (_a.p >= 0x8460F000u && _a.p < 0x84610000u)
+      std::fprintf(stderr, " [p=%08X sz=%08X stub=%08X lr=%08X]", _a.p, _a.sz, _a.stub, _a.lr); }
   std::fprintf(stderr, " ring_va=%08X:", va);
   for (int i = 0; i < 32; ++i) std::fprintf(stderr, " %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)i) & 63u]);
   std::fprintf(stderr, "\n");
