@@ -746,6 +746,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
+static int g_deferfsw = 0;
 static int g_ctxchk_n[8] = {0,0,0,0,0,0,0,0};
 static void ctxchk(int tag, uint32_t fib, RecState* s) {
   uint32_t p = s->r[15] & ~1u;
@@ -1046,6 +1047,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_in_fex >= 1) { g_fiber_switch_to = fb; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
       if (g_in_fiber_exec) { g_fiber_switch_to = fb; r0 = 0; break; }
       if (!nested_allowed()) { g_switch_pending = 1; g_switch_target = fb; r0 = 0; break; }   // 18.4217: synchronous switch request; consumed by the dispatcher
+      { uint32_t _cb = g_cur_block & ~1u;
+        if ((g_deferfsw == 1 || g_deferfsw == 3) && g_ec6_sp != 0u) {
+          g_switch_pending = 1; g_switch_target = fb; r0 = 0; break; } }   // 18.4297: avoid nesting while the wait loop is active
       g_in_fiber_exec = 1;
       rc_save(s); fiber_load(s, fb, g_fiber_entry, g_fiber_arg);
       r0 = fiber_exec_to_completion(s);   // 18.4168: arbitrary-block slicing reverted (unsafe resume); g_fex_budget stays 0
@@ -1142,6 +1146,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_in_fex >= 1) { g_fiber_switch_to = fb; r0 = 0; break; }   // 18.3901: defer non-nested switch to loop-top
       if (g_in_fiber_exec) { g_fiber_switch_to = fb; r0 = 0; break; }   // handled by the outer exec loop
       if (!nested_allowed()) { g_switch_pending = 1; g_switch_target = fb; r0 = 0; break; }   // 18.4217: synchronous switch request; consumed by the dispatcher with the real next-pc
+      { uint32_t _cb = g_cur_block & ~1u;
+        if ((g_deferfsw == 1 || g_deferfsw == 2) && g_ec6_sp != 0u) {
+          g_switch_pending = 1; g_switch_target = fb; r0 = 0; break; } }   // 18.4297: avoid nesting while the wait loop is active
       g_in_fiber_exec = 1;
       rc_save(s); fiber_load(s, fb, g_fiber_entry, g_fiber_arg);
       r0 = fiber_exec_to_completion(s);
@@ -3156,6 +3163,7 @@ int main(int argc, char** argv) {
 { const char* _tw = getenv("P5D_THREADWEMU"); g_threadwemu = (_tw && atoi(_tw) != 0) ? 1 : 0; }
 { const char* _fg = getenv("P5D_WLGUARD"); g_wl_frame_guard = (_fg && atoi(_fg) != 0) ? 1 : 0; }
   { const char* _st = getenv("P5D_SPTRACE"); g_sptrace = (_st && atoi(_st) != 0) ? 1 : 0; }
+  { const char* _df = getenv("P5D_DEFERFSW"); g_deferfsw = (_df && atoi(_df) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
