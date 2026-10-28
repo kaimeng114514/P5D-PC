@@ -2203,6 +2203,8 @@ static uint32_t gbn_back(uint32_t t, int* pback) {
 extern "C" void harness_badmem(uint32_t va) {
   { printf("[SNAP] blk=%08X r0=%08X r1=%08X r2=%08X r4=%08X r5=%08X r7=%08X r8=%08X r9=%08X r13=%08X r14=%08X\n", g_snap_blk, g_snap_r[0],g_snap_r[1],g_snap_r[2],g_snap_r[4],g_snap_r[5],g_snap_r[7],g_snap_r[8],g_snap_r[9],g_snap_r[13],g_snap_r[14]); fflush(stdout); }
   // 18.3870: dump the run_guest pc ring when a batch P() access faults (M329: block attribution was misleading).
+  std::fprintf(stderr, " tid=%u stub=%08X tlring:", tl_ht_tid, g_cur_hle_stub);
+  for (int i = 0; i < 28; ++i) std::fprintf(stderr, " %08X", tl_pc_ring[(tl_pc_n - 28u + (unsigned)i) & 63u]);
   std::fprintf(stderr, " ring_va=%08X:", va);
   for (int i = 0; i < 32; ++i) std::fprintf(stderr, " %08X", g_pc_ring[(g_pc_ring_n + (uint32_t)i) & 63u]);
   std::fprintf(stderr, "\n");
