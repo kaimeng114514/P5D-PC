@@ -483,7 +483,8 @@ static uint32_t g_heapA_ptr = 0x84600000u;   // 18.3863: 96MB heap arena (image+
 static uint32_t g_heapA_end = 0x8C600000u;
 static uint32_t g_heap2_ptr = 0xA0000000u;  // secondary bump heap in region B (below fiber stacks)
 static uint32_t g_heap2_end = 0xA0DF0000u;  // 18.3862: enlarged 6MB -> 14MB
-static uint32_t g_heap4_ptr = 0x82E00000u, g_heap4_end = 0x83600000u;  // 18.3862: free low-image window (8MB)
+static uint32_t g_heap4_ptr = 0x82E00000u, g_heap4_end = 0x83600000u;
+static uint32_t g_resA_ptr = 0x81700000u, g_resA_end = 0x82800000u;   // 18.4250: reserve arena in the unused image window (batch P() maps this VA range)  // 18.3862: free low-image window (8MB)
 static uint32_t g_heap5_ptr = 0x84000000u, g_heap5_end = 0x84600000u;  // 18.3862: free low-image window (6MB)
 static uint32_t g_target_alloc = 0;
 static int g_objalloc_n = 0;
@@ -508,6 +509,9 @@ static uint32_t hle_malloc(uint32_t n) {
   uint32_t sz = (uint32_t)sz64;
   if (n >= 0x100000u) { uint32_t bp = (g_big_ptr + 15u) & ~15u;   // 18.4163: big blocks from the extended arena
     if ((uint64_t)bp + sz64 < (uint64_t)g_big_end) { g_big_ptr = bp + sz; std::memset(GP(bp), 0, sz); if (g_hm_n < 15) { ++g_hm_n; printf("[BIGARENA] n=%08X -> %08X\n", n, bp); } return hle_malloc_ret(bp); } }
+  if (n >= 0x100000u) { uint32_t ra = (g_resA_ptr + 15u) & ~15u;   // 18.4250: reserve arena, LARGE allocations only (VA 0x81700000-0x82800000 is mapped by both GP and batch P())
+    if ((uint64_t)ra + sz64 < (uint64_t)g_resA_end) { g_resA_ptr = ra + sz; std::memset(GP(ra), 0, sz);
+      if (g_hm_n < 25) { ++g_hm_n; printf("[RESARENA] n=%08X -> %08X\n", n, ra); } return hle_malloc_ret(ra); } }
   { uint32_t pa = (g_heapA_ptr + 15u) & ~15u;
     if ((uint64_t)pa + sz64 < (uint64_t)g_heapA_end) { g_heapA_ptr = pa + sz; std::memset(GP(pa), 0, sz); return hle_malloc_ret(pa); } }
   uint32_t p = (g_heap_ptr + 15u) & ~15u;
