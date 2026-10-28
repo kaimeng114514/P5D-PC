@@ -2794,14 +2794,19 @@ static void guest_thread_run(uint32_t tid) {
   if (g_ht_n++ < 60) { printf("[HT-EXIT] tid=%08X\n", tid); fflush(stdout); }
 }
 static uint8_t* gimg_ptr() { return gp_img; }
+static int g_ind_n = 0;
 extern "C" uint32_t id_reg(int idx, RecState* s) {
   uint32_t t = s->r[idx & 15] & ~1u;
+  if (t >= 0x811830E0u && t <= 0x81183200u && g_ind_n++ < 60) { printf("[INDR] reg%d raw=%08X t=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", idx, s->r[idx & 15], t, g_cur_block, g_cur_fiber, g_cur_thr, s->r[13]); fflush(stdout); }
+  if (t >= 0x81181A00u && t <= 0x81181C60u && g_ind_n++ < 60) { printf("[INDR2] reg%d raw=%08X t=%08X blk=%08X fib=%08X thr=%08X\n", idx, s->r[idx & 15], t, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); }
   if (gbn(t)) return t;
   printf("[INDIRECT-MISS] reg%d=%08X target=%08X block=%08X\n", idx, s->r[idx & 15], t, g_cur_block);
   return 0xFFFFFFFDu;
 }
 extern "C" uint32_t id_regv(uint32_t tgt, RecState* s) {
   uint32_t t = tgt & ~1u;
+  if (t >= 0x811830E0u && t <= 0x81183200u && g_ind_n++ < 60) { printf("[INDV] raw=%08X t=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", tgt, t, g_cur_block, g_cur_fiber, g_cur_thr, s->r[13]); fflush(stdout); }
+  if (t >= 0x81181A00u && t <= 0x81181C60u && g_ind_n++ < 60) { printf("[INDV2] raw=%08X t=%08X blk=%08X fib=%08X thr=%08X\n", tgt, t, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); }
   if (gbn(t)) return t;
   printf("[INDIRECT-MISS-V] target=%08X block=%08X\n", tgt, g_cur_block);
   return 0xFFFFFFFDu;
@@ -2999,11 +3004,13 @@ static int g_dd4bc_n = 0, g_dd4c8_n = 0;
 static int g_sched_n = 0;
 static int g_de912_n = 0, g_de9ba_n = 0;
 extern "C" void wr16_watch(uint32_t a, uint32_t v) {
+  { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW16] a=%08X off=%03X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { if (a >= 0x84600000u && a < 0x84600080u) { static int _tw=0; if (_tw++ < 40) { printf("[TLSWR16] a=%08X v=%04X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW32] a=%08X off=%03X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _lw=0; if ((a == 0x816CDB8Cu || a == 0x816CDB88u || a == 0x816CDB90u) && _lw++ < 40) { printf("[REGWR] a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   { static int _ew=0; if (a >= 0x84D19A00u && a < 0x84D19C00u && _ew++ < 60) { printf("[ENTWR] a=%08X off=%03X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D19A60u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { if (a >= 0x84600000u && a < 0x84600080u) { static int _tw2=0; if (_tw2++ < 40) { printf("[TLSWR32] a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
