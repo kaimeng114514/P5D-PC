@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: MIT
 # -*- coding: utf-8 -*-
 # 18.3634 static-recomp split generation/compile pipeline: emit translated C++ in batches (default 500 functions
 # per .cpp) and compile each batch separately (parallel via subprocess), then report timings and object sizes.
@@ -125,7 +124,8 @@ extern "C" int g_watch_on;
 extern "C" void wr32_watch(uint32_t a, uint32_t v);
 static inline void wr32(RecState* s,uint32_t a,uint32_t v){{ if (g_watch_on) wr32_watch(a,v); std::memcpy(P(s,a),&v,4); }}
 static inline uint16_t rd16(RecState* s,uint32_t a){{ uint16_t v; std::memcpy(&v,P(s,a),2); return v; }}
-static inline void wr16(RecState* s,uint32_t a,uint16_t v){{ std::memcpy(P(s,a),&v,2); }}
+extern "C" void wr16_watch(uint32_t a, uint32_t v);
+static inline void wr16(RecState* s,uint32_t a,uint16_t v){{ if (g_watch_on) wr16_watch(a,(uint32_t)v); std::memcpy(P(s,a),&v,2); }}
 static inline uint64_t rd64(RecState* s,uint32_t a){{ uint64_t v; std::memcpy(&v,P(s,a),8); return v; }}
 static inline void wr64(RecState* s,uint32_t a,uint64_t v){{ std::memcpy(P(s,a),&v,8); }}
 static inline void cmp_flags(RecState* s,uint32_t a,uint32_t b){{ s->apsr=(a==b)?0x40000000u:((a<b)?0x80000000u:0u); }}
@@ -218,7 +218,7 @@ def gen_batch(bi, batch):
             if m in ("tbb","tbh"):
                 mm = [op for op in ins.operands if op.type == ARM_OP_MEM]
                 if mm and mm[0].mem.base == 11:  # PC-relative table base
-                    base = (ins.address + 4) & ~3
+                    base = (ins.address + 4)   # 18.4278: TBH/TBB table base = insn+4 (NO align4; verified 0x811E597E -> base 0x811E5982)
                     for ii in range(256):
                         if m == "tbb":
                             bo = vo(base + ii)

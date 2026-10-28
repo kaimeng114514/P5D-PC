@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: MIT
 # -*- coding: utf-8 -*-
 # 18.3633 static-recomp generator v2: normalized Thumb-2/VFP semantics, fixed VFP register mapping
 #   (capstone: ARM_REG_R0=66, ARM_REG_S0=79, ARM_REG_D0=14), wide forms, ubfx/bfi, mul/mla/smull, ror, b.w,
@@ -953,7 +952,8 @@ out.append("static inline uint8_t* P(RecState* s, uint32_t a){ uint32_t off; if 
 out.append("static inline uint32_t rd32(RecState* s,uint32_t a){ uint32_t v; std::memcpy(&v,P(s,a),4); return v; }")
 out.append("static inline void wr32(RecState* s,uint32_t a,uint32_t v){ std::memcpy(P(s,a),&v,4); }")
 out.append("static inline uint16_t rd16(RecState* s,uint32_t a){ uint16_t v; std::memcpy(&v,P(s,a),2); return v; }")
-out.append("static inline void wr16(RecState* s,uint32_t a,uint16_t v){ std::memcpy(P(s,a),&v,2); }")
+out.append("extern \"C\" void wr16_watch(uint32_t a, uint32_t v);")
+out.append("static inline void wr16(RecState* s,uint32_t a,uint16_t v){ if (g_watch_on) wr16_watch(a,(uint32_t)v); std::memcpy(P(s,a),&v,2); }")
 out.append("static inline uint64_t rd64(RecState* s,uint32_t a){ uint64_t v; std::memcpy(&v,P(s,a),8); return v; }")
 out.append("static inline void wr64(RecState* s,uint32_t a,uint64_t v){ std::memcpy(P(s,a),&v,8); }")
 out.append("static inline void cmp_flags(RecState* s,uint32_t a,uint32_t b){ s->apsr=(a==b)?0x40000000u:((a<b)?0x80000000u:0u); }")
