@@ -707,12 +707,20 @@ static void hle_eflag_set(uint32_t obj, uint32_t bits) {
     if (_ok) { kv.second.waiting = 0; kv.second.ready = 1; } }
 }
 static int g_jobpost_n=0, g_jobfn_n=0, g_jobq_n=0, g_enq_n=0, g_qhead_n=0, g_touchprod_n=0, g_postcb_n=0;
+static uint32_t g_inpctx = 0;
+static uint32_t inputctx(void) { if (!g_inpctx) { uint8_t* q = GP(0x81539754u); if (q) std::memcpy(&g_inpctx, q, 4); } return g_inpctx; }
+static int g_inpw_n = 0, g_inp_init_n = 0, g_inp_update_n = 0, g_inp_update2_n = 0, g_inp_disp_n = 0;
+
 static void job_probes(uint32_t pcv, RecState* s) {
   uint32_t p = pcv & ~1u;
   if (p == 0x81003D26u) { if (g_jobpost_n++ < 20) { printf("[JOBPOST] q(r0)=%08X r1=%08X fn(r2)=%08X arg(r3)=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],s->r[2],s->r[3],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x81003D88u) { if (g_jobfn_n++ < 20) { printf("[JOBFN] r0=%08X r4=%08X thr=%08X fib=%08X\n", s->r[0],s->r[4],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160E8u) { if (g_jobq_n++ < 20) { printf("[JOBQ] consumer q(r0)=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160C4u) { if (g_enq_n++ < 20) { uint32_t head=0; uint8_t* q=GP(s->r[7]+4u); if(q) std::memcpy(&head,q,4); printf("[ENQ] q(r7)=%08X node(r6)=%08X head=%08X thr=%08X\n", s->r[7],s->r[6],head,g_cur_thr); fflush(stdout);} }
+  else if (p == 0x811F0A8Cu) { if (g_inp_init_n++ < 4) { printf("[INPINIT] enter\n"); fflush(stdout);} }
+  else if (p == 0x811F0D7Cu) { if (g_inp_update_n++ < 8) { printf("[INPUPD1] enter r0=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
+  else if (p == 0x811F10D8u) { if (g_inp_update2_n++ < 8) { printf("[INPUPD2] enter r0=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
+  else if (p == 0x811F0B82u) { if (g_inp_disp_n++ < 8) { printf("[INPDISP] enter r0=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x811F22B8u) { if (g_touchprod_n++ < 12) { printf("[TOUCHPROD] enter r0=%08X r1=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x81174CD4u) { if (g_postcb_n++ < 12) { printf("[POSTCB] enter r0=%08X r1=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160FCu) { if (g_qhead_n++ < 20) { uint32_t head=0; uint8_t* q=GP(s->r[7]+4u); if(q) std::memcpy(&head,q,4); printf("[QHEAD] q(r7)=%08X head=%08X thr=%08X\n", s->r[7],head,g_cur_thr); fflush(stdout);} }
@@ -2569,6 +2577,8 @@ static void init_job_pools() {
 
 
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { uint32_t _c = inputctx(); if (_c && a >= _c + 0x0Cu && a < _c + 0x1Cu && g_inpw_n++ < 40) {
+      printf("[INPW] a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   static int g_f630_n = 0;
   if (a == 0x816CC630u && g_f630_n++ < 40) { printf("[FLAG630] v=%08X blk=%08X fib=%08X sp=%08X fex=%d thr=%08X\n", v, g_cur_block, g_cur_fiber, g_snap_r[13], g_in_fex, g_cur_thr); fflush(stdout); }
 
