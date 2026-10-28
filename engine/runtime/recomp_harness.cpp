@@ -746,7 +746,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
 static void mainctx_note(const char* tag, uint32_t sp) {
@@ -3617,6 +3617,10 @@ int main(int argc, char** argv) {
         q=GP(0x816CC624u); if(q) std::memcpy(&_g1c,q,4);
         printf("[SPOLL] pc=%08X r5=%08X r0=%08X lr=%08X f80=%08X f94=%08X g18=%08X g1c=%08X fib=%08X fex=%d fl=%zu\n", g_cur_block, s.r[5], s.r[0], s.r[14], _f80, _f94, _g18, _g1c, g_cur_fiber, g_in_fex, g_fiber_list.size()); fflush(stdout);
       }
+    if ((pc & ~1u) == 0x81207734u && g_7734_n++ < 6) { printf("[B7734] ENTER r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X fib=%08X\n", s.r[0], s.r[1], s.r[2], s.r[3], s.r[13], s.r[14], g_cur_fiber); fflush(stdout); }
+    if ((pc & ~1u) == 0x811EB040u && g_b40_n++ < 6) { printf("[B40] after-call r0=%08X fp=%08X sp=%08X r9=%08X fib=%08X\n", s.r[0], s.r[11], s.r[13], s.r[9], g_cur_fiber); fflush(stdout); }
+    if ((pc & ~1u) == 0x811EB048u && g_b48_n++ < 6) { uint32_t _v=0; uint8_t* _q=GP(s.r[0]); if(_q) std::memcpy(&_v,_q,4); printf("[B48] r0=%08X [r0]=%08X mapped=%d sp=%08X fib=%08X\n", s.r[0], _v, _q?1:0, s.r[13], g_cur_fiber); fflush(stdout); }
+    if ((pc & ~1u) == 0x811EB04Eu && g_b4e_n++ < 6) { printf("[B4E] lr=%08X r1=%08X r2=%08X sp=%08X fib=%08X\n", s.r[14], s.r[1], s.r[2], s.r[13], g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x812068D8u && g_schedrun_n < 4 && g_in_fex == 0 && !g_in_fiber_exec && !g_noschedrun) {
       ++g_schedrun_n;
       uint32_t _si = (g_schedidx >= 0 && (size_t)g_schedidx < g_fiber_list.size()) ? (uint32_t)g_schedidx : 0u;
