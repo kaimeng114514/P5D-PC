@@ -244,6 +244,7 @@ static std::map<uint32_t, uint32_t> g_sema;
 static std::map<uint32_t, uint32_t> g_eflag;
 static int g_thr_log_n = 0;
 static int g_evw_n = 0;
+static int g_efc_n = 0, g_sc_n = 0, g_tc_n = 0;
 static uint32_t g_next_tid = 0x40010000u, g_next_sema = 0x50010000u, g_next_eflag = 0x60010000u;
 static uint32_t g_thr_wait_obj = 0, g_thr_wait_bits = 0, g_thr_wait_mode = 0;
 static void hle_thr_pump(RecState* s, int quantum);
@@ -1050,6 +1051,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t entry = s->r[1];
       uint32_t tid = (g_next_tid += 0x1000u);
       if (entry != 0x811E68C9u && entry != 0x8120767Du) printf("[THR2] create tid=%08X entry=%08X lr=%08X sp=%08X\n", tid, entry, s->r[14], s->r[13]);
+      if (g_tc_n++ < 40) { printf("[TCREATE2] tid=%08X entry=%08X prio=%08X stack=%08X lr=%08X thr=%08X\n", tid, entry, s->r[2], s->r[3], s->r[14], g_cur_thr); fflush(stdout); }
       if (tid) { HThread& t = g_thr[tid]; std::memset(&t, 0, sizeof(t)); t.entry = entry; t.alive = 1;
         if (g_thr_log_n++ < 20) printf("[THR] create tid=%08X entry=%08X lr=%08X\n", tid, entry, s->r[14]); }
       r0 = tid; break; }
@@ -1077,6 +1079,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t cnt = s->r[2];   // 18.4232: sceKernelCreateSema(name,attr,initCount,maxCount) - initCount is r2, NOT r1(attr)
       uint32_t obj = (g_next_sema += 0x1000u);
       if (obj) g_sema[obj] = cnt;
+      { uint32_t _np = s->r[0]; char _nm[48]; int _i=0; uint8_t* _q = GP(_np); if (_q) { for (; _i<40; ++_i) { char _c=(char)_q[_i]; if(!_c) break; _nm[_i] = (_c>=32&&_c<127)?_c:'.'; } } _nm[_i]=0; if (g_sc_n++ < 30) { printf("[SCREATE] obj=%08X init=%u name='%s' lr=%08X thr=%08X\n", obj, cnt, _nm, s->r[14], g_cur_thr); fflush(stdout); } }
       if (g_thr_log_n++ < 20) printf("[THR] create_sema obj=%08X init=%u\n", obj, cnt);
       r0 = obj; break; }
     case 0x812B27A0u: {                                               // sceKernelWaitSema
@@ -1112,6 +1115,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t init = s->r[2];   // 18.4232: sceKernelCreateEventFlag(name,attr,initPattern,opt) - init pattern is r2
       uint32_t obj = (g_next_eflag += 0x1000u);
       if (obj) g_eflag[obj] = init;
+      { uint32_t _np = s->r[0]; char _nm[48]; int _i=0; uint8_t* _q = GP(_np); if (_q) { for (; _i<40; ++_i) { char _c=(char)_q[_i]; if(!_c) break; _nm[_i] = (_c>=32&&_c<127)?_c:'.'; } } _nm[_i]=0; if (g_efc_n++ < 30) { printf("[EFCREATE] obj=%08X init=%08X name='%s' lr=%08X thr=%08X\n", obj, init, _nm, s->r[14], g_cur_thr); fflush(stdout); } }
       if (g_thr_log_n++ < 20) printf("[THR] create_eflag obj=%08X init=%08X\n", obj, init);
       r0 = obj; break; }
     case 0x812B2880u: {                                               // 18.4234: sceKernelWaitEventFlag - old-runtime mode semantics (bit0=OR, bit2=CLEAR, bit3? old uses 4=CLEAR_ALL, 2=CLEAR_BITS)
