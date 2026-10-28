@@ -789,7 +789,9 @@ static void ctxchk(int tag, uint32_t fib, RecState* s) {
 static int g_sptrace = 0, g_sptrace_active = 0, g_sptrace_n = 0, g_sptrace_traces = 0; static uint32_t g_sptrace_base = 0; static int g_fs5ec_n = 0, g_rs5ec_n = 0, g_cb5ec_n = 0, g_cb5ec2 = 0, g_cb5ec6 = 0, g_cb5ef0 = 0;
 static uint32_t g_ec6_sp = 0, g_ec6_lr = 0, g_ec6_fib = 0; static int g_ec6_n = 0, g_ec6_chg = 0; static int g_wlpro_n = 0, g_wlentry_n = 0, g_wlec6_n = 0;
 static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own_sp = 0, g_own_lr = 0; static int g_own_cnt = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
+static void hw_check(uint32_t pcv);
 static void job_probes(uint32_t pcv, RecState* s) {
+  hw_check(pcv);
   { uint32_t _o = (g_watch_task ? g_watch_task : g_cur_wait_obj);
     if (_o) {
       for (int _i = 0; _i < 8; ++_i) {
@@ -2732,6 +2734,7 @@ static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int max
   s->r[0] = arg; s->r[1] = 0; s->r[14] = 0xFFFFFFFEu; s->r[15] = entry & ~1u;
   uint32_t pc = s->r[15]; int n = 0;
   while (n++ < maxblocks) {
+    hw_check(pc);
     uint32_t q = pc & ~1u;
     if (q == 0x811E5EC2u) ++g_cb5ec2; else if (q == 0x811E5EC6u) ++g_cb5ec6; else if (q == 0x811E5EF0u) ++g_cb5ef0;
     if (q >= 0xFFFFFF00u || pc == 0u) break;
@@ -2828,6 +2831,15 @@ extern "C" uint32_t p5d_abi_untranslate(const void* hp) {
   g_handle_map.push_back(std::make_pair(hp, _gv));
   if (g_handle_map_n <= 8) { printf("[HANDLE] host=%p -> guest=%08X (opaque)\n", hp, _gv); fflush(stdout); }
   return _gv;
+}
+
+static void hw_check(uint32_t pcv) {
+  if (!g_hw_handle) return;
+  uint32_t _st=0,_p=0,_sz=0; uint8_t* _q;
+  _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st,_q,4); _q=GP(g_hw_handle+0x8cu); if(_q) std::memcpy(&_p,_q,4); _q=GP(g_hw_handle+0x90u); if(_q) std::memcpy(&_sz,_q,4);
+  if (_st!=g_hw_st || _p!=g_hw_p || _sz!=g_hw_sz) {
+    if (g_hw_n++ < 80) { printf("[HW] bypc=%08X st:%08X->%08X p:%08X->%08X sz:%08X->%08X fib=%08X thr=%08X\n", pcv, g_hw_st, _st, g_hw_p, _p, g_hw_sz, _sz, g_cur_fiber, g_cur_thr); fflush(stdout); }
+    g_hw_st=_st; g_hw_p=_p; g_hw_sz=_sz; }
 }
 extern "C" void harness_badmem(uint32_t va) {
   { printf("[SNAP] blk=%08X r0=%08X r1=%08X r2=%08X r4=%08X r5=%08X r7=%08X r8=%08X r9=%08X r13=%08X r14=%08X\n", g_snap_blk, g_snap_r[0],g_snap_r[1],g_snap_r[2],g_snap_r[4],g_snap_r[5],g_snap_r[7],g_snap_r[8],g_snap_r[9],g_snap_r[13],g_snap_r[14]); fflush(stdout); }
@@ -3718,7 +3730,8 @@ int main(int argc, char** argv) {
       uint32_t _m0=0,_m4=0,_p=0,_sz=0; uint8_t* _q;
       _q=GP(s.r[0]); if(_q) std::memcpy(&_m0,_q,4); _q=GP(s.r[0]+4u); if(_q) std::memcpy(&_m4,_q,4);
       _q=GP(s.r[0]+0x8cu); if(_q) std::memcpy(&_p,_q,4); _q=GP(s.r[0]+0x90u); if(_q) std::memcpy(&_sz,_q,4);
-      printf("[FHDL] handle=%08X m0=%08X m4=%08X +0x8c=%08X +0x90=%08X lr=%08X sp=%08X fib=%08X\n", s.r[0], _m0, _m4, _p, _sz, s.r[14], s.r[13], g_cur_fiber); fflush(stdout); }
+      printf("[FHDL] handle=%08X m0=%08X m4=%08X +0x8c=%08X +0x90=%08X lr=%08X sp=%08X fib=%08X\n", s.r[0], _m0, _m4, _p, _sz, s.r[14], s.r[13], g_cur_fiber);
+      printf("[GOTSLOTS]"); for (int _k=0;_k<10;++_k){ uint32_t _w=0; uint8_t* _g=GP(0x81513DD4u+(uint32_t)_k*4u); if(_g) std::memcpy(&_w,_g,4); printf(" %08X=%08X", 0x81513DD4u+(uint32_t)_k*4u, _w);} printf("\n"); fflush(stdout); }
     if ((pc & ~1u) == 0x811DEAB4u && g_ab4_n++ < 10) {
       printf("[FAB4] type=%08X flags=%08X params=%08X lr=%08X sp=%08X fib=%08X pw:", s.r[0], s.r[1], s.r[2], s.r[14], s.r[13], g_cur_fiber);
       for (int _k=0;_k<6;++_k) { uint32_t _w=0; uint8_t* _q=GP(s.r[2]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); } printf(" ring:");
