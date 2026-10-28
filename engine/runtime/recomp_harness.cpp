@@ -236,15 +236,16 @@ static uint32_t g_fiber_arg = 0;
 
 struct FCtx { uint32_t r[16]; uint32_t apsr; };
 static std::map<uint32_t, FCtx> g_fctx;
-struct HThread { uint32_t entry, arg, stack; FCtx ctx; int alive, ready, waiting; uint32_t wait_obj, wait_bits; };
+struct HThread { uint32_t entry, arg, stack; FCtx ctx; int alive, ready, waiting; uint32_t wait_obj, wait_bits, wait_mode; };
 static std::map<uint32_t, HThread> g_thr;
 static uint32_t g_cur_thr = 0;
 static int g_thr_blocked = 0;
 static std::map<uint32_t, uint32_t> g_sema;
 static std::map<uint32_t, uint32_t> g_eflag;
 static int g_thr_log_n = 0;
+static int g_evw_n = 0;
 static uint32_t g_next_tid = 0x40010000u, g_next_sema = 0x50010000u, g_next_eflag = 0x60010000u;
-static uint32_t g_thr_wait_obj = 0, g_thr_wait_bits = 0;
+static uint32_t g_thr_wait_obj = 0, g_thr_wait_bits = 0, g_thr_wait_mode = 0;
 static void hle_thr_pump(RecState* s, int quantum);
 static uint32_t g_cur_fiber = 0;
 static uint32_t g_last_fiber = 0;
@@ -1113,15 +1114,23 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (obj) g_eflag[obj] = init;
       if (g_thr_log_n++ < 20) printf("[THR] create_eflag obj=%08X init=%08X\n", obj, init);
       r0 = obj; break; }
-    case 0x812B2880u: {                                               // sceKernelWaitEventFlag
-      uint32_t obj = s->r[0], bits = s->r[1], mode = s->r[2];
+    case 0x812B2880u: {                                               // 18.4234: sceKernelWaitEventFlag - old-runtime mode semantics (bit0=OR, bit2=CLEAR, bit3? old uses 4=CLEAR_ALL, 2=CLEAR_BITS)
+      uint32_t obj = s->r[0], bits = s->r[1], mode = s->r[2], outp = s->r[3];
+      bool orMode = (mode & 1u) != 0u;
+      auto eval = [&](uint32_t curv) -> bool { return bits == 0u || (orMode ? ((curv & bits) != 0u) : ((curv & bits) == bits)); };
       uint32_t cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u);
-      if (bits == 0u || (cur & bits) == bits) {
-        if (bits) { if (mode == 1u) g_eflag[obj] = 0u; else if (mode == 2u || mode == 3u) g_eflag[obj] = (cur & ~bits); }
-        if (s->r[3]) { uint8_t* p = GP(s->r[3]); uint32_t rr = bits; if (p) std::memcpy(p, &rr, 4); }
+      bool ok = eval(cur);
+      if (!ok && !g_cur_thr) {   // main thread: run workers / retry (they may Set the flag)
+        for (int _sp = 0; _sp < 2000 && !ok; ++_sp) { hle_thr_pump(s, 400); cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); }
+      }
+      if (g_evw_n++ < 40) { printf("[EVW] wait obj=%08X bits=%08X mode=%X cur=%08X ok=%d thr=%08X lr=%08X\n", obj, bits, mode, cur, (int)ok, g_cur_thr, s->r[14]); fflush(stdout); }
+      if (ok) {
+        if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &cur, 4); }
+        if (mode & 4u) g_eflag[obj] = 0u;                      // CLEAR_ALL
+        else if (mode & 2u) g_eflag[obj] = cur & ~bits;        // CLEAR waited bits
         r0 = 0;
-      } else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = bits; r0 = 0; }
-      else r0 = 0;
+      } else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = bits; g_thr_wait_mode = mode; r0 = 0; }
+      else { if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &cur, 4); } r0 = 0; }
       break; }
     case 0x812B2AE0u: {                                               // sceKernelSetEventFlag
       uint32_t obj = s->r[0], bits = s->r[1];
@@ -1129,7 +1138,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_thr_log_n++ < 80) printf("[EVT] set obj=%08X bits=%08X cur_thr=%08X lr=%08X\n", obj, bits, g_cur_thr, s->r[14]);
       if (g_evt2_n++ < 60) { printf("[EVT2] set obj=%08X bits=%08X thr=%08X lr=%08X\n", obj, bits, g_cur_thr, s->r[14]); fflush(stdout); }
       { uint32_t cur2 = g_eflag[obj];
-        for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj && (kv.second.wait_bits == 0u || (cur2 & kv.second.wait_bits) == kv.second.wait_bits)) { kv.second.waiting = 0; kv.second.ready = 1; } }
+        for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) {
+          bool _or = (kv.second.wait_mode & 1u) != 0u;
+          bool _ok = kv.second.wait_bits == 0u || (_or ? ((cur2 & kv.second.wait_bits) != 0u) : ((cur2 & kv.second.wait_bits) == kv.second.wait_bits));
+          if (_ok) { kv.second.waiting = 0; kv.second.ready = 1; } } }
       r0 = 0; break; }
     case 0x812B2AB0u: r0 = 0; break;                                  // sceKernelDeleteSema
     case 0x812B1530u: {                                               // sceGxmShaderPatcherGetProgramFromId(id) -> fake program ptr
@@ -2283,7 +2295,7 @@ static void hle_thr_pump(RecState* s, int quantum) {
     int n = 0;
     while (n++ < quantum) {
       if (g_thrtrace && g_thrtr_n++ < 160) { printf("[THRBLK] tid=%08X #%d pc=%08X lr=%08X r0=%08X r4=%08X r5=%08X sp=%08X\n", kv.first, n, pc, s->r[14], s->r[0], s->r[4], s->r[5], s->r[13]); fflush(stdout); }
-      if (g_thr_blocked) { t.ready = 0; t.waiting = 1; t.wait_obj = g_thr_wait_obj; t.wait_bits = g_thr_wait_bits; break; }
+      if (g_thr_blocked) { t.ready = 0; t.waiting = 1; t.wait_obj = g_thr_wait_obj; t.wait_bits = g_thr_wait_bits; t.wait_mode = g_thr_wait_mode; break; }
     if ((pc & ~1u) == 0x811EA552u) { if (g_ea552_n++ < 60) { printf("[EA552] ENTER r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EA5FEu) { if (g_ea552_n++ < 60) { printf("[EA552] MAPLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) { if (g_ea552_n++ < 60) { printf("[EA552] MATLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
