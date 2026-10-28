@@ -48,6 +48,8 @@ static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include "cpk_reader.h"
 
 struct RecState { uint32_t r[16]; uint32_t apsr; uint8_t* base; uint32_t mem_size; uint64_t d[32]; };
+static RecState* SPTR(RecState* x) { return x; }
+template<class T> static RecState* SPTR(T& x) { return &x; }
 extern "C" uint32_t g_cur_block = 0;
 static int g_thry_n = 0;
 static int g_fact_bit = 0;
@@ -719,11 +721,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       r0 = dst; break; }
     case 0x812B2360u: r0 = 0; break;                                   // __at_quick_exit
     case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr
-    case 0x812B2830u: {                                               // sceKernelLockLwMutex (host-thread real lock)
-      if (tl_ht_tid) { uint32_t w = s->r[0]; auto& e = g_lwm_real[w]; for (;;) { if (e.first == 0u || e.first == tl_ht_tid) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); } e.first = tl_ht_tid; ++e.second; }
+    case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread: otherwise host threads and main race on guest heap)
+      if (g_hostthreads) { uint32_t me = tl_ht_tid ? tl_ht_tid : 0x40010000u; uint32_t w = s->r[0]; auto& e = g_lwm_real[w];
+        for (;;) { if (e.first == 0u || e.first == me) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
+        e.first = me; ++e.second; }
       r0 = 0; break; }
-    case 0x812B28A0u: {                                               // sceKernelUnlockLwMutex (host-thread real lock)
-      if (tl_ht_tid) { uint32_t w = s->r[0]; auto it = g_lwm_real.find(w); if (it != g_lwm_real.end()) { if (it->second.second > 1u) --it->second.second; else { it->second.first = 0u; it->second.second = 0u; } } }
+    case 0x812B28A0u: {                                               // sceKernelUnlockLwMutex (real lock in host-thread mode, including main thread)
+      if (g_hostthreads) { uint32_t w = s->r[0]; auto it = g_lwm_real.find(w); if (it != g_lwm_real.end()) { if (it->second.second > 1u) --it->second.second; else { it->second.first = 0u; it->second.second = 0u; } } }
       r0 = 0; break; }
     case 0x812B1910u: r0 = 0; break;                                   // sceAppUtilInit
     case 0x812B11B0u: {                                               // 18.4086: pre-registration init writes a NON-ZERO output
@@ -1408,6 +1412,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       continue; }
     uint32_t pc = s->r[15];
     if (g_thrpump_env && !g_cur_thr && g_blkcnt_total > 1500000u && (g_blkcnt_total % 20000u) == 0u) { hle_thr_pump(s, 20000); pc = s->r[15]; }
+    if (pc==0x811DA024u || pc==0x811DA534u || pc==0x811DA530u) { static int _aq=0; if (_aq++ < 40) { RecState* _ps = SPTR(s); printf("[ALLOC2] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) {
       if (!g_in_eaa4) { g_in_eaa4 = 1;
         if (g_blkcnt_total >= 14000000u && g_eaa4_ent_n++ < 40)
@@ -1801,6 +1806,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       if ((pc & ~1u) == 0x8103F528u) { if (g_gcpy2_n++ < 60) { printf("[GCPY2] CPY_3F5 r8=%08X r6=%08X r5=%08X r4=%08X r1=%08X lr=%08X\n", s->r[8],s->r[6],s->r[5],s->r[4],s->r[1],s->r[14]); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EA552u) { if (g_ea552_n++ < 60) { printf("[EA552] ENTER r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EA5FEu) { if (g_ea552_n++ < 60) { printf("[EA552] MAPLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
+    if (pc==0x811DA024u || pc==0x811DA534u || pc==0x811DA530u) { static int _aq=0; if (_aq++ < 40) { RecState* _ps = SPTR(s); printf("[ALLOC2] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) { if (g_ea552_n++ < 60) { printf("[EA552] MATLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAB44u) { if (g_ea552_n++ < 60) { printf("[EA552] AB44 r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
           for (int _si=0;_si<16;++_si) g_snap_r[_si] = s->r[_si]; g_snap_blk = pc;
@@ -1948,6 +1954,7 @@ BlockFn fn = gbn(pc);
     if (!fn) { int back = 0; uint32_t bq = gbn_back(pc, &back);
       if (bq && back <= 16) { fn = gbn(bq); if (fn) { if (g_fback_n++ < 8) printf("[FBACK] pc=%08X -> block %08X (back %d)\n", pc, bq, back); pc = bq; } } }
     if (!fn) { printf("[FIBER-EXEC] no block for pc=%08X (cur=%08X)\n", pc, g_cur_fiber); fiber_save(s); break; }
+    if (pc==0x811DA024u || pc==0x811DA534u || pc==0x811DA530u) { static int _aq=0; if (_aq++ < 40) { RecState* _ps = SPTR(s); printf("[ALLOC2] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) { ++g_eaa4_cnt; }
     if ((pc & ~1u) == 0x811EAB18u) { printf("[LOOPEXIT] eaa4_iter=%d cur=%08X\n", g_eaa4_cnt, g_cur_fiber); g_after_loop = 40; }
     if (g_after_loop > 0) { --g_after_loop; printf("[AFTERLOOP] #%d pc=%08X r0=%08X r7=%08X sp=%08X lr=%08X\n", 40 - g_after_loop, pc, s->r[0], s->r[7], s->r[13], s->r[14]); }
@@ -2383,6 +2390,7 @@ static void hle_thr_pump(RecState* s, int quantum) {
       if (g_thr_blocked) { t.ready = 0; t.waiting = 1; t.wait_obj = g_thr_wait_obj; t.wait_bits = g_thr_wait_bits; t.wait_mode = g_thr_wait_mode; break; }
     if ((pc & ~1u) == 0x811EA552u) { if (g_ea552_n++ < 60) { printf("[EA552] ENTER r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EA5FEu) { if (g_ea552_n++ < 60) { printf("[EA552] MAPLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
+    if (pc==0x811DA024u || pc==0x811DA534u || pc==0x811DA530u) { static int _aq=0; if (_aq++ < 40) { RecState* _ps = SPTR(s); printf("[ALLOC2] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) { if (g_ea552_n++ < 60) { printf("[EA552] MATLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAB44u) { if (g_ea552_n++ < 60) { printf("[EA552] AB44 r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s->r[0], s->r[1], s->r[2], s->r[7], s->r[9], s->r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
             for (int _si=0;_si<16;++_si) g_snap_r[_si] = s->r[_si]; g_snap_blk = pc;
@@ -2973,6 +2981,7 @@ int main(int argc, char** argv) {
     if ((pc & ~1u) == 0x812A39A0u) { if (g_gcpy2_n++ < 60) { printf("[GCPY3] CPY_POST r8=%08X r6=%08X r5=%08X r4=%08X r1=%08X lr=%08X\n", s.r[8],s.r[6],s.r[5],s.r[4],s.r[1],s.r[14]); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EA552u) { if (g_ea552_n++ < 60) { printf("[EA552] ENTER r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s.r[0], s.r[1], s.r[2], s.r[7], s.r[9], s.r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EA5FEu) { if (g_ea552_n++ < 60) { printf("[EA552] MAPLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s.r[0], s.r[1], s.r[2], s.r[7], s.r[9], s.r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
+    if (pc==0x811DA024u || pc==0x811DA534u || pc==0x811DA530u) { static int _aq=0; if (_aq++ < 40) { RecState* _ps = SPTR(s); printf("[ALLOC2] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) { if (g_ea552_n++ < 60) { printf("[EA552] MATLOOP r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s.r[0], s.r[1], s.r[2], s.r[7], s.r[9], s.r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAB44u) { if (g_ea552_n++ < 60) { printf("[EA552] AB44 r0=%08X r1=%08X r2=%08X r7=%08X r9=%08X lr=%08X fib=%08X thr=%08X\n", s.r[0], s.r[1], s.r[2], s.r[7], s.r[9], s.r[14], g_cur_fiber, g_cur_thr); fflush(stdout); } }
         for (int _si=0;_si<16;++_si) g_snap_r[_si] = s.r[_si]; g_snap_blk = pc;
