@@ -746,7 +746,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
 static void mainctx_note(const char* tag, uint32_t sp) {
@@ -3619,6 +3619,11 @@ int main(int argc, char** argv) {
         q=GP(0x816CC624u); if(q) std::memcpy(&_g1c,q,4);
         printf("[SPOLL] pc=%08X r5=%08X r0=%08X lr=%08X f80=%08X f94=%08X g18=%08X g1c=%08X fib=%08X fex=%d fl=%zu\n", g_cur_block, s.r[5], s.r[0], s.r[14], _f80, _f94, _g18, _g1c, g_cur_fiber, g_in_fex, g_fiber_list.size()); fflush(stdout);
       }
+    if (((pc & ~1u) == 0x811EAAE4u || (pc & ~1u) == 0x811EAAE2u || (pc & ~1u) == 0x811EAAD2u) && g_e4ent_n++ < 12) {
+      uint32_t _t=0; uint8_t* _q=GP(s.r[7]+0x304u); if(_q) std::memcpy(&_t,_q,4);
+      printf("[E4ENTRY] pc=%08X prev=%08X r7=%08X [r7+304]=%08X sp=%08X lr=%08X fib=%08X ring:", pc, g_last_main_pc, s.r[7], _t, s.r[13], s.r[14], g_cur_fiber);
+      for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+    if ((pc & ~1u) == 0x811EAAD2u && g_e4ent_n++ < 12) { printf("[E4CALL] bl 0x81207734 at 0x811EAAD2 args r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X\n", s.r[0], s.r[1], s.r[2], s.r[3], s.r[13], s.r[14]); fflush(stdout); }
     if ((pc & ~1u) == 0x811EAAD6u && g_r7734a_n++ < 6) { uint32_t _v=0; uint8_t* _q=GP(s.r[0]); if(_q) std::memcpy(&_v,_q,4); printf("[R7734A] ret r0=%08X [r0]=%08X mapped=%d r7=%08X sp=%08X lr=%08X fib=%08X\n", s.r[0], _v, _q?1:0, s.r[7], s.r[13], s.r[14], g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x811EB040u && g_r7734b_n++ < 6) { uint32_t _v=0; uint8_t* _q=GP(s.r[0]); if(_q) std::memcpy(&_v,_q,4); printf("[R7734B] ret r0=%08X [r0]=%08X mapped=%d fp=%08X sp=%08X fib=%08X\n", s.r[0], _v, _q?1:0, s.r[11], s.r[13], g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x81207734u && g_7734_n++ < 6) { printf("[B7734] ENTER r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X fib=%08X\n", s.r[0], s.r[1], s.r[2], s.r[3], s.r[13], s.r[14], g_cur_fiber); fflush(stdout); }
