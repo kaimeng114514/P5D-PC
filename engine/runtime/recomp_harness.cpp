@@ -882,6 +882,7 @@ static uint64_t hle_tick_us() {
   return now - t0 + 0x100000ull;
 }
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
+  hw_check(stub_va);
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
