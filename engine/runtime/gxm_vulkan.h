@@ -250,9 +250,7 @@ static int gxmvk_present_clear(float rr, float gg, float bb) {
     VkResult pr = P_QueuePresent(g_vk_queue, &pi);
     if (P_QueueWaitIdle) P_QueueWaitIdle(g_vk_queue);
     ++g_vk_frame;
-    { void* _bt[10]; USHORT _nb = CaptureStackBackTrace(0, 10, _bt, nullptr);
-  printf("[GXMVK] present frame=%u image=%u result=%d base=%p bt[%u]:", g_vk_frame, idx, (int)pr, (void*)GetModuleHandleA(NULL), (unsigned)_nb);
-  for (unsigned _i = 0; _i < _nb; ++_i) printf(" %p", _bt[_i]); printf("\n"); }
+    printf("[GXMVK] present frame=%u image=%u result=%d\n", g_vk_frame, idx, (int)pr);
     return (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR) ? 0 : -1;
 }
 
