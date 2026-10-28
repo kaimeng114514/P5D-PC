@@ -29,6 +29,7 @@ static uint32_t g_cur_hle_stub = 0;   // 18.4239: guest threads as real host thr
 static int g_ht_n = 0;
 static std::mutex g_lwm_mtx;
 static std::map<uint32_t, std::pair<uint32_t,uint32_t> > g_lwm_real;   // work -> (owner_tid, count)
+static int g_lwm_log_n = 0, g_trophy_log_n = 0, g_fdclass_log_n = 0, g_appmgr_log_n = 0, g_drm_n = 0, g_tick_log_n = 0;
 static thread_local uint32_t tl_ht_tid = 0;
 static thread_local uint32_t tl_pc_ring[64];
 static thread_local unsigned tl_pc_n = 0;
@@ -767,6 +768,12 @@ static bool io_open_host(const std::string& raw, HostFd& h, std::string& used) {
   if (!raw.empty() && cpk_read_any_impl(raw, data)) { h.mem = std::move(data); h.size = (int64_t)h.mem.size(); h.isMem = true; h.pos = 0; used = "<cpk>"; return true; }
   return false;
 }
+static uint64_t hle_tick_us() {
+  static uint64_t t0 = 0;
+  if (!t0) t0 = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  return now - t0 + 0x100000ull;
+}
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
@@ -882,24 +889,54 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2380u: r0 = 0; break;                                  // clock
     case 0x812B2390u: { if (s->r[0]) { uint8_t* q = GP(s->r[0]); if (q) { uint32_t z = 0; std::memcpy(q, &z, 4); } } r0 = 0; break; }  // time
     case 0x812B2400u: r0 = 0; break;                                  // localtime
-    case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr
-    case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread: otherwise host threads and main race on guest heap)
+    case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr (18.4272: reverted - old-runtime work+4/+8 writes reproduce the documented M684 BADMEM va=8 negative result)
+    case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread)
       if (g_hostthreads) { uint32_t me = tl_ht_tid ? tl_ht_tid : 0x40010000u; uint32_t w = s->r[0]; auto& e = g_lwm_real[w];
         for (;;) { if (e.first == 0u || e.first == me || g_shutdown) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
         e.first = me; ++e.second; }
       r0 = 0; break; }
-    case 0x812B28A0u: {                                               // sceKernelUnlockLwMutex (real lock in host-thread mode, including main thread)
+    case 0x812B28A0u: {                                               // sceKernelUnlockLwMutex
       if (g_hostthreads) { uint32_t w = s->r[0]; auto it = g_lwm_real.find(w); if (it != g_lwm_real.end()) { if (it->second.second > 1u) --it->second.second; else { it->second.first = 0u; it->second.second = 0u; } } }
       r0 = 0; break; }
     case 0x812B1910u: r0 = 0; break;                                   // sceAppUtilInit
-    case 0x812B11B0u: {                                               // 18.4086: pre-registration init writes a NON-ZERO output
-      { static int _gr=0; if (_gr++ < 4) { printf("[GXMREG] r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X\n", s->r[0],s->r[1],s->r[2],s->r[3],s->r[14]); fflush(stdout); } }
-      uint32_t _out = s->r[0];
-      uint8_t* _p = GP(_out);
-      if (_p) { uint32_t _one = 1u; std::memcpy(_p, &_one, 4); }
+    case 0x812B1B40u: {                                               // 18.4272: sceNpTrophySetupDialogGetStatus -> FINISHED(2): initDataRead step0 hard gate
+      if (g_trophy_log_n++ < 6) { printf("[TROPHY] SetupDialogGetStatus -> 2 (FINISHED)\n"); fflush(stdout); }
+      r0 = 2u; break; }
+    case 0x812B1AD0u: case 0x812B1B50u: case 0x812B1AF0u:             // Trophy SetupDialog Init/GetResult/Term -> SCE_OK
       r0 = 0; break;
-    }
-    case 0x812B11A0u: r0 = 0; break;                                  // 18.4086: registration setup -> success
+    case 0x812B1A90u: r0 = 2u; break;                                 // sceNetCheckDialogGetStatus -> FINISHED (if ever reached)
+    case 0x812B2670u: {                                               // 18.4272: _FDclass -> ARM RTABI codes (1 NaN / 2 INF / 4 ZERO / 8 SUBNORMAL / 16 NORMAL)
+      uint32_t b = (uint32_t)(s->d[0] & 0xFFFFFFFFull);               // s0 = low 32 bits of d0
+      uint32_t exp = (b >> 23) & 0xFFu, mant = b & 0x7FFFFFu;
+      if (exp == 0xFFu) r0 = (mant ? 1u : 2u);
+      else if (exp == 0u) r0 = (mant ? 8u : 4u);
+      else r0 = 16u;                                                   // normal / subnormal per IEEE754
+      if (g_fdclass_log_n++ < 8) { float fv; std::memcpy(&fv, &b, 4); printf("[FDCLASS] bits=%08X x=%g -> %u (RTABI)\n", b, (double)fv, r0); fflush(stdout); }
+      break; }
+    case 0x812B28E0u: {                                               // 18.4272: sceKernelGetProcessTimeWide() -> 64-bit wall-clock us in r0/r1 (NO out pointer!)
+      uint64_t tick = hle_tick_us();
+      s->r[1] = (uint32_t)(tick >> 32); r0 = (uint32_t)tick;
+      if (g_tick_log_n++ < 12) { printf("[CLOCK] procTimeWide=%llu lr=%08X\n", (unsigned long long)tick, s->r[14]); fflush(stdout); }
+      break; }
+    case 0x812B1EA0u: {                                               // 18.4272: sceRtcGetCurrentTick(out) -> write 64-bit tick if out is a guest pointer
+      uint64_t tick = hle_tick_us();
+      uint8_t* p = GP(s->r[0]); if (p) { std::memcpy(p, &tick, 8); if (g_tick_log_n++ < 12) { printf("[CLOCK] rtcTick=%llu out=%08X lr=%08X\n", (unsigned long long)tick, s->r[0], s->r[14]); fflush(stdout); } }
+      r0 = 0; break; }
+    case 0x812B1EB0u: {                                               // 18.4272: sceAudioOutOutput -> 0 (no PCM yet; must not self-spin the audio thread)
+      r0 = 0; break; }
+    case 0x812B18A0u: {                                               // 18.4272: sceAppUtilDrmOpen -> ENOENT (offline: no DLC; 0 => all 59 ADDCONT treated present)
+      if (g_drm_n++ < 64) { printf("[ADDCONT] DrmOpen#%d -> ENOENT (no DLC offline)\n", g_drm_n); fflush(stdout); }
+      r0 = 0x80010002u; break; }
+    case 0x812B18B0u: {                                               // 18.4272: sceAppUtilSystemParamGetInt(paramId, int* out) -> write 0
+      uint8_t* p = GP(s->r[1]); if (p) { uint32_t z = 0; std::memcpy(p, &z, 4); }
+      r0 = 0; break; }
+    case 0x812B11A0u: {                                               // 18.4272: sceAppMgrReceiveSystemEvent -> EAGAIN 0x80010001 when no event (0 caused 127M-spin)
+      if (g_appmgr_log_n++ < 6) { printf("[APPMGR] ReceiveSystemEvent -> EAGAIN\n"); fflush(stdout); }
+      r0 = 0x80010001u; break; }
+    case 0x812B11B0u: {                                               // 18.4272: _sceAppMgrGetAppState -> zero the out buffer
+      uint8_t* p = GP(s->r[0]); uint32_t sz = s->r[1] ? s->r[1] : 0x80u; if (p && sz) std::memset(p, 0, sz);
+      if (g_appmgr_log_n++ < 8) { printf("[APPMGR] GetAppState buf=%08X sz=%u -> zeroed\n", s->r[0], sz); fflush(stdout); }
+      r0 = 0; break; }
     case 0x812B2210u: r0 = 0; break;                                   // abort (should not happen)
     case 0x812B1860u: r0 = 0; break;                                   // sceSysmoduleLoadModule -> 0 success
     case 0x812B27B0u: {   // 18.4228c: the guest uses GetThreadId result as a POINTER base (BADMEM va = tid+2) -> return a real TLS-like guest object
@@ -1094,9 +1131,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
                  g_fiber_list.size()>0?g_fiber_list[0]:0, st1, g_fiber_list.size()>1?g_fiber_list[1]:0, st2); }
         r0 = 0; break; }
     case 0x812B29F0u: {                                               // sceKernelAllocMemBlock(name,type,size,opt) -> uid
-      uint32_t size = s->r[2];
+      uint32_t size = s->r[2]; uint32_t type = s->r[1];
       if (size > 0x4000000u) { printf("[MEMA-BIG] size=%08X name=%08X lr=%08X\n", size, s->r[0], s->r[14]); fflush(stdout); }
-      uint32_t addr = hle_malloc(size + 0x100u);
+      uint32_t align = 0x10000u;                                        // 18.4272: CDRAM memblock (type>>24 0x09/0x0D) must be 1MiB aligned or video decoder creation fails
+      if (((type >> 24) == 0x09u) || ((type >> 24) == 0x0Du)) align = 0x100000u;
+      uint32_t addr = hle_malloc(size + align + 0x100u);
+      addr = (addr + align - 1u) & ~(align - 1u);
       uint32_t uid = ++g_memuid;
       g_memblks[uid] = std::make_pair(addr, size);
       printf("[MEMA] AllocMemBlock uid=%08X size=%08X addr=%08X name=%08X lr=%08X\n", uid, size, addr, s->r[0], s->r[14]); fflush(stdout);
@@ -1108,7 +1148,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (it != g_memblks.end() && s->r[1]) {
         uint8_t* p = GP(s->r[1]);
         if (p) { uint32_t vals[8] = { it->second.first, it->second.second, it->second.second, 0, 0, 0, 0, 0 };
-          std::memcpy(p, vals, 32); }   // 18.3758: game reads [info+0] as the mapped BASE */
+          std::memcpy(p, vals, 32); }   // keep 32B (18.3758 behaviour; the "write 4 bytes only" doc note refers to sceKernelGetMemBlockBase, not GetMemBlockInfo)
         printf("[MEMB] GetMemBlockInfo uid=%08X -> base=%08X size=%08X info=%08X lr=%08X hit=1\n", s->r[0], it->second.first, it->second.second, s->r[1], s->r[14]); fflush(stdout);
         if (g_memdbg_n < 20) { printf("[MEMINFO] uid=%08X -> base=%08X size=%08X info=%08X\n", s->r[0], it->second.first, it->second.second, s->r[1]); }
       }
@@ -1522,6 +1562,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       r0 = hle_malloc((uint32_t)tot);
       if (g_calloc_n++ < 12) printf("[CALLOC] n=%u sz=%u -> %08X lr=%08X\n", n, sz, r0, s->r[14]);
       break; }
+    case 0x812B2A80u:                                                 // 18.4272: sceKernelDelayThreadCB (CriFs wait-loop lr=0x8127C0F8; 72,518 calls/100M blocks)
     case 0x812B2A50u: {                                               // sceKernelDelayThread -> cooperative yield (per-frame pacing)
       r0 = 0;
       if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
