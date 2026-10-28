@@ -706,13 +706,15 @@ static void hle_eflag_set(uint32_t obj, uint32_t bits) {
                                                  : ((g_eflag[obj] & kv.second.wait_bits) == kv.second.wait_bits));
     if (_ok) { kv.second.waiting = 0; kv.second.ready = 1; } }
 }
-static int g_jobpost_n=0, g_jobfn_n=0, g_jobq_n=0, g_enq_n=0, g_qhead_n=0;
+static int g_jobpost_n=0, g_jobfn_n=0, g_jobq_n=0, g_enq_n=0, g_qhead_n=0, g_touchprod_n=0, g_postcb_n=0;
 static void job_probes(uint32_t pcv, RecState* s) {
   uint32_t p = pcv & ~1u;
   if (p == 0x81003D26u) { if (g_jobpost_n++ < 20) { printf("[JOBPOST] q(r0)=%08X r1=%08X fn(r2)=%08X arg(r3)=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],s->r[2],s->r[3],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x81003D88u) { if (g_jobfn_n++ < 20) { printf("[JOBFN] r0=%08X r4=%08X thr=%08X fib=%08X\n", s->r[0],s->r[4],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160E8u) { if (g_jobq_n++ < 20) { printf("[JOBQ] consumer q(r0)=%08X thr=%08X fib=%08X\n", s->r[0],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160C4u) { if (g_enq_n++ < 20) { uint32_t head=0; uint8_t* q=GP(s->r[7]+4u); if(q) std::memcpy(&head,q,4); printf("[ENQ] q(r7)=%08X node(r6)=%08X head=%08X thr=%08X\n", s->r[7],s->r[6],head,g_cur_thr); fflush(stdout);} }
+  else if (p == 0x811F22B8u) { if (g_touchprod_n++ < 12) { printf("[TOUCHPROD] enter r0=%08X r1=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],g_cur_thr,g_cur_fiber); fflush(stdout);} }
+  else if (p == 0x81174CD4u) { if (g_postcb_n++ < 12) { printf("[POSTCB] enter r0=%08X r1=%08X thr=%08X fib=%08X\n", s->r[0],s->r[1],g_cur_thr,g_cur_fiber); fflush(stdout);} }
   else if (p == 0x810160FCu) { if (g_qhead_n++ < 20) { uint32_t head=0; uint8_t* q=GP(s->r[7]+4u); if(q) std::memcpy(&head,q,4); printf("[QHEAD] q(r7)=%08X head=%08X thr=%08X\n", s->r[7],head,g_cur_thr); fflush(stdout);} }
 }
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
@@ -1250,7 +1252,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (arglen && argp) { uint32_t nb = hle_malloc(arglen); if (nb) {
           uint8_t* src = GP(argp); uint8_t* dst = GP(nb);
           if (src && dst) { std::memcpy(dst, src, arglen); argbuf = nb; 
-            printf("[THRARG] copied arglen=%u argp=%08X -> %08X val0=%08X\n", arglen, argp, argbuf, *(uint32_t*)dst); } } }
+            { uint32_t w[4]={0,0,0,0}; std::memcpy(w, dst, arglen<16u?arglen:16u);
+              printf("[THRARG] tid=%08X arglen=%u argp=%08X -> %08X w0=%08X w1=%08X w2=%08X w3=%08X\n", tid, arglen, argp, argbuf, w[0],w[1],w[2],w[3]); } } } }
         t.ctx.r[0] = arglen; t.ctx.r[1] = argbuf;
         t.alive = 1; t.ready = 1; t.waiting = 0;
         if (g_hostthreads) {
