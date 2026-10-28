@@ -747,6 +747,8 @@ static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
 static int g_deferfsw = 0;
+static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
+static int g_driftdump_n = 0; static int g_swlog = 0, g_swlog_n = 0;
 static int g_ctxchk_n[8] = {0,0,0,0,0,0,0,0};
 static void ctxchk(int tag, uint32_t fib, RecState* s) {
   uint32_t p = s->r[15] & ~1u;
@@ -1034,6 +1036,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_blkcnt_total > 1400000u) { static int _frl=0; if (_frl++ < 40) { printf("[FRUN2] n=%u r0=%08X cur=%08X fex=%d inexec=%d lr=%08X sp=%08X ring:", g_blkcnt_total, s->r[0], g_cur_fiber, g_in_fex, g_in_fiber_exec, s->r[14], s->r[13]);
         for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       uint32_t fb = s->r[0] & ~1u;
+      if (g_swlog && g_swlog_n++ < 40) { printf("[SWLOG-RUN] blk=%08X fb=%08X sp=%08X lr=%08X ring:", g_cur_block, fb, s->r[13], s->r[14]); for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
       { static int _fr=0; if (_fr++ < 12) { printf("[FRUN] r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
           for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       if (fb < 0x80600000u || fb >= 0x8C600000u) { if (fb < 0xA0000000u || fb >= 0xA1000000u) {
@@ -1087,6 +1090,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       { static int _fs0=0; if (_fs0++ < 0) {} }
       { static int _fs=0; if (_fs++ < 16) { printf("[FSW] r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
           for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+      if (g_swlog && g_swlog_n++ < 80) { printf("[SWLOG-SW] blk=%08X fb=%08X sp=%08X lr=%08X ring:", g_cur_block, s->r[0] & ~1u, s->r[13], s->r[14]); for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
       if (g_swp_n < 40) { ++g_swp_n; printf("[SWP] fb=%08X in=%d cur=%08X sp=%08X\n", s->r[0] & ~1u, g_in_fiber_exec, g_cur_fiber, s->r[13]); }
       if (g_sw_dbg < 12) { ++g_sw_dbg; printf("[SWD] list=%zu in=%d alt=%d fb=%08X cur=%08X\n",
           g_fiber_list.size(), g_in_fiber_exec, g_sw_alt2, s->r[0] & ~1u, g_cur_fiber); }
@@ -3164,6 +3168,7 @@ int main(int argc, char** argv) {
 { const char* _fg = getenv("P5D_WLGUARD"); g_wl_frame_guard = (_fg && atoi(_fg) != 0) ? 1 : 0; }
   { const char* _st = getenv("P5D_SPTRACE"); g_sptrace = (_st && atoi(_st) != 0) ? 1 : 0; }
   { const char* _df = getenv("P5D_DEFERFSW"); g_deferfsw = (_df && atoi(_df) != 0) ? 1 : 0; }
+  { const char* _sl = getenv("P5D_SWLOG"); g_swlog = (_sl && atoi(_sl) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -4161,6 +4166,11 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         if (g_inv_n++ < 12) { printf("[INVCHG] prevsp=%08X newbase=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X fib=%08X ring:", g_inv_last_sp, s.r[13], s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7], s.r[14], g_cur_fiber);
           for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
         g_inv_base = s.r[13];
+        if (g_driftdump_n++ < 5) {
+          printf("[DRIFTDUMP] === prevsp=%08X newsp=%08X (last 200 blocks) ===\n", g_inv_last_sp, s.r[13]);
+          for (int _k = 200; _k > 0; --_k) { uint32_t _i = (g_splog_n - (uint32_t)_k) & 255u;
+            printf("[DRIFTDUMP] %08X sp=%08X\n", g_splog_pc[_i], g_splog_sp[_i]); }
+          fflush(stdout); }
         if (g_sptrace) { g_sptrace_active = 1; g_sptrace_n = 0; g_sptrace_base = s.r[13]; ++g_sptrace_traces;
           printf("[SPTRACE] === drift trace %d start sp=%08X r4=%08X lr=%08X ===\n", g_sptrace_traces, s.r[13], s.r[4], s.r[14]); fflush(stdout); } }
       g_inv_last_sp = s.r[13];
@@ -4169,7 +4179,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       printf("[EE8-ENTRY] prevblk=%08X sp=%08X lr=%08X r4=%08X r5=%08X fib=%08X ring:", g_last_main_pc, s.r[13], s.r[14], s.r[4], s.r[5], g_cur_fiber);
       for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
-    uint32_t nxt = fn(&s); { uint32_t _cb = g_cur_block & ~1u; g_last_main_pc = _cb; }
+    uint32_t nxt = fn(&s); { uint32_t _cb = g_cur_block & ~1u; g_last_main_pc = _cb; g_splog_pc[g_splog_n & 255u] = _cb; g_splog_sp[g_splog_n & 255u] = s.r[13]; ++g_splog_n; }
     if (g_cur_block == 0x811E5EC2u) { g_wl_active = 1; g_wl_sp = s.r[13]; g_wl_lr = s.r[14]; g_wl_prevblk = g_cur_block;
       g_own_valid = 1; g_own_fib = g_cur_fiber; g_own_sp = s.r[13]; g_own_lr = s.r[14]; ++g_own_cnt;
       if (g_wlpro_n++ < 12) { printf("[WLPRO] sp=%08X lr=%08X savedLR=%08X fib=%08X n=%d\n", s.r[13], s.r[14], ({uint32_t _v=0; uint8_t* _q=GP(s.r[13]+4u); if(_q) std::memcpy(&_v,_q,4); _v;}), g_cur_fiber, g_wlpro_n); fflush(stdout); } }
