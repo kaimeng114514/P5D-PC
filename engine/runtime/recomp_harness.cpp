@@ -472,7 +472,7 @@ static uint32_t gbn_back(uint32_t t, int* pback);
 static int g_stall_n = 0;
 static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg);
 static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int maxblocks);
-static int g_gxmabi = 0, g_gxmabi_n = 0; static int g_gxmabi_scene_n = 0, g_gxmabi_draw_n = 0; static int g_bs_n = 0; static int g_scene_ent_n = 0; static int g_dea_n = 0; static int g_ab4_n = 0; static int g_830_n = 0, g_830r_n = 0, g_hdl_n = 0; static uint32_t g_hw_handle=0, g_hw_st=0xDEAD, g_hw_p=0xDEAD, g_hw_sz=0xDEAD; static int g_hw_n=0; static int g_912_n = 0, g_912r_n = 0; static int g_scene_stub_n = 0;
+static int g_gxmabi = 0, g_gxmabi_n = 0; static int g_gxmabi_scene_n = 0, g_gxmabi_draw_n = 0; static int g_bs_n = 0; static int g_scene_ent_n = 0; static int g_dea_n = 0; static int g_ab4_n = 0; static int g_830_n = 0, g_830r_n = 0, g_hdl_n = 0; static int g_open_n = 0, g_ld_n = 0; static uint32_t g_hw_handle=0, g_hw_st=0xDEAD, g_hw_p=0xDEAD, g_hw_sz=0xDEAD; static int g_hw_n=0; static int g_912_n = 0, g_912r_n = 0; static int g_scene_stub_n = 0;
 static uint8_t* gp_img = nullptr;
 static inline uint8_t* GP(uint32_t va) {
   uint32_t off;
@@ -3720,6 +3720,16 @@ int main(int argc, char** argv) {
     if (((pc & ~1u) == 0x812B1470u || (pc & ~1u) == 0x812B17F0u || (pc & ~1u) == 0x812B1720u) && g_scene_ent_n++ < 30) {
       printf("[SCENE-ENTRY] pc=%08X n=%u fib=%08X sp=%08X lr=%08X ring:", pc, g_blkcnt_total, g_cur_fiber, s.r[13], s.r[14]);
       for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+    if ((pc & ~1u) == 0x81182C56u && g_open_n++ < 10) {
+      char _nm[48]={0}; uint8_t* _p=GP(s.r[0]); if(_p){ for(int _k=0;_k<44;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
+      printf("[OPENCB] name=%s r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X ring:", _nm, s.r[1], s.r[2], s.r[3], s.r[14], s.r[13], g_cur_fiber);
+      for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+    if (((pc & ~1u) == 0x81182E2Eu || (pc & ~1u) == 0x81182E4Au || (pc & ~1u) == 0x81183018u || (pc & ~1u) == 0x81183156u || (pc & ~1u) == 0x81183190u) && g_ld_n++ < 30) {
+      uint32_t _o4=0,_o8c=0,_o90=0; uint8_t* _q; _q=GP(s.r[5]+4u); if(_q) std::memcpy(&_o4,_q,4);
+      _q=GP(s.r[5]+0x8cu); if(_q) std::memcpy(&_o8c,_q,4); _q=GP(s.r[5]+0x90u); if(_q) std::memcpy(&_o90,_q,4);
+      printf("[OPENPATH] pc=%08X r5=%08X obj4=%d obj8c=%08X obj90=%08X r8=%08X r4=%08X r0=%08X lr=%08X sp=%08X fib=%08X\n", pc, s.r[5], (int)(_o4 & 0xFFFF), _o8c, _o90, s.r[8], s.r[4], s.r[0], s.r[14], s.r[13], g_cur_fiber);
+      if (s.r[8]) { printf("[ENTRY] e=%08X words:", s.r[8]); for (int _k=0;_k<0x30;++_k){ uint32_t _w=0; uint8_t* _e=GP(s.r[8]+(uint32_t)_k*4u); if(_e) std::memcpy(&_w,_e,4); printf(" %08X", _w);} printf("\n"); }
+      fflush(stdout); }
     if ((pc & ~1u) == 0x8118308Au && g_830_n++ < 10) {
       uint32_t _st=0,_p=0,_sz=0,_m0=0,_m4=0; uint8_t* _q;
       _q=GP(s.r[0]); if(_q) std::memcpy(&_m0,_q,4); _q=GP(s.r[0]+4u); if(_q) std::memcpy(&_m4,_q,4);
