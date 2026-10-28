@@ -342,6 +342,9 @@ static int g_b6_n = 0;
 static int g_e6a_n = 0;
 static int g_gs_dbg_n = 0;
 static int g_gxm_ctx_n = 0, g_gxm_begin_n = 0, g_gxm_end_n = 0, g_gxm_present_n = 0, g_gxm_fin_n = 0, g_gfx_rep_n = 0;
+static uint32_t g_display_cb = 0, g_display_cbds = 0, g_display_maxpend = 0, g_disp_pending = 0, g_disp_pending_cbd = 0;
+static uint32_t g_test_cb = 0; static int g_test_cb_done = 0;
+static int g_disp_depth = 0, g_disp_n = 0, g_gxminit_n = 0;
 static uint32_t g_gsr_in[24] = {0}, g_gsr_out[24] = {0}, g_gsr_f[24] = {0};
 static uint32_t g_gsr_n = 0;
 static uint32_t g_dr_pc[24] = {0}, g_dr_r0[24] = {0}, g_dr_r3[24] = {0}, g_dr_sp[24] = {0};
@@ -451,6 +454,7 @@ static BlockFn gbn(uint32_t pc);
 static uint32_t gbn_back(uint32_t t, int* pback);
 static int g_stall_n = 0;
 static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg);
+static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int maxblocks);
 static uint8_t* gp_img = nullptr;
 static inline uint8_t* GP(uint32_t va) {
   uint32_t off;
@@ -1232,7 +1236,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       { static int _gb=0; if (_gb++ < 4) { printf("[GXMBLK] #%d n=%u pc=%08X\n", _gb, g_blkcnt_total, g_cur_block); fflush(stdout); } }
     case 0x812B1470u: gxmvk_begin_frame(); r0 = 0; g_gxm_begin_n++; if (g_gxm_begin_n <= 3) printf("[GXM-BEGIN] BeginScene n=%d\n", g_gxm_begin_n); break;
     case 0x812B17F0u: gxmvk_end_frame(); r0 = 0; g_gxm_end_n++; if (g_gxm_end_n <= 5) printf("[GXM-ENDSCENE] EndScene n=%d\n", g_gxm_end_n); break;
-    case 0x812B1720u: gxmvk_present_now(); r0 = 0; g_gxm_present_n++; if (g_gxm_present_n <= 10) printf("[GXM-PRESENT] DisplayQueueAddEntry n=%d\n", g_gxm_present_n); break;
+    case 0x812B1720u: {                                               // 18.4273: sceGxmDisplayQueueAddEntry(oldSync,newSync,callbackData) - per-frame display; defer the guest displayQueueCallback with callbackData
+      gxmvk_present_now(); r0 = 0; g_gxm_present_n++;
+      if (g_display_cb) { g_disp_pending = g_display_cb; g_disp_pending_cbd = s->r[2]; }
+      if (g_gxm_present_n <= 10) printf("[GXM-PRESENT] DisplayQueueAddEntry n=%d cb=%08X cbd=%08X\n", g_gxm_present_n, g_display_cb, s->r[2]);
+      break; }
     case 0x812B15E0u: r0 = 0; if (g_gxm_present_n && g_gxm_fin_n++ < 5) printf("[GXM-DQFIN] DisplayQueueFinish n=%d\n", g_gxm_fin_n); break;
     case 0x812B1730u: {                                               // sceGxmColorSurfaceInit(surface, fmt, ...)
       uint32_t surf = s->r[0]; uint8_t* p = surf ? GP(surf) : nullptr;
@@ -1520,8 +1528,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B1370u: {                                               // 18.4260: sceGxmProgramParameterGetResourceIndex(param) -> resourceIndex@+0xC
       uint32_t po = s->r[0]; r0 = po ? guest_rd32(po + 0xCu) : 0u; break; }
     case 0x812B1210u: case 0x812B1240u: case 0x812B1280u: case 0x812B1310u: case 0x812B1330u:
-    case 0x812B1380u: case 0x812B1570u: case 0x812B16E0u: case 0x812B17D0u:
+    case 0x812B1380u: case 0x812B16E0u: case 0x812B17D0u:
       r0 = 0; break;                                                  // 18.4260: sceGxm init/state setters -> no-op success
+    case 0x812B1570u: {                                               // 18.4273: sceGxmInitialize(const SceGxmInitializeParams*) - capture displayQueueCallback (0x811EE7C3)
+      uint32_t pp = s->r[0]; uint32_t flags=0u, mp=0u, cb=0u, cbds=0u, pbs=0u;
+      uint8_t* q = GP(pp);
+      if (q) { std::memcpy(&flags,q,4); std::memcpy(&mp,q+4,4); std::memcpy(&cb,q+8,4); std::memcpy(&cbds,q+0xC,4); std::memcpy(&pbs,q+0x10,4); }
+      g_display_cb = cb; g_display_cbds = cbds; g_display_maxpend = mp;
+      if (g_gxminit_n++ < 6) { printf("[GXMINIT] flags=%08X maxPending=%u displayQueueCallback=%08X cbDataSize=%u paramBuf=%08X lr=%08X\n", flags, mp, cb, cbds, pbs, s->r[14]); fflush(stdout); }
+      r0 = 0; break; }
     case 0x812B17C0u:                                                 // 18.4260: Map*UsseMemory (second variant) - same as 11C0
     case 0x812B11C0u: {                                               // 18.4259: sceGxmMapFragmentUsseMemory(base,size,offsetOut) -> *out=0
       if (s->r[2]) guest_wr32(s->r[2], 0u);
@@ -1732,6 +1747,20 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       g_switch_budget = 3000;   // 18.3822: time-slice the switched-to fiber so it cannot monopolize the exec
       continue; }
     uint32_t pc = s->r[15];
+    if (g_test_cb && !g_test_cb_done && g_blkcnt_total >= 100000u) {
+      g_test_cb_done = 1; uint32_t _tb0 = g_blkcnt_total;
+      static uint32_t _tbuf = 0; if (!_tbuf) { _tbuf = hle_malloc(0x10u); uint8_t* _tp = GP(_tbuf); if (_tp) std::memset(_tp, 0, 0x10); }
+      printf("[TESTCB] begin cb=%08X arg=%08X blk=%u fib=%08X\n", g_test_cb, _tbuf, g_blkcnt_total, g_cur_fiber); fflush(stdout);
+      uint32_t _tr = call_guest_cb(s, g_test_cb, _tbuf, 200000);
+      printf("[TESTCB] cb=%08X ret=%08X blocks=%u r0=%08X\n", g_test_cb, _tr, g_blkcnt_total - _tb0, s->r[0]); fflush(stdout);
+      pc = s->r[15];
+    }
+    if (g_disp_pending && g_disp_depth == 0 && !g_cur_thr) {
+      uint32_t _dcb = g_disp_pending, _dcd = g_disp_pending_cbd;
+      g_disp_pending = 0; ++g_disp_depth;
+      call_guest_cb(s, _dcb, _dcd, 400000);
+      --g_disp_depth; pc = s->r[15];
+    }
     { uint32_t _fp = pc & ~1u;
       if (_fp == 0x811E5928u || _fp == 0x811E5A9Au || _fp == 0x811E5AECu || _fp == 0x811E5B9Au) {
         static int _sm2 = 0, _sm2b = 0;
@@ -2515,6 +2544,26 @@ static BlockFn gbn(uint32_t pc) {
   if (it != g_all.end() && it->va == pc) return it->fn;
   return nullptr;
 }
+static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int maxblocks) {
+  if (!entry) return 0;
+  uint32_t save[16]; std::memcpy(save, s->r, sizeof(save)); uint32_t savea = s->apsr;
+  s->r[0] = arg; s->r[1] = 0; s->r[14] = 0xFFFFFFFEu; s->r[15] = entry & ~1u;
+  uint32_t pc = s->r[15]; int n = 0;
+  while (n++ < maxblocks) {
+    uint32_t q = pc & ~1u;
+    if (q >= 0xFFFFFF00u || pc == 0u) break;
+    BlockFn fn = gbn(pc);
+    if (!fn) { if (g_disp_n++ < 8) { printf("[DISPCALL-NOBLK] pc=%08X lr=%08X\n", pc, s->r[14]); fflush(stdout); } break; }
+    g_cur_block = pc;
+    uint32_t nx = fn(s);
+    if (nx == 0u || nx == 0xFFFFFFF0u || nx == 0xFFFFFFFEu || nx == 0xFFFFFFFDu) break;
+    pc = nx;
+  }
+  uint32_t _ret = s->r[0];
+  if (g_disp_n++ < 12) { printf("[DISPCALL] cb=%08X data=%08X blocks=%d ret=%08X\n", entry, arg, n, _ret); fflush(stdout); }
+  std::memcpy(s->r, save, sizeof(save)); s->apsr = savea;
+  return _ret;
+}
 static void guest_thread_run(uint32_t tid) {
   tl_ht_tid = tid;
   HThread* t = nullptr;
@@ -2965,6 +3014,7 @@ int main(int argc, char** argv) {
       } }).detach(); }
   { const char* _pw = getenv("P5D_PUMP_WALLCLOCK"); g_pump_wallclock = (_pw && atoi(_pw) != 0) ? 1 : 0; }
   { const char* _cy = getenv("P5D_CB_YIELD"); g_cb_yield = (_cy && atoi(_cy) != 0) ? 1 : 0; }
+{ const char* _tc = getenv("P5D_TEST_CB"); if (_tc && *_tc) g_test_cb = (uint32_t)strtoul(_tc, 0, 16); }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
