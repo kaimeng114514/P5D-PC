@@ -746,7 +746,7 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_heaptgt_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
 static void mainctx_note(const char* tag, uint32_t sp) {
@@ -4231,7 +4231,14 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       printf("[EE8-ENTRY] prevblk=%08X sp=%08X lr=%08X r4=%08X r5=%08X fib=%08X ring:", g_last_main_pc, s.r[13], s.r[14], s.r[4], s.r[5], g_cur_fiber);
       for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
-    uint32_t nxt = fn(&s); { uint32_t _cb = g_cur_block & ~1u; g_last_main_pc = _cb; g_splog_pc[g_splog_n & 255u] = _cb; g_splog_sp[g_splog_n & 255u] = s.r[13]; ++g_splog_n; }
+    uint32_t nxt = fn(&s);
+    if (nxt >= 0x84600000u && nxt < 0x8C600000u && g_heaptgt_n++ < 8) {
+      printf("[HEAPTGT] nxt=%08X blk=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X sp=%08X fib=%08X ring:",
+             nxt, g_cur_block, s.r[0], s.r[1], s.r[2], s.r[3], s.r[4], s.r[5], s.r[6], s.r[7], s.r[14], s.r[13], g_cur_fiber);
+      for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout);
+      { uint32_t _pc = g_cur_block & ~1u; printf("[HEAPTGT-SRC] block=%08X (disassemble this block to find the indirect branch)\n", _pc); fflush(stdout); }
+    }
+    { uint32_t _cb = g_cur_block & ~1u; g_last_main_pc = _cb; g_splog_pc[g_splog_n & 255u] = _cb; g_splog_sp[g_splog_n & 255u] = s.r[13]; ++g_splog_n; }
     if (g_cur_block == 0x811E5EC2u) { g_wl_active = 1; g_wl_sp = s.r[13]; g_wl_lr = s.r[14]; g_wl_prevblk = g_cur_block;
       g_own_valid = 1; g_own_fib = g_cur_fiber; g_own_sp = s.r[13]; g_own_lr = s.r[14]; ++g_own_cnt;
       if (g_wlpro_n++ < 12) { printf("[WLPRO] sp=%08X lr=%08X savedLR=%08X fib=%08X n=%d\n", s.r[13], s.r[14], ({uint32_t _v=0; uint8_t* _q=GP(s.r[13]+4u); if(_q) std::memcpy(&_v,_q,4); _v;}), g_cur_fiber, g_wlpro_n); fflush(stdout); } }
