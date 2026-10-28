@@ -746,7 +746,8 @@ static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
 static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
-static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_heaptgt_n = 0; static int g_schedresume = 0, g_schedresume_n = 0;
+static int g_deferfsw = 0; static int g_noschedrun = 0; static int g_schrunsmart = 0; static int g_schedidx = 1; static int g_schedlist_n = 0; static int g_b40_n = 0, g_b48_n = 0, g_b4e_n = 0, g_7734_n = 0; static int g_r7734a_n = 0, g_r7734b_n = 0, g_hea_n = 0; static int g_e4ent_n = 0; static int g_heaptgt_n = 0; static int g_c0f8_n = 0;
+static int g_dframe_active = 0, g_dframe_n = 0, g_dframe_wr_n = 0; static uint32_t g_dframe_sp = 0, g_dframe_v0 = 0, g_dframe_v1 = 0; static int g_schedresume = 0, g_schedresume_n = 0;
 static uint32_t g_splog_pc[256]; static uint32_t g_splog_sp[256]; static uint32_t g_splog_n = 0;
 static uint32_t g_mainctx_last = 0; static int g_mainctx_n = 0;
 static void mainctx_note(const char* tag, uint32_t sp) {
@@ -4238,7 +4239,26 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout);
       { uint32_t _pc = g_cur_block & ~1u; printf("[HEAPTGT-SRC] block=%08X (disassemble this block to find the indirect branch)\n", _pc); fflush(stdout); }
     }
-    { uint32_t _cb = g_cur_block & ~1u; g_last_main_pc = _cb; g_splog_pc[g_splog_n & 255u] = _cb; g_splog_sp[g_splog_n & 255u] = s.r[13]; ++g_splog_n; }
+    if ((g_cur_block & ~1u) == 0x8127C0F8u && g_c0f8_n++ < 8) {
+      printf("[C0F8] pop-entry sp=%08X prevblk=%08X lr=%08X fib=%08X stack:", s.r[13], g_last_main_pc, s.r[14], g_cur_fiber);
+      for (int _k=0;_k<6;++_k) { uint32_t _w=0; uint8_t* _q=GP(s.r[13]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); } printf("\n"); fflush(stdout); }
+    { uint32_t _cb = g_cur_block & ~1u; g_last_main_pc = _cb;
+      if (_cb == 0x8127C0E8u) {
+        g_dframe_active = 1; g_dframe_sp = s.r[13];
+        { uint8_t* _q = GP(g_dframe_sp); if (_q) std::memcpy(&g_dframe_v0, _q, 4); _q = GP(g_dframe_sp + 4u); if (_q) std::memcpy(&g_dframe_v1, _q, 4); }
+        if (g_dframe_n++ < 12) { printf("[DFRAME] enter sp=%08X [sp]=%08X [sp+4]=%08X lr=%08X fib=%08X ring:", g_dframe_sp, g_dframe_v0, g_dframe_v1, s.r[14], g_cur_fiber);
+          for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+      } else if (g_dframe_active) {
+        if (s.r[13] > g_dframe_sp) { g_dframe_active = 0; }
+        else {
+          uint32_t _v0 = g_dframe_v0, _v1 = g_dframe_v1;
+          { uint8_t* _q = GP(g_dframe_sp); if (_q) std::memcpy(&_v0, _q, 4); _q = GP(g_dframe_sp + 4u); if (_q) std::memcpy(&_v1, _q, 4); }
+          if (_v0 != g_dframe_v0 || _v1 != g_dframe_v1) {
+            if (g_dframe_wr_n++ < 12) { printf("[DFRAME-WRITE] byblk=%08X sp_change=%d old=%08X/%08X new=%08X/%08X cur_sp=%08X fib=%08X ring:", _cb, (int)(s.r[13] - g_dframe_sp), g_dframe_v0, g_dframe_v1, _v0, _v1, s.r[13], g_cur_fiber);
+              for (int _k=0;_k<20;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 20u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+            g_dframe_v0 = _v0; g_dframe_v1 = _v1; }
+        }
+      } g_splog_pc[g_splog_n & 255u] = _cb; g_splog_sp[g_splog_n & 255u] = s.r[13]; ++g_splog_n; }
     if (g_cur_block == 0x811E5EC2u) { g_wl_active = 1; g_wl_sp = s.r[13]; g_wl_lr = s.r[14]; g_wl_prevblk = g_cur_block;
       g_own_valid = 1; g_own_fib = g_cur_fiber; g_own_sp = s.r[13]; g_own_lr = s.r[14]; ++g_own_cnt;
       if (g_wlpro_n++ < 12) { printf("[WLPRO] sp=%08X lr=%08X savedLR=%08X fib=%08X n=%d\n", s.r[13], s.r[14], ({uint32_t _v=0; uint8_t* _q=GP(s.r[13]+4u); if(_q) std::memcpy(&_v,_q,4); _v;}), g_cur_fiber, g_wlpro_n); fflush(stdout); } }
