@@ -7,7 +7,21 @@
 //   0x812B22A0 malloc etc.
 #include <cstdio>
 #include <thread>
+#include <mutex>
+#include <atomic>
+#include <chrono>
+#include <map>
+#include <utility>
+#include <string>
+#include <vector>
 static int g_loadclear_env = 0;
+static int g_hostthreads = 0;   // 18.4239: guest threads as real host threads (P5D_HOSTTHREADS=1)
+static int g_ht_n = 0;
+static std::mutex g_lwm_mtx;
+static std::map<uint32_t, std::pair<uint32_t,uint32_t> > g_lwm_real;   // work -> (owner_tid, count)
+static thread_local uint32_t tl_ht_tid = 0;
+static void guest_thread_run(uint32_t tid);
+static int g_ht_bad_n = 0;
 static int g_task_n = 0;
 static int g_sem2_n = 0, g_sig2_n = 0, g_evt2_n = 0;
 static int g_thrst_n = 0;
@@ -238,7 +252,7 @@ static uint32_t g_fiber_arg = 0;
 
 struct FCtx { uint32_t r[16]; uint32_t apsr; };
 static std::map<uint32_t, FCtx> g_fctx;
-struct HThread { uint32_t entry, arg, stack; FCtx ctx; int alive, ready, waiting; uint32_t wait_obj, wait_bits, wait_mode; };
+struct HThread { uint32_t entry, arg, stack; FCtx ctx; int alive, ready, waiting; uint32_t wait_obj, wait_bits, wait_mode; RecState gctx; std::thread* hth; int exit_flag; };
 static std::map<uint32_t, HThread> g_thr;
 static uint32_t g_cur_thr = 0;
 static int g_thr_blocked = 0;
@@ -695,8 +709,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       r0 = dst; break; }
     case 0x812B2360u: r0 = 0; break;                                   // __at_quick_exit
     case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr
-    case 0x812B2830u: r0 = 0; break;                                   // sceKernelLockLwMutex
-    case 0x812B28A0u: r0 = 0; break;                                   // sceKernelUnlockLwMutex
+    case 0x812B2830u: {                                               // sceKernelLockLwMutex (host-thread real lock)
+      if (tl_ht_tid) { uint32_t w = s->r[0]; auto& e = g_lwm_real[w]; for (;;) { if (e.first == 0u || e.first == tl_ht_tid) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); } e.first = tl_ht_tid; ++e.second; }
+      r0 = 0; break; }
+    case 0x812B28A0u: {                                               // sceKernelUnlockLwMutex (host-thread real lock)
+      if (tl_ht_tid) { uint32_t w = s->r[0]; auto it = g_lwm_real.find(w); if (it != g_lwm_real.end()) { if (it->second.second > 1u) --it->second.second; else { it->second.first = 0u; it->second.second = 0u; } } }
+      r0 = 0; break; }
     case 0x812B1910u: r0 = 0; break;                                   // sceAppUtilInit
     case 0x812B11B0u: {                                               // 18.4086: pre-registration init writes a NON-ZERO output
       { static int _gr=0; if (_gr++ < 4) { printf("[GXMREG] r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X\n", s->r[0],s->r[1],s->r[2],s->r[3],s->r[14]); fflush(stdout); } }
@@ -1074,6 +1092,16 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
             printf("[THRARG] copied arglen=%u argp=%08X -> %08X val0=%08X\n", arglen, argp, argbuf, *(uint32_t*)dst); } } }
         t.ctx.r[0] = arglen; t.ctx.r[1] = argbuf;
         t.alive = 1; t.ready = 1; t.waiting = 0;
+        if (g_hostthreads) {
+          t.gctx = RecState(); std::memset(&t.gctx, 0, sizeof(t.gctx));
+          t.gctx.base = s->base; t.gctx.mem_size = s->mem_size;   // 18.4239: guest memory mapping must be set per thread
+          t.gctx.r[13] = t.ctx.r[13]; t.gctx.r[14] = 0xFFFFFFF0u; t.gctx.r[15] = t.ctx.r[15];
+          t.gctx.r[0] = t.ctx.r[0]; t.gctx.r[1] = t.ctx.r[1]; t.gctx.r[9] = t.ctx.r[9];
+          { uint32_t tls = hle_malloc(0x400u); if (tls) { uint8_t* tq = GP(tls); if (tq) std::memset(tq, 0, 0x400); } t.gctx.r[9] = tls; }
+          t.exit_flag = 0;
+          if (!t.hth) { t.hth = new std::thread(guest_thread_run, tid); t.hth->detach(); }
+          if (g_ht_n++ < 20) { printf("[HT-START] tid=%08X entry=%08X sp=%08X\n", tid, t.ctx.r[15], t.ctx.r[13]); fflush(stdout); }
+        }
         if (t.entry != 0x811E68C9u && t.entry != 0x8120767Du) printf("[THR2] start tid=%08X entry=%08X arglen=%u argp=%08X lr=%08X sp=%08X\n", tid, t.entry, arglen, argp, s->r[14], t.stack);
         if (g_thr_log_n++ < 20) printf("[THR] start tid=%08X entry=%08X arglen=%u argp=%08X sp=%08X\n", tid, t.entry, arglen, argp, t.stack); }
       r0 = 0; break; }
@@ -1089,6 +1117,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       auto it = g_sema.find(obj);
       uint32_t have = (it == g_sema.end()) ? 0u : it->second;
       if (g_thr_log_n++ < 80) printf("[SEM] wait obj=%08X need=%u have=%u cur_thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]);
+      if (tl_ht_tid) { for (;;) { uint32_t _h = (g_sema.count(obj) ? g_sema[obj] : 0u); if (_h >= need) { g_sema[obj] = _h - need; break; } std::this_thread::sleep_for(std::chrono::microseconds(200)); } r0 = 0; break; }
       if (g_sem2_n++ < 60) { printf("[SEM2] wait obj=%08X need=%u have=%u thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]); fflush(stdout); }
       if (have >= need) { if (it != g_sema.end()) it->second = have - need; r0 = 0; }
       else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = 0; r0 = 0; }
@@ -1126,6 +1155,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       auto eval = [&](uint32_t curv) -> bool { return bits == 0u || (orMode ? ((curv & bits) != 0u) : ((curv & bits) == bits)); };
       uint32_t cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u);
       bool ok = eval(cur);
+      if (tl_ht_tid) { for (;;) { cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); if (ok) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
+        if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &cur, 4); }
+        if (mode & 4u) g_eflag[obj] = 0u; else if (mode & 2u) g_eflag[obj] = cur & ~bits;
+        r0 = 0; break; }
       if (!ok && !g_cur_thr) {   // main thread: run workers / retry (they may Set the flag)
         for (int _sp = 0; _sp < 2000 && !ok; ++_sp) { hle_thr_pump(s, 400); cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); }
       }
@@ -1186,6 +1219,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       break; }
     case 0x812B2A50u: {                                               // sceKernelDelayThread -> cooperative yield (per-frame pacing)
       r0 = 0;
+      if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
       if (g_in_fex == 1 && ((++g_yield_main_tick & 0x3F) == 0)) { g_yield_to_main = 1;
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from DelayThread fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_delay_n++ < 8) printf("[DELAY] usec=%u lr=%08X fib=%08X\n", s->r[0], s->r[14], g_cur_fiber);
@@ -2097,6 +2131,24 @@ static BlockFn gbn(uint32_t pc) {
   if (it != g_all.end() && it->va == pc) return it->fn;
   return nullptr;
 }
+static void guest_thread_run(uint32_t tid) {
+  tl_ht_tid = tid;
+  HThread* t = nullptr;
+  { auto _it = g_thr.find(tid); if (_it == g_thr.end()) return; t = &_it->second; }
+  RecState* s = &t->gctx;
+  uint32_t pc = s->r[15];
+  if (g_ht_n++ < 40) { printf("[HT-RUN] tid=%08X pc=%08X sp=%08X r0=%08X\n", tid, pc, s->r[13], s->r[0]); fflush(stdout); }
+  while (!t->exit_flag) {
+    BlockFn fn = gbn(pc);
+    if (!fn) { if (g_ht_bad_n++ < 20) { printf("[HT-NOBLK] tid=%08X pc=%08X\n", tid, pc); fflush(stdout); } break; }
+    g_cur_block = pc;
+    uint32_t nx = fn(s);
+    if (nx == 0u || nx == 0xFFFFFFF0u || nx == 0xFFFFFFFEu || nx == 0xFFFFFFFDu) break;
+    pc = s->r[15];
+  }
+  t->alive = 0; t->ready = 0;
+  if (g_ht_n++ < 60) { printf("[HT-EXIT] tid=%08X\n", tid); fflush(stdout); }
+}
 static uint8_t* gimg_ptr() { return gp_img; }
 extern "C" uint32_t id_reg(int idx, RecState* s) {
   uint32_t t = s->r[idx & 15] & ~1u;
@@ -2287,7 +2339,7 @@ extern "C" void wr32_watch(uint32_t a, uint32_t v) {
 
 
 static void hle_thr_pump(RecState* s, int quantum) {
-  if (g_cur_thr) return;
+  if (g_cur_thr || g_hostthreads) return;   // 18.4239: in host-thread mode the guest threads run on their own host threads
   if (g_in_fiber_exec && !g_thrpump_env) return;   // 18.4232: worker-trace mode (P5D_THRPUMP=1) allows pumping from the fiber world
   if (g_thrtrace && g_thrst_n++ < 20) { printf("[THRST] n=%zu:", g_thr.size()); for (auto& _kv : g_thr) { auto& _t=_kv.second; printf(" %08X(a%d,r%d,w%d,obj=%08X,bits=%08X,sp=%08X)", _kv.first, _t.alive?1:0, _t.ready?1:0, _t.waiting?1:0, _t.wait_obj, _t.wait_bits, _t.ctx.r[13]); } printf("\n"); fflush(stdout); }   // 18.4228: allow the pump from the main-loop world (g_cur_fiber is the app fiber there); never nest inside thread execution
   for (auto& kv : g_thr) {
@@ -2502,6 +2554,7 @@ int main(int argc, char** argv) {
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
   { const char* _bt = getenv("P5D_BOOT_THUNK"); g_boot_thunk = (_bt && atoi(_bt) != 0) ? 1 : 0; }
   { const char* _hx = getenv("P5D_HACKS"); g_hacks = (_hx && atoi(_hx) != 0) ? 1 : 0;
+  { const char* _ht = getenv("P5D_HOSTTHREADS"); g_hostthreads = (_ht && atoi(_ht) != 0) ? 1 : 0; }
     printf("[HACKS] semantic patch stack %s\n", g_hacks ? "ENABLED (P5D_HACKS=1)" : "DISABLED (clean baseline)"); fflush(stdout); }
   g_target_alloc = 0x8534B160u;   // 18.4194: trace who allocates the object whose +0x20 is null
   g_obj20_addr = 0x8534B180u;     // 18.4194b: watch [object+0x20] writes from the very start (deterministic heap)
