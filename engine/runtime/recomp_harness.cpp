@@ -745,6 +745,7 @@ static int g_oddpc_n = 0;
 static int g_ret_epi_n = 0;
 static int g_wl_active = 0, g_wl_n = 0; static int g_chkfix_n = 0;
 static uint32_t g_last_main_pc = 0; static int g_ec6entry_n = 0;
+static uint32_t g_inv_base = 0; static uint32_t g_inv_last_sp = 0; static int g_inv_n = 0; static int g_ee8ent_n = 0;
 static int g_sptrace = 0, g_sptrace_active = 0, g_sptrace_n = 0, g_sptrace_traces = 0; static uint32_t g_sptrace_base = 0; static int g_fs5ec_n = 0, g_rs5ec_n = 0, g_cb5ec_n = 0, g_cb5ec2 = 0, g_cb5ec6 = 0, g_cb5ef0 = 0;
 static uint32_t g_ec6_sp = 0, g_ec6_lr = 0, g_ec6_fib = 0; static int g_ec6_n = 0, g_ec6_chg = 0; static int g_wlpro_n = 0, g_wlentry_n = 0, g_wlec6_n = 0;
 static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own_sp = 0, g_own_lr = 0; static int g_own_cnt = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
@@ -1691,7 +1692,7 @@ struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
   if (g_cur_fiber) { g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr;
-    { uint32_t _p = c.r[15] & ~1u; if ((_p >= 0x811E5EC2u && _p <= 0x811E5EF2u) && g_fs5ec_n++ < 16) {
+    { uint32_t _p = c.r[15] & ~1u; if ((_p >= 0x811E5E80u && _p <= 0x811E5EF2u) && g_fs5ec_n++ < 16) {
         printf("[FSAVE5EC] fiber=%08X savepc=%08X curblk=%08X sp=%08X lr=%08X r4=%08X r5=%08X r7=%08X\n", g_cur_fiber, c.r[15], g_cur_block, c.r[13], c.r[14], c.r[4], c.r[5], c.r[7]); fflush(stdout); } }
     if (g_fsv_n++ < 40) printf("[FSAVE] fiber=%08X pc=%08X sp=%08X r5=%08X\n", g_cur_fiber, c.r[15], c.r[13], c.r[5]);
     if ((c.r[15] & ~1u) == 0x81206BDCu || c.r[0] == 2u)
@@ -1816,7 +1817,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
         if (it == g_fctx.end()) { printf("[FIBER-SW] unknown target %08X (still after autoload)\n", t); break; }
       }
       g_cur_fiber = t; std::memcpy(s->r, it->second.r, sizeof(it->second.r)); s->apsr = it->second.apsr;
-      { uint32_t _p = s->r[15] & ~1u; if ((_p >= 0x811E5EC2u && _p <= 0x811E5EF2u) && g_rs5ec_n++ < 16) {
+      { uint32_t _p = s->r[15] & ~1u; if ((_p >= 0x811E5E80u && _p <= 0x811E5EF2u) && g_rs5ec_n++ < 16) {
           printf("[REST5EC] fiber=%08X restorepc=%08X sp=%08X lr=%08X r4=%08X r5=%08X r7=%08X\n", t, s->r[15], s->r[13], s->r[14], s->r[4], s->r[5], s->r[7]); fflush(stdout); } }
       if ((s->r[15] == 0x8120682Au || s->r[5] == 0u) && g_blkcnt_total >= 1800000u && g_swsusp_n++ < 40) {   // 18.4222: suspicious restored context
         printf("[SWSUSP] n=%u cur=%08X from=%08X restored pc=%08X r0=%08X r5=%08X r7=%08X sp=%08X\n",
@@ -4132,6 +4133,17 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         if ((pc & ~1u) == 0x811E5E80u || g_sptrace_n > 190) { g_sptrace_active = 0; }
       }
     }
+    if ((pc & ~1u) == 0x811E5EC6u) {
+      if (g_inv_last_sp == 0u) { g_inv_last_sp = s.r[13]; g_inv_base = s.r[13]; }
+      else if (s.r[13] != g_inv_last_sp) {
+        if (g_inv_n++ < 12) { printf("[INVCHG] prevsp=%08X newbase=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X fib=%08X ring:", g_inv_last_sp, s.r[13], s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7], s.r[14], g_cur_fiber);
+          for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+        g_inv_base = s.r[13]; }
+      g_inv_last_sp = s.r[13];
+    }
+    if ((pc & ~1u) == 0x811E5EE8u && g_last_main_pc != 0x811E5EE4u && g_ee8ent_n++ < 20) {
+      printf("[EE8-ENTRY] prevblk=%08X sp=%08X lr=%08X r4=%08X r5=%08X fib=%08X ring:", g_last_main_pc, s.r[13], s.r[14], s.r[4], s.r[5], g_cur_fiber);
+      for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s); { uint32_t _cb = g_cur_block & ~1u; g_last_main_pc = _cb; }
     if (g_cur_block == 0x811E5EC2u) { g_wl_active = 1; g_wl_sp = s.r[13]; g_wl_lr = s.r[14]; g_wl_prevblk = g_cur_block;
