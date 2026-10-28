@@ -1844,7 +1844,9 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
     if (pc==0x811DA024u) { RecState* _ps = SPTR(s); g_last_alloc_sz = _ps->r[0]; g_last_alloc_fp = _ps->r[4]; }
     else if ((pc==0x811DA028u||pc==0x811DA02Au||pc==0x811DA030u||pc==0x811DA036u) && SPTR(s)->r[0]==0u && g_allocf_n++ < 24) { RecState* _ps = SPTR(s); printf("[ALLOCFAIL] pc=%08X size=%08X fp=%08X r0=%08X r1=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, g_last_alloc_sz, g_last_alloc_fp, _ps->r[0],_ps->r[1],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); }
     if (pc==0x811C0D74u || pc==0x81207956u || pc==0x81207982u) { if (g_free2_n++ < 80) { RecState* _ps = SPTR(s); printf("[FREE2] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[4],_ps->r[5],_ps->r[6],_ps->r[7],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
-    if (pc == 0x811DD4BCu || pc == 0x811DD4C8u) { static int _bswap=0; if (_bswap++ < 30) { RecState* _ps=SPTR(s); printf("[BSWAP] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
+    if (pc == 0x811DD4BCu || pc == 0x811DD4C8u) { static int _bswap=0; RecState* _ps=SPTR(s);
+      if (pc == 0x811DD4BCu && _ps->r[2] == 0xFFFFFFFFu && getenv("P5D_SWAPGUARD")) { if (_bswap++ < 8) { printf("[SWAPFIX] n=%u pc=%08X r0=%08X r1=%08X r2=FFFFFFFF -> clamp to 0 (bad len from FUN_811DE912) fib=%08X\n", g_blkcnt_total, pc, _ps->r[0],_ps->r[1],g_cur_fiber); fflush(stdout); } _ps->r[2] = 0u; }
+      else if (_bswap++ < 30) { printf("[BSWAP] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X lr=%08X fib=%08X thr=%08X\n", pc, _ps->r[0],_ps->r[1],_ps->r[2],_ps->r[3],_ps->r[13],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if (pc == 0x811DEB44u || pc == 0x811DEB4Au) { static int _rb=0; if (_rb++ < 20) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[4]; uint32_t _f10=0,_f12=0,_f18=0,_f1c=0,_f20=0; uint8_t* q=GP(_o+0x10u); if(q){uint16_t _h=0; std::memcpy(&_h,q,2); _f10=_h;} q=GP(_o+0x12u); if(q){uint16_t _h=0; std::memcpy(&_h,q,2); _f12=_h;} q=GP(_o+0x18u); if(q) std::memcpy(&_f18,q,4); q=GP(_o+0x1Cu); if(q) std::memcpy(&_f1c,q,4); q=GP(_o+0x20u); if(q) std::memcpy(&_f20,q,4); printf("[RBUF] pc=%08X obj=%08X f10=%04X f12=%04X f18=%08X f1c=%08X f20=%08X ret=%08X lr=%08X\n", pc, _o, _f10, _f12, _f18, _f1c, _f20, _ps->r[0], _ps->r[14]); fflush(stdout); } }
     if (pc == 0x811DEAB4u) { static int _rf=0; if (_rf++ < 30) { RecState* _ps=SPTR(s); uint32_t _t=_ps->r[0]&0xFFFF, _f=_ps->r[1]&0xFFFF, _pp=_ps->r[2]; uint32_t _w[3]={0,0,0}; uint8_t* q=GP(_pp); if(q) std::memcpy(_w,q,12); printf("[RFACT] type=%04X flags=%04X param=%08X p0=%08X p1=%08X p2=%08X lr=%08X fib=%08X thr=%08X\n", _t,_f,_pp,_w[0],_w[1],_w[2],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if (pc == 0x811DEAB4u) { static int _g=0; if (_g++ < 4) { uint32_t _gv[10]; for (int _i=0;_i<10;++_i) { _gv[_i]=0; uint8_t* q=GP(0x81513DD4u + (uint32_t)_i*4u); if(q) std::memcpy(&_gv[_i],q,4); } printf("[GLOB] DD4=%08X DD8=%08X DDC=%08X DE0=%08X DE4=%08X DE8=%08X DEC=%08X DF0=%08X DF4=%08X DF8=%08X\n", _gv[0],_gv[1],_gv[2],_gv[3],_gv[4],_gv[5],_gv[6],_gv[7],_gv[8],_gv[9]); fflush(stdout); } }
@@ -2811,6 +2813,8 @@ static void init_job_pools() {
 
 
 static int g_w16_n = 0;
+static int g_dd4bc_n = 0, g_dd4c8_n = 0;
+static int g_de912_n = 0, g_de9ba_n = 0;
 extern "C" void wr16_watch(uint32_t a, uint32_t v) {
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
@@ -3966,6 +3970,17 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       printf("[FX] pc=%08X r0=%08X r4=%08X r5=%08X sp=%08X lr=%08X block=%08X\n",
              pc, s.r[0],s.r[4],s.r[5],s.r[13],s.r[14],g_cur_block);
     }
+    if ((pc & ~1u) == 0x811DE912u && g_de912_n < 24) { ++g_de912_n;
+      printf("[DE912] enter n=%d r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X\n", g_de912_n, s.r[0],s.r[1],s.r[2],s.r[14],s.r[13],g_cur_fiber); fflush(stdout); }
+    if ((pc & ~1u) == 0x811DE9BAu && g_de9ba_n < 24) { ++g_de9ba_n;
+      printf("[DE912] return n=%d r0=%08X sp=%08X fib=%08X\n", g_de9ba_n, s.r[0],s.r[13],g_cur_fiber); fflush(stdout); }
+    if ((pc & ~1u) == 0x811DD4BCu && g_dd4bc_n < 24) {
+      ++g_dd4bc_n;
+      uint32_t _r2w = s.r[2] >> 2; uint32_t _s0=0,_s1=0; uint8_t* _sp0=GP(s.r[13]); if(_sp0) std::memcpy(&_s0,_sp0,4); uint8_t* _sp4=GP(s.r[13]+4u); if(_sp4) std::memcpy(&_s1,_sp4,4);
+      printf("[SWAP] enter 0x811DD4BC n=%d r0=%08X r1=%08X r2=%08X words=%u lr=%08X sp=%08X [sp]=%08X [sp+4]=%08X fib=%08X\n",
+             g_dd4bc_n, s.r[0], s.r[1], s.r[2], _r2w, s.r[14], s.r[13], _s0, _s1, g_cur_fiber); fflush(stdout);
+    }
+    if ((pc & ~1u) == 0x811DD4C8u && g_dd4c8_n < 8) { ++g_dd4c8_n; printf("[SWAPLOOP] n=%d r0=%08X r2=%08X lr=%08X fib=%08X\n", g_dd4c8_n, s.r[0], s.r[2], s.r[14], g_cur_fiber); fflush(stdout); }
     if ((pc & ~1u) == 0x811E5970u && g_e59_n < 40) {
       ++g_e59_n;
       uint16_t _st=0xFFFF; uint8_t* _q=GP(s.r[6]+2u); if(_q) std::memcpy(&_st,_q,2);
