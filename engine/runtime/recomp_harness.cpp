@@ -697,6 +697,14 @@ static int guest_format(uint32_t dst, uint32_t cap, uint32_t fmtva, RecState* s)
   if (cap) d[written < cap ? written : cap-1] = 0;
   return (int)written;
 }
+static void hle_eflag_set(uint32_t obj, uint32_t bits) {
+  g_eflag[obj] |= bits;
+  for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) {
+    bool _or = (kv.second.wait_mode & 1u) != 0u;
+    bool _ok = kv.second.wait_bits == 0u || (_or ? ((g_eflag[obj] & kv.second.wait_bits) != 0u)
+                                                 : ((g_eflag[obj] & kv.second.wait_bits) == kv.second.wait_bits));
+    if (_ok) { kv.second.waiting = 0; kv.second.ready = 1; } }
+}
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
@@ -1165,6 +1173,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (g_fiosmiss_n++ < 40) printf("[FIOS] OPEN-MISS '%s' -> empty fh=0x%X\n", path.c_str(), fh);
       }
       if (s->r[1]) { uint8_t* q = GP(s->r[1]); if (q) std::memcpy(q, &fh, 4); }
+      hle_eflag_set(0x60014000u, 1u); hle_eflag_set(0x60015000u, 1u);   // 18.4264: wake guest Fios worker threads (op completion notification)
       r0 = op; break; }
     case 0x812B19D0u: {                                               // sceFiosFHRead(op, fh, dst, ...; size at [sp])
       ++g_fread_n;
@@ -1176,7 +1185,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t n = (uint32_t)(size < avail ? size : avail);
       uint8_t* dst = GP(s->r[2]);
       if (dst && n) std::memcpy(dst, it->second.data() + pos, n);
-      pos += n; r0 = n; g_fread_bytes += n; break; }
+      pos += n; r0 = n; g_fread_bytes += n;
+      hle_eflag_set(0x60014000u, 1u); hle_eflag_set(0x60015000u, 1u);   // 18.4264: op completion notification
+      break; }
     case 0x812B1A00u: { auto it = g_fios_data.find(s->r[0]); r0 = (it == g_fios_data.end()) ? 0u : (uint32_t)it->second.size(); break; } // sceFiosFHGetSize
     case 0x812B2970u: {                                               // 18.4255: sceIoOpen (SceIofilemgr, NID 0x34EFD876) - CRI/GFD resource loader path
       fios_ensure_cpk();
@@ -1203,7 +1214,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       g_io_data.erase(s->r[0]); g_io_pos.erase(s->r[0]); r0 = 0; break;
     case 0x812B19C0u: case 0x812B19A0u: g_fios_data.erase(s->r[1]); g_fios_pos.erase(s->r[1]); r0 = 0; break;  // FHClose / FHCloseSync
     case 0x812B1960u: r0 = 1; break;                                  // sceFiosOpIsDone -> done
-    case 0x812B1980u: r0 = 0; break;                                  // sceFiosOpWait
+    case 0x812B1980u: hle_eflag_set(0x60014000u, 1u); hle_eflag_set(0x60015000u, 1u); r0 = 0; break;  // sceFiosOpWait (+ op completion notify)
     case 0x812B1990u: r0 = 0; break;                                  // sceFiosOpCancel
     case 0x812B19E0u: r0 = 0; break;                                  // sceFiosOpGetError
     case 0x812B1A10u: r0 = 0; break;                                  // sceFiosOpDelete
@@ -1292,6 +1303,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2930u:                                                 // 18.4259: sceKernelWaitEventFlagCB (NID E737B1DF) - same semantics as WaitEventFlag
     case 0x812B2880u: {                                               // 18.4234: sceKernelWaitEventFlag - old-runtime mode semantics (bit0=OR, bit2=CLEAR, bit3? old uses 4=CLEAR_ALL, 2=CLEAR_BITS)
       uint32_t obj = s->r[0], bits = s->r[1], mode = s->r[2], outp = s->r[3];
+      if (obj == 0x60014000u || obj == 0x60015000u) g_eflag[obj] |= 1u;   // 18.4264: auto-wake guest Fios worker threads
+
       bool orMode = (mode & 1u) != 0u;
       auto eval = [&](uint32_t curv) -> bool { return bits == 0u || (orMode ? ((curv & bits) != 0u) : ((curv & bits) == bits)); };
       uint32_t cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u);
@@ -1600,6 +1613,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
         printf("[CHILD] root=%08X child=%08X ctype=%d c88=%08X c8c=%08X c94=%08X ca0=%d asz=%08X astub=%08X alr=%08X\n", _o,_c,(int)_t,_sz,_q88,_q94,(int)_qa0,_asz,_astub,_alr); fflush(stdout); } } }
     if (pc == 0x811DA55Cu) { static int _ga=0; if (_ga++ < 4000) { RecState* _ps=SPTR(s); printf("[GALLOC] size=%08X lr=%08X r1=%08X fib=%08X thr=%08X\n", _ps->r[0],_ps->r[14],_ps->r[1],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if (pc == 0x811DA54Cu || pc == 0x811DA55Cu) { static int _gc=0; if (_gc++ < 40) { RecState* _ps=SPTR(s); printf("[GCA] pc=%08X r0=%08X r1=%08X r2=%08X lr=%08X fib=%08X thr=%08X\n", pc,_ps->r[0],_ps->r[1],_ps->r[2],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
+    if ((pc & ~1u) == 0x811E5EC6u || (pc & ~1u) == 0x811E5EC2u || (pc & ~1u) == 0x811E5ECEu) { static int _wl=0; if (_wl++ < 12) { RecState* _ps=SPTR(s); uint32_t _r4=_ps->r[4]; uint16_t _st=0; uint32_t _fl=0; uint8_t* q=GP(_r4+2u); if(q) std::memcpy(&_st,q,2); q=GP(0x816CC630u); if(q) std::memcpy(&_fl,q,4); printf("[WAITLOOP] pc=%08X r4=%08X state=%u flag816CC630=%08X r0=%08X r5=%08X sp=%08X fib=%08X thr=%08X\n", pc,_r4,(unsigned)_st,_fl,_ps->r[0],_ps->r[5],_ps->r[13],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) {
       if (!g_in_eaa4) { g_in_eaa4 = 1;
         if (g_blkcnt_total >= 14000000u && g_eaa4_ent_n++ < 40)
@@ -2530,6 +2544,9 @@ static void init_job_pools() {
 
 
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  static int g_f630_n = 0;
+  if (a == 0x816CC630u && g_f630_n++ < 40) { printf("[FLAG630] v=%08X blk=%08X fib=%08X sp=%08X fex=%d thr=%08X\n", v, g_cur_block, g_cur_fiber, g_snap_r[13], g_in_fex, g_cur_thr); fflush(stdout); }
+
   static int g_chw_n = 0;
   static int n = 0;
   if (g_obj20_addr && a == g_obj20_addr && g_obj20w_n++ < 60) {
