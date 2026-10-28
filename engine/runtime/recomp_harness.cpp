@@ -7,6 +7,8 @@
 //   0x812B22A0 malloc etc.
 #include <cstdio>
 #include <thread>
+static int g_loadclear_env = 0;
+static int g_task_n = 0;
 static int g_sem2_n = 0, g_sig2_n = 0, g_evt2_n = 0;
 static int g_thrst_n = 0;
 static int g_thrtrace = 0;   // 18.4232 trace off by default (P5D_THRTRACE=1 enables)
@@ -1780,7 +1782,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       }
     if ((pc & ~1u) == 0x81198BF6u) {
       uint32_t _lc=0; uint8_t* _lq=GP(0x816CC630u); if(_lq) std::memcpy(&_lc,_lq,4);
-      if ((_lc & 2u) && g_loadspin_n++ > 100000000) { _lc &= ~2u; if(_lq) std::memcpy(_lq,&_lc,4); printf("[LOADCLEAR] cleared bit1 at 0x816CC630 (iters=%d) -> %08X fib=%08X\n", g_loadspin_n, _lc, g_cur_fiber); fflush(stdout); }
+      if ((_lc & 2u) && g_loadspin_n++ > (g_loadclear_env ? 200u : 100000000u)) { _lc &= ~2u; if(_lq) std::memcpy(_lq,&_lc,4); printf("[LOADCLEAR] cleared bit1 at 0x816CC630 (iters=%d) -> %08X fib=%08X\n", g_loadspin_n, _lc, g_cur_fiber); fflush(stdout); }
     }
       if ((pc & ~1u) == 0x8127C1D2u && g_c1d2_n++ < 12) {
         printf("[C1D2] enter r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
@@ -2338,7 +2340,7 @@ static void hle_thr_pump(RecState* s, int quantum) {
       }
     if ((pc & ~1u) == 0x81198BF6u) {
       uint32_t _lc=0; uint8_t* _lq=GP(0x816CC630u); if(_lq) std::memcpy(&_lc,_lq,4);
-      if ((_lc & 2u) && g_loadspin_n++ > 100000000) { _lc &= ~2u; if(_lq) std::memcpy(_lq,&_lc,4); printf("[LOADCLEAR] cleared bit1 at 0x816CC630 (iters=%d) -> %08X fib=%08X\n", g_loadspin_n, _lc, g_cur_fiber); fflush(stdout); }
+      if ((_lc & 2u) && g_loadspin_n++ > (g_loadclear_env ? 200u : 100000000u)) { _lc &= ~2u; if(_lq) std::memcpy(_lq,&_lc,4); printf("[LOADCLEAR] cleared bit1 at 0x816CC630 (iters=%d) -> %08X fib=%08X\n", g_loadspin_n, _lc, g_cur_fiber); fflush(stdout); }
     }
       if ((pc & ~1u) == 0x8127C1D2u && g_c1d2_n++ < 12) {
         printf("[C1D2] enter r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
@@ -2497,6 +2499,7 @@ int main(int argc, char** argv) {
   { const char* _cy = getenv("P5D_CB_YIELD"); g_cb_yield = (_cy && atoi(_cy) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
+  { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
   { const char* _bt = getenv("P5D_BOOT_THUNK"); g_boot_thunk = (_bt && atoi(_bt) != 0) ? 1 : 0; }
   { const char* _hx = getenv("P5D_HACKS"); g_hacks = (_hx && atoi(_hx) != 0) ? 1 : 0;
     printf("[HACKS] semantic patch stack %s\n", g_hacks ? "ENABLED (P5D_HACKS=1)" : "DISABLED (clean baseline)"); fflush(stdout); }
@@ -2950,7 +2953,7 @@ int main(int argc, char** argv) {
       }
     if ((pc & ~1u) == 0x81198BF6u) {
       uint32_t _lc=0; uint8_t* _lq=GP(0x816CC630u); if(_lq) std::memcpy(&_lc,_lq,4);
-      if ((_lc & 2u) && g_loadspin_n++ > 100000000) { _lc &= ~2u; if(_lq) std::memcpy(_lq,&_lc,4); printf("[LOADCLEAR] cleared bit1 at 0x816CC630 (iters=%d) -> %08X fib=%08X\n", g_loadspin_n, _lc, g_cur_fiber); fflush(stdout); }
+      if ((_lc & 2u) && g_loadspin_n++ > (g_loadclear_env ? 200u : 100000000u)) { _lc &= ~2u; if(_lq) std::memcpy(_lq,&_lc,4); printf("[LOADCLEAR] cleared bit1 at 0x816CC630 (iters=%d) -> %08X fib=%08X\n", g_loadspin_n, _lc, g_cur_fiber); fflush(stdout); }
     }
     if ((pc & ~1u) == 0u && g_pc0_n++ < 20) { printf("[PC0PROBE] pc=0 block=%08X fex=%d fexec=%d fib=%08X thrs=%zu\n", g_cur_block, g_in_fex, g_in_fiber_exec, g_cur_fiber, g_thr.size()); fflush(stdout); }
     if (((pc & ~1u) == 0u || pc == 0xFFFFFFF0u) && g_postmain_n < 3 && !g_in_fiber_exec && g_in_fex == 0) {
