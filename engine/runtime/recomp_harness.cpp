@@ -2810,6 +2810,7 @@ int main(int argc, char** argv) {
   { const char* _bt = getenv("P5D_BOOT_THUNK"); g_boot_thunk = (_bt && atoi(_bt) != 0) ? 1 : 0; }
   { const char* _hx = getenv("P5D_HACKS"); g_hacks = (_hx && atoi(_hx) != 0) ? 1 : 0;
   { const char* _ht = getenv("P5D_HOSTTHREADS"); g_hostthreads = (_ht && atoi(_ht) != 0) ? 1 : 0; }
+  { const char* _tp = getenv("P5D_THRPUMP"); g_thrpump_env = (_tp && atoi(_tp) != 0) ? 1 : 0; }   // 18.4265: re-wire the fiber-world thread pump (was dead code since the env parse was missing)
     printf("[HACKS] semantic patch stack %s\n", g_hacks ? "ENABLED (P5D_HACKS=1)" : "DISABLED (clean baseline)"); fflush(stdout); }
   g_target_alloc = 0x8534B160u;   // 18.4194: trace who allocates the object whose +0x20 is null
   g_obj20_addr = 0x8534B180u;     // 18.4194b: watch [object+0x20] writes from the very start (deterministic heap)
