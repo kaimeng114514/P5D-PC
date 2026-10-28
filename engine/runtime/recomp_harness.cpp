@@ -665,6 +665,29 @@ static void ef2_probe(uint32_t pc, RecState* s, int site) {
     printf("[EF2] site=%d after F01AE r0=%08X r4=%08X sp=%08X\n", site, s->r[0], s->r[4], s->r[13]); fflush(stdout); }
 }
 
+static int guest_format(uint32_t dst, uint32_t cap, uint32_t fmtva, RecState* s) {
+  uint8_t* d = GP(dst); uint8_t* f = GP(fmtva); if (!d || !f || cap == 0) return 0;
+  uint32_t written = 0;
+  uint32_t argi = 0;
+  auto next = [&]() -> uint32_t {
+    if (argi == 0) { ++argi; return s->r[3]; }
+    uint32_t a = 0; uint8_t* sp = GP(s->r[13] + (argi - 1) * 4u); if (!sp) return 0;
+    std::memcpy(&a, sp, 4); ++argi; return a; };
+  auto put = [&](char c) { if (written + 1 < cap) d[written] = (uint8_t)c; ++written; };
+  for (uint32_t i = 0; f[i] && written + 1 < cap; ++i) {
+    if (f[i] != '%') { put((char)f[i]); continue; }
+    char c = (char)f[i+1];
+    if (c == '%') { put('%'); ++i; continue; }
+    if (c == 's') { uint32_t a = next(); uint8_t* q = GP(a); if (q) for (uint32_t k=0; q[k] && written+1<cap; ++k) put((char)q[k]); ++i; }
+    else if (c == 'c') { put((char)next()); ++i; }
+    else if (c == 'd' || c == 'i') { char b[16]; int32_t v=(int32_t)next(); int n=0; bool ng=v<0; uint32_t uv=ng?(uint32_t)(-v):(uint32_t)v; if(!uv)b[n++]='0'; while(uv&&n<15){b[n++]=(char)('0'+uv%10);uv/=10;} if(ng)b[n++]='-'; while(n>0) put(b[--n]); ++i; }
+    else if (c == 'u') { char b[16]; uint32_t uv=next(); int n=0; if(!uv)b[n++]='0'; while(uv&&n<15){b[n++]=(char)('0'+uv%10);uv/=10;} while(n>0) put(b[--n]); ++i; }
+    else if (c == 'x' || c == 'X') { char b[16]; const char* hx = (c=='x')?"0123456789abcdef":"0123456789ABCDEF"; uint32_t uv=next(); int n=0; if(!uv)b[n++]='0'; while(uv&&n<15){b[n++]=hx[uv&15];uv>>=4;} while(n>0) put(b[--n]); ++i; }
+    else { put('%'); }
+  }
+  if (cap) d[written < cap ? written : cap-1] = 0;
+  return (int)written;
+}
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
@@ -748,6 +771,38 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (d && sp) { uint32_t i = 0; do { d[i] = sp[i]; } while (sp[i++] && i < 0x100000u); }
       r0 = dst; break; }
     case 0x812B2360u: r0 = 0; break;                                   // __at_quick_exit
+    case 0x812B2200u: {                                               // 18.4256: strcmp(s1,s2) [NID 1B58FA3B] (was MISSING -> always 0!)
+      uint8_t* a = GP(s->r[0]); uint8_t* b = GP(s->r[1]); r0 = 0;
+      if (a && b) { for (uint32_t i = 0; i < 0x100000u; ++i) { if (a[i] != b[i]) { r0 = (a[i] < b[i]) ? (uint32_t)-1 : 1u; break; } if (!a[i]) break; } }
+      break; }
+    case 0x812B2290u: {                                               // memcmp(a,b,n) [NID 7747F6D7]
+      uint8_t* a = GP(s->r[0]); uint8_t* b = GP(s->r[1]); uint32_t n = s->r[2]; r0 = 0;
+      if (a && b) { for (uint32_t i = 0; i < n; ++i) { if (a[i] != b[i]) { r0 = (a[i] < b[i]) ? (uint32_t)-1 : 1u; break; } } }
+      break; }
+    case 0x812B2350u: {                                               // memmove(dst,src,n) [NID AF5C218D]
+      uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
+      uint8_t* d = GP(dst); uint8_t* q = GP(src);
+      if (d && q && n < 0x1000000u) std::memmove(d, q, n);
+      r0 = dst; break; }
+    case 0x812B2310u: {                                               // strncpy(dst,src,n) [NID 9F87712D]
+      uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
+      uint8_t* d = GP(dst); uint8_t* q = GP(src);
+      if (d && q && n < 0x1000000u) { uint32_t i = 0; for (; i < n && q[i]; ++i) d[i] = q[i]; for (; i < n; ++i) d[i] = 0; }
+      r0 = dst; break; }
+    case 0x812B23B0u: {                                               // strncmp(a,b,n) [NID E4299DCB]
+      uint8_t* a = GP(s->r[0]); uint8_t* b = GP(s->r[1]); uint32_t n = s->r[2]; r0 = 0;
+      if (a && b) { for (uint32_t i = 0; i < n; ++i) { if (a[i] != b[i]) { r0 = (a[i] < b[i]) ? (uint32_t)-1 : 1u; break; } if (!a[i]) break; } }
+      break; }
+    case 0x812B2320u: {                                               // snprintf(dst,size,fmt,...) [NID A1BFF606]
+      r0 = (uint32_t)guest_format(s->r[0], s->r[1], s->r[2], s); break; }
+    case 0x812B2300u: {                                               // __errno_loc [NID 9E248B76]
+      static uint32_t g_errno_va = 0; if (!g_errno_va) g_errno_va = hle_malloc(16);
+      r0 = g_errno_va; break; }
+    case 0x812B2220u: r0 = 0; break;                                  // __cxa_atexit
+    case 0x812B2230u: r0 = s->r[0]; break;                            // malloc_usable_size -> request size
+    case 0x812B2380u: r0 = 0; break;                                  // clock
+    case 0x812B2390u: { if (s->r[0]) { uint8_t* q = GP(s->r[0]); if (q) { uint32_t z = 0; std::memcpy(q, &z, 4); } } r0 = 0; break; }  // time
+    case 0x812B2400u: r0 = 0; break;                                  // localtime
     case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr
     case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread: otherwise host threads and main race on guest heap)
       if (g_hostthreads) { uint32_t me = tl_ht_tid ? tl_ht_tid : 0x40010000u; uint32_t w = s->r[0]; auto& e = g_lwm_real[w];
@@ -1471,6 +1526,9 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
     if (pc == 0x811DEAB4u) { static int _rf=0; if (_rf++ < 30) { RecState* _ps=SPTR(s); uint32_t _t=_ps->r[0]&0xFFFF, _f=_ps->r[1]&0xFFFF, _pp=_ps->r[2]; uint32_t _w[3]={0,0,0}; uint8_t* q=GP(_pp); if(q) std::memcpy(_w,q,12); printf("[RFACT] type=%04X flags=%04X param=%08X p0=%08X p1=%08X p2=%08X lr=%08X fib=%08X thr=%08X\n", _t,_f,_pp,_w[0],_w[1],_w[2],_ps->r[14],g_cur_fiber,g_cur_thr); fflush(stdout); } }
     if (pc == 0x811DEAB4u) { static int _g=0; if (_g++ < 4) { uint32_t _gv[10]; for (int _i=0;_i<10;++_i) { _gv[_i]=0; uint8_t* q=GP(0x81513DD4u + (uint32_t)_i*4u); if(q) std::memcpy(&_gv[_i],q,4); } printf("[GLOB] DD4=%08X DD8=%08X DDC=%08X DE0=%08X DE4=%08X DE8=%08X DEC=%08X DF0=%08X DF4=%08X DF8=%08X\n", _gv[0],_gv[1],_gv[2],_gv[3],_gv[4],_gv[5],_gv[6],_gv[7],_gv[8],_gv[9]); fflush(stdout); } }
     if (pc == 0x8118308Au || pc == 0x8118308Bu) { static int _rd=0; if (_rd++ < 24) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[0], _out=_ps->r[1]; int16_t _t=0; uint32_t _p=0,_sz=0; uint8_t* q=GP(_o+4u); if(q) std::memcpy(&_t,q,2); q=GP(_o+0x8cu); if(q) std::memcpy(&_p,q,4); q=GP(_o+0x90u); if(q) std::memcpy(&_sz,q,4); printf("[RDR] pc=%08X obj=%08X type=%d ptr=%08X size=%08X out=%08X lr=%08X\n", pc, _o, (int)_t, _p, _sz, _out, _ps->r[14]); fflush(stdout); } }
+    if (pc == 0x811C6C74u) { static int _cd=0; if (_cd++ < 2) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[4]; uint8_t* q=GP(_o); printf("[CREATED] obj=%08X:", _o); if(q){ for (int _i=0;_i<0xA0;_i+=4){uint32_t _v=0; std::memcpy(&_v,q+_i,4); printf(" +%02X=%08X",_i,_v);} } printf("\n"); fflush(stdout); } }
+    if (pc == 0x811DEAB4u) { static int _g2=0; if (_g2++ < 2) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[4]; uint8_t* q=GP(_o); (void)q; } }
+    if (pc == 0x811C6C72u || pc == 0x811C6C74u) { static int _cd2=0; if (_cd2++ < 3) { RecState* _ps=SPTR(s); uint32_t _o=_ps->r[0]; uint8_t* q=GP(_o); printf("[CREATED2] pc=%08X obj=%08X:", pc, _o); if(q){ for (int _i=0;_i<0xA0;_i+=4){uint32_t _v=0; std::memcpy(&_v,q+_i,4); printf(" +%02X=%08X",_i,_v);} } printf("\n"); fflush(stdout); } }
     if ((pc & ~1u) == 0x811EAAE4u) {
       if (!g_in_eaa4) { g_in_eaa4 = 1;
         if (g_blkcnt_total >= 14000000u && g_eaa4_ent_n++ < 40)
