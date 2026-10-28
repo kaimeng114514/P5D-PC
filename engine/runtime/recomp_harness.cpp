@@ -472,7 +472,7 @@ static uint32_t gbn_back(uint32_t t, int* pback);
 static int g_stall_n = 0;
 static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg);
 static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int maxblocks);
-static int g_gxmabi = 0, g_gxmabi_n = 0; static int g_gxmabi_scene_n = 0, g_gxmabi_draw_n = 0; static int g_bs_n = 0; static int g_scene_ent_n = 0; static int g_dea_n = 0; static int g_ab4_n = 0; static int g_830_n = 0, g_830r_n = 0, g_hdl_n = 0; static int g_open_n = 0, g_ld_n = 0; static int g_wk_n = 0; static int g_wkp_n = 0; static uint32_t g_hw_handle=0, g_hw_st=0xDEAD, g_hw_p=0xDEAD, g_hw_sz=0xDEAD; static int g_hw_n=0; static int g_912_n = 0, g_912r_n = 0; static int g_scene_stub_n = 0;
+static int g_gxmabi = 0, g_gxmabi_n = 0; static int g_gxmabi_scene_n = 0, g_gxmabi_draw_n = 0; static int g_bs_n = 0; static int g_scene_ent_n = 0; static int g_dea_n = 0; static int g_ab4_n = 0; static int g_830_n = 0, g_830r_n = 0, g_hdl_n = 0; static int g_open_n = 0, g_ld_n = 0; static int g_wk_n = 0; static int g_wkp_n = 0; static int g_reg_n = 0; static uint32_t g_lh_last = 0xDEAD; static uint32_t g_hw_handle=0, g_hw_st=0xDEAD, g_hw_p=0xDEAD, g_hw_sz=0xDEAD; static int g_hw_n=0; static int g_912_n = 0, g_912r_n = 0; static int g_scene_stub_n = 0;
 static uint8_t* gp_img = nullptr;
 static inline uint8_t* GP(uint32_t va) {
   uint32_t off;
@@ -792,6 +792,16 @@ static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own
 static void hw_check(uint32_t pcv);
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  if ((pcv == 0x81181C2Au || pcv == 0x81181C3Eu || pcv == 0x81181A3Cu || pcv == 0x81182EEAu || pcv == 0x81181B60u || pcv == 0x81181BB2u) && g_reg_n++ < 40) {
+    char _nm[64]={0}; uint32_t _pa=s->r[0]; if (pcv==0x81181B60u || pcv==0x81181BB2u) { uint8_t* _pq=GP(s->r[13]+0x504u); if(_pq) std::memcpy(&_pa,_pq,4); }
+    uint8_t* _p=GP(_pa); if(_p){ for(int _k=0;_k<60;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
+    printf("[REG] pc=%08X name=%s r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", pcv, _nm, s->r[0], s->r[1], s->r[2], s->r[3], s->r[4], s->r[5], s->r[6], s->r[7], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
+    for (int _k=0;_k<14;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 14u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+  { uint32_t _lh=0; uint8_t* _q=GP(0x816CDAC8u+0xC4u); if(_q) std::memcpy(&_lh,_q,4);
+    if (g_lh_last==0xDEAD) g_lh_last=_lh;
+    if (_lh != g_lh_last) { printf("[REGHEAD] bypc=%08X old=%08X new=%08X fib=%08X thr=%08X ring:", pcv, g_lh_last, _lh, g_cur_fiber, g_cur_thr);
+      for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); g_lh_last=_lh; }
+    if (pcv >= 0x81181A00u && pcv <= 0x81181C60u && g_reg_n++ < 60) printf("[REGR] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X\n", pcv, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14], s->r[13], g_cur_fiber); }
   if (pcv >= 0x811830E0u && pcv <= 0x811831D8u && g_wkp_n++ < 60) {
     printf("[WKP] pc=%08X r0=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", pcv, s->r[0], s->r[4], s->r[5], s->r[6], s->r[7], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
     for (int _k=0;_k<10;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 10u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
@@ -2740,6 +2750,9 @@ static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int max
   uint32_t pc = s->r[15]; int n = 0;
   while (n++ < maxblocks) {
     hw_check(pc);
+    if ((pc == 0x81181C2Au || pc == 0x81181C3Eu || pc == 0x81181A3Cu || pc == 0x81182EEAu || pc == 0x81181B60u || pc == 0x81181BB2u) && g_reg_n++ < 40) {
+      uint32_t _pa=s->r[0]; char _nm[64]={0}; uint8_t* _p=GP(_pa); if(_p){ for(int _k=0;_k<60;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
+      printf("[REGCB] pc=%08X name=%s r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X thr=%08X\n", pc, _nm, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14], s->r[13], g_cur_fiber, g_cur_thr); fflush(stdout); }
     uint32_t q = pc & ~1u;
     if (q == 0x811E5EC2u) ++g_cb5ec2; else if (q == 0x811E5EC6u) ++g_cb5ec6; else if (q == 0x811E5EF0u) ++g_cb5ef0;
     if (q >= 0xFFFFFF00u || pc == 0u) break;
@@ -3216,6 +3229,9 @@ g_loop_site = 1; ++g_loop_cnt[1]; g_current_loop_pc = (int)pc; h7344_probe(s, pc
 BlockFn fn = gbn(pc);
       if (!fn) { int _back = 0; uint32_t _rp = gbn_back(pc, &_back); if (_rp) { pc = _rp; fn = gbn(pc); } }
       if (!fn) { if (g_thr_log_n++ < 40) printf("[THR-BAD] tid=%08X pc=%08X\\n", kv.first, pc); t.alive = 0; break; }
+    if ((pc == 0x81181C2Au || pc == 0x81181C3Eu || pc == 0x81181A3Cu || pc == 0x81182EEAu || pc == 0x81181B60u || pc == 0x81181BB2u) && g_reg_n++ < 40) {
+      uint32_t _pa=s->r[0]; char _nm[64]={0}; uint8_t* _p=GP(_pa); if(_p){ for(int _k=0;_k<60;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
+      printf("[REGP] pc=%08X name=%s r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X lr=%08X sp=%08X fib=%08X thr=%08X\n", pc, _nm, s->r[0], s->r[1], s->r[2], s->r[3], s->r[4], s->r[14], s->r[13], g_cur_fiber, g_cur_thr); fflush(stdout); }
       uint32_t np = fn(s);
       if (np == 0xFFFFFFF0u) { if (g_thr_log_n++ < 40) printf("[THR] exit tid=%08X blocks=%d\\n", kv.first, n); t.alive = 0; t.ready = 0; break; }
       pc = np;
@@ -3308,6 +3324,9 @@ int main(int argc, char** argv) {
   { uint32_t o = 0x8130CC68u - IMG_VA_BASE; uint32_t v = 0;
     if (o + 4 <= IMG_SIZE) std::memcpy(&v, g_img.data() + o, 4);
     printf("[INIT8130] after load [0x8130CC68]=%08X (ELF expects 0C20D060) [0x8130CC6C]=%08X\n", v, [](uint8_t* b, uint32_t oo){ uint32_t x; std::memcpy(&x, b+oo+4, 4); return x; }(g_img.data(), o)); }
+  { uint32_t _lh=0; std::memcpy(&_lh, g_img.data()+ (0x816CDAC8u-IMG_VA_BASE) + 0xC4u, 4);
+    printf("[REGINIT] head=%08X\n", _lh);
+    uint32_t _e=_lh; for (int _i=0;_i<6 && _e;_i++){ uint32_t _w[8]={0}; for(int _k=0;_k<8;++_k){ uint32_t _off=_e-IMG_VA_BASE+_k*4u; if(_off+4<=IMG_SIZE) std::memcpy(&_w[_k], g_img.data()+_off,4);} printf("[REGINIT] e%d=%08X w: %08X %08X %08X %08X %08X %08X %08X %08X\n", _i, _e, _w[0],_w[1],_w[2],_w[3],_w[4],_w[5],_w[6],_w[7]); _e=_w[0]; } fflush(stdout); }
   build_all_blocks();
   if (!g_wd_started) { g_wd_started = 1; std::thread(wd_loop).detach(); }   // 18.4179: stall watchdog
   RecState s; memset(&s, 0, sizeof(s));
@@ -4113,6 +4132,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
 
         h7344_probe(&s, ppc);
         fix682a(&s, &ppc);
+    if ((pc == 0x81181C2Au || pc == 0x81181C3Eu || pc == 0x81181A3Cu || pc == 0x81182EEAu || pc == 0x81181B60u || pc == 0x81181BB2u) && g_reg_n++ < 40) {
+      uint32_t _pa=s.r[0]; char _nm[64]={0}; uint8_t* _p=GP(_pa); if(_p){ for(int _k=0;_k<60;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
+      printf("[REGP] pc=%08X name=%s r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X lr=%08X sp=%08X fib=%08X thr=%08X\n", pc, _nm, s.r[0], s.r[1], s.r[2], s.r[3], s.r[4], s.r[14], s.r[13], g_cur_fiber, g_cur_thr); fflush(stdout); }
         BlockFn f2fn = gbn(ppc);
         if (!f2fn) { int back = 0; uint32_t bq = gbn_back(ppc, &back); if (bq && back <= 16) { f2fn = gbn(bq); ppc = bq; } }
         if (!f2fn) { if (g_pump2_n <= 8) printf("[PMP2] fiber2 no block pc=%08X\n", ppc); break; }
