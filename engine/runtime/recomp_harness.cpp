@@ -742,6 +742,8 @@ static int g_waitcall_n = 0;
 static int g_pcall_n = 0;
 static int g_canpc_n = 0;
 static int g_oddpc_n = 0;
+static int g_ret_epi_n = 0;
+static int g_wl_active = 0, g_wl_n = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _o = (g_watch_task ? g_watch_task : g_cur_wait_obj);
     if (_o) {
@@ -3121,6 +3123,7 @@ int main(int argc, char** argv) {
 { const char* _lp = getenv("P5D_LOADPUMP"); g_loadpump = (_lp && atoi(_lp) != 0) ? 1 : 0; }
 { const char* _sf = getenv("P5D_SCHEDFIX"); g_schedfix = (_sf && atoi(_sf) != 0) ? 1 : 0; }
 { const char* _tw = getenv("P5D_THREADWEMU"); g_threadwemu = (_tw && atoi(_tw) != 0) ? 1 : 0; }
+{ const char* _fg = getenv("P5D_WLGUARD"); g_wl_frame_guard = (_fg && atoi(_fg) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
   { const char* _lc = getenv("P5D_LOADCLEAR"); g_loadclear_env = (_lc && atoi(_lc) != 0) ? 1 : 0; }
@@ -4068,7 +4071,10 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         uint32_t _nxt24 = 0; { uint8_t* _q = GP(_t + 0x24u); if (_q) std::memcpy(&_nxt24, _q, 4); }
         if (_nxt24) { uint32_t _z = 0; uint8_t* _q = GP(_t + 0x24u); if (_q) std::memcpy(_q, &_z, 4); }
         if (g_pump_setg_n++ < 20) { printf("[WAITPUMP] n=%u task=%08X state=%u (global was %08X next=%08X) force+run state machine\n", g_blkcnt_total, _t, (unsigned)_st, _gprev, _nxt24); fflush(stdout); }
+        uint32_t _sv[40]; uint32_t _sp0 = s.r[13];
+        if (g_wl_frame_guard) { for (int _k = 0; _k < 40; ++_k) { _sv[_k]=0; uint8_t* _q=GP(_sp0 + (uint32_t)_k*4u); if(_q) std::memcpy(&_sv[_k],_q,4); } }
         call_guest_cb(&s, 0x811E5928u, 0, 30000);
+        if (g_wl_frame_guard) { for (int _k = 0; _k < 40; ++_k) { uint8_t* _q=GP(_sp0 + (uint32_t)_k*4u); if(_q) std::memcpy(_q,&_sv[_k],4); } }
         if (_nxt24) { uint8_t* _q = GP(_t + 0x24u); if (_q) std::memcpy(_q, &_nxt24, 4); }
         { if (_gprev != _t) { uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(_q, &_gprev, 4); } }
         { uint16_t _st2=0xFFFF; uint8_t* _q = GP(_t + 2u); if (_q) std::memcpy(&_st2, _q, 2);
@@ -4077,10 +4083,22 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         // stale s.r[15], which can be mid-block garbage like 0x811E5EF0 and caused the canary-LR corruption)
       }
     }
+    if (g_wl_active) {
+      uint32_t _cur = 0; uint8_t* _q = GP(g_wl_sp + 4u); if (_q) std::memcpy(&_cur, _q, 4);
+      if (_cur != g_wl_lr && g_wl_n++ < 12) { printf("[WLFRAME] prevblk=%08X nowblk=%08X slot=%08X exp=%08X got=%08X sp=%08X fib=%08X ring:", g_wl_prevblk, pc, g_wl_sp+4u, g_wl_lr, _cur, s.r[13], g_cur_fiber);
+        for (int _k=0;_k<20;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 20u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); g_wl_active = 0; }
+    }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
+    if (g_cur_block == 0x811E5EC2u) { g_wl_active = 1; g_wl_sp = s.r[13]; g_wl_lr = s.r[14]; g_wl_prevblk = g_cur_block; }
+    else if (g_cur_block == 0x811E5EF0u) { g_wl_active = 0; }
+    else if (g_wl_active) { g_wl_prevblk = g_cur_block; }
     { static uint32_t _lastg=0; if (g_blkcnt_total - _lastg > 500000u) { _lastg = g_blkcnt_total;
         if (g_stall_n++ < 20) { printf("[STALLTRACE] n=%u pc=%08X blk=%08X fib=%08X loop=%d sp=%08X fex=%d\n", g_blkcnt_total, pc, g_cur_block, g_cur_fiber, g_loop_site, s.r[13], g_in_fex); fflush(stdout); } } }
+    if (nxt == 0x811E5EF0u && g_ret_epi_n++ < 12) {
+      printf("[RET_EPI] act=%d from blk=%08X fib=%08X thr=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X words:", g_wl_active, g_cur_block, g_cur_fiber, g_cur_thr, s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7],s.r[13],s.r[14]);
+      for (int _k=0;_k<8;++_k) { uint32_t _w=0; uint8_t* _q=GP(s.r[13]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); }
+      printf(" ring:"); for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
     if (nxt != 0u && nxt != 0xFFFFFFF0u && nxt < 0x80000000u && !gbn(nxt) && g_oddpc_n++ < 20) {
       printf("[ODDPC] nxt=%08X blk=%08X fib=%08X thr=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X lr=%08X ring:", nxt, g_cur_block, g_cur_fiber, g_cur_thr, s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7],s.r[13],s.r[14]);
       for (int _k=0;_k<18;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 18u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
