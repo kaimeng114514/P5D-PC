@@ -345,6 +345,8 @@ static int g_gxm_ctx_n = 0, g_gxm_begin_n = 0, g_gxm_end_n = 0, g_gxm_present_n 
 static uint32_t g_display_cb = 0, g_display_cbds = 0, g_display_maxpend = 0, g_disp_pending = 0, g_disp_pending_cbd = 0;
 static uint32_t g_watch_task = 0; static int g_taskst_n = 0;
 static int g_loadpump = 0, g_loadpump_n = 0;
+static uint32_t g_wait_task = 0; static int g_waitlog_n = 0; static int g_stale_task_n = 0;
+
 static uint32_t g_test_cb = 0; static int g_test_cb_done = 0;
 static int g_disp_depth = 0, g_disp_n = 0, g_gxminit_n = 0;
 static uint32_t g_gsr_in[24] = {0}, g_gsr_out[24] = {0}, g_gsr_f[24] = {0};
@@ -476,6 +478,13 @@ static inline uint8_t* GP(uint32_t va) {
     fprintf(stderr, "\n"); return nullptr; }
   return gp_img + off;
 }
+static uint32_t loadpump_task(void) {   // 18.4275: pump ONLY a live Fios task (global head, valid state 0..8); never a stale/freed pointer
+  uint32_t _t = 0; uint8_t* _q2 = GP(0x816CDA2Cu); if (_q2) std::memcpy(&_t, _q2, 4);
+  if (!_t) return 0;
+  uint16_t _s2 = 0xFFFF; uint8_t* _q3 = GP(_t + 2u); if (_q3) std::memcpy(&_s2, _q3, 2);
+  if (_s2 > 8u) { if (g_stale_task_n++ < 12) { printf("[LOADPUMP-SKIP] stale task=%08X state=%u (0x%X) - already completed/reused, not pumping\n", _t, (unsigned)_s2, _t); fflush(stdout); } return 0; }
+  if (_s2 == 6u) return 0;
+  return _t; }
 static int g_682a_skip_n = 0;
 static void fix682a(RecState* s, uint32_t* ppc) {   // 18.4226: canary-epilogue guard (r5 restore + skip inconsistent frame)
   uint32_t pc = *ppc & ~1u;
@@ -721,6 +730,10 @@ static int g_inpw_n = 0, g_inp_init_n = 0, g_inp_update_n = 0, g_inp_update2_n =
 
 static int g_fsm_n = 0, g_fsm6_n = 0, g_fsmw_n = 0;
 static void job_probes(uint32_t pcv, RecState* s) {
+  { uint32_t p = pcv & ~1u; if (p == 0x811E5EC2u && s->r[4]) { if (g_wait_task != s->r[4]) { g_wait_task = s->r[4];
+        if (g_waitlog_n++ < 40) { uint16_t _st=0; uint8_t* _q=GP(g_wait_task+2u); if(_q) std::memcpy(&_st,_q,2);
+          printf("[WAITTASK] n=%u task=%08X state=%u fib=%08X\n", g_blkcnt_total, g_wait_task, (unsigned)_st, g_cur_fiber); fflush(stdout); } } } }
+
   { uint32_t p = pcv & ~1u;
     if (p == 0x811E5928u) { if (g_fsm_n++ < 24) { uint32_t t = s->r[0]; uint16_t st = 0; uint8_t* q = GP(t + 2u); if (q) std::memcpy(&st, q, 2);
         printf("[FIOSSM] enter task=%08X state=%u thr=%08X fib=%08X\n", t, (unsigned)st, g_cur_thr, g_cur_fiber); fflush(stdout);} }
@@ -1773,7 +1786,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       pc = s->r[15];
     }
     if (g_loadpump && g_blkcnt_total > 1400000u && g_disp_depth == 0) {
-      uint32_t _lt = 0; { uint8_t* _lq = GP(0x816CDA2Cu); if (_lq) std::memcpy(&_lt, _lq, 4); }
+      uint32_t _lt = loadpump_task();
       if (_lt) {
         uint16_t _lst = 0; { uint8_t* _lq2 = GP(_lt + 2u); if (_lq2) std::memcpy(&_lst, _lq2, 2); }
         if (_lst != 6u && (g_blkcnt_total % 20000u) == 0u) {
@@ -3930,11 +3943,11 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       printf("[E59] enter 0x811E5970: r5=%08X r6=%08X r0=%08X r1=%08X r9=%08X sp=%08X\n",
              s.r[5],s.r[6],s.r[0],s.r[1],s.r[9],s.r[13]);
     }
-    if (g_loadpump && g_blkcnt_total > 1400000u) {
-      uint32_t _lt = 0; { uint8_t* _lq = GP(0x816CDA2Cu); if (_lq) std::memcpy(&_lt, _lq, 4); }
+    if (g_loadpump && (g_blkcnt_total > 1400000u || n > 1000000)) {
+      uint32_t _lt = loadpump_task();
       if (_lt) {
         uint16_t _lst = 0; { uint8_t* _lq2 = GP(_lt + 2u); if (_lq2) std::memcpy(&_lst, _lq2, 2); }
-        if (_lst != 6u && (g_blkcnt_total % 20000u) == 0u) {
+        if (_lst != 6u && (n % 20000) == 0) {
           if (g_loadpump_n++ < 60) { printf("[LOADPUMP-MAINN] n=%u task=%08X state=%u fib=%08X -> run FUN_811E5928\n", g_blkcnt_total, _lt, (unsigned)_lst, g_cur_fiber); fflush(stdout); }
           call_guest_cb(&s, 0x811E5928u, 0, 120000);
           if (g_loadpump_n <= 60) { uint16_t _lst2=0; uint8_t* _lq3=GP(_lt+2u); if(_lq3) std::memcpy(&_lst2,_lq3,2);
