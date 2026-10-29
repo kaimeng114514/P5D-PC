@@ -14,6 +14,7 @@
 #include <map>
 #include <utility>
 #include <string>
+#include <set>
 #include <vector>
 static int g_loadclear_env = 0;
 static int g_hostthreads = 0;
@@ -154,7 +155,7 @@ static int g_pump_brk_n = 0;
 static int g_yield_to_main = 0;
 static uint32_t g_yield_main_tick = 0;
 static int g_ytest_n = 0;
-static int g_uncond3_n = 0; static int g_uncond3_env = 0; static int g_tdump_n = 0;
+static int g_uncond3_n = 0; static int g_uncond3_env = 0; static int g_tdump_n = 0; static int g_provide_done = 0, g_provide_miss_n = 0; static int g_provide_n = 0, g_provide_ok = 0; static int g_eprov_n = 0, g_eprov_ok = 0, g_eprov_miss_n = 0; static std::set<uint32_t> g_prov_set, g_eprov_set;
 static int g_always3 = 0;
 static int g_force3_done = 0;
 static uint32_t g_force3_obj = 0;
@@ -2746,7 +2747,29 @@ static void build_all_blocks() {
   std::sort(g_all.begin(), g_all.end(), [](const GBlk&a, const GBlk&b){ return a.va < b.va; });
   printf("[TABLE] blocks=%zu\n", g_all.size());
 }
+// M785c: manual blocks for functions missed by IDA function bounds (only reachable via function pointers)
+static std::map<uint32_t, BlockFn> g_manual_blocks;
+static uint32_t mb_81032CF8(RecState* s) {   // pop {r4, pc}
+  uint32_t sp = s->r[13]; uint32_t r4 = 0, nx = 0;
+  { uint8_t* q = GP(sp); if (q) std::memcpy(&r4, q, 4); }
+  { uint8_t* q = GP(sp + 4u); if (q) std::memcpy(&nx, q, 4); }
+  s->r[13] = sp + 8u; s->r[4] = r4; return nx;
+}
+static uint32_t mb_81032CEA(RecState* s) {   // push {r4,lr}; ldr r2,[0x8132AEB8]; blx r2; -> returns to 0x81032CF8
+  uint32_t sp = s->r[13] - 4u; { uint8_t* q = GP(sp); uint32_t v = s->r[14]; if (q) std::memcpy(q, &v, 4); }
+  sp -= 4u; { uint8_t* q = GP(sp); uint32_t v = s->r[4]; if (q) std::memcpy(q, &v, 4); }
+  s->r[13] = sp;
+  uint32_t fp = 0; { uint8_t* q = GP(0x8132AEB8u); if (q) std::memcpy(&fp, q, 4); }
+  s->r[2] = fp; s->r[14] = 0x81032CF8u;
+  return fp & ~1u;
+}
+static void init_manual_blocks(void) {
+  g_manual_blocks[0x81032CF8u] = (BlockFn)mb_81032CF8;
+  g_manual_blocks[0x81032CEAu] = (BlockFn)mb_81032CEA;
+}
 static BlockFn gbn(uint32_t pc) {
+  { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
+
   pc &= ~1u;   // 18.3939: normalize Thumb bit (block table is keyed by even instruction addresses)
   auto it = std::lower_bound(g_all.begin(), g_all.end(), pc, [](const GBlk&a, uint32_t v){ return a.va < v; });
   if (it != g_all.end() && it->va == pc) return it->fn;
@@ -3362,6 +3385,7 @@ int main(int argc, char** argv) {
     printf("[REGINIT] head=%08X\n", _lh);
     uint32_t _e=_lh; for (int _i=0;_i<6 && _e;_i++){ uint32_t _w[8]={0}; for(int _k=0;_k<8;++_k){ uint32_t _off=_e-IMG_VA_BASE+_k*4u; if(_off+4<=IMG_SIZE) std::memcpy(&_w[_k], g_img.data()+_off,4);} printf("[REGINIT] e%d=%08X w: %08X %08X %08X %08X %08X %08X %08X %08X\n", _i, _e, _w[0],_w[1],_w[2],_w[3],_w[4],_w[5],_w[6],_w[7]); _e=_w[0]; } fflush(stdout); }
   build_all_blocks();
+  init_manual_blocks();
   if (!g_wd_started) { g_wd_started = 1; std::thread(wd_loop).detach(); }   // 18.4179: stall watchdog
   RecState s; memset(&s, 0, sizeof(s));
   s.base = g_img.data(); s.mem_size = IMG_SIZE;
@@ -3926,6 +3950,57 @@ if ((pc & ~1u) == 0x811830C8u && g_w8c8_watch == 0 && s.r[0] >= 0x80000000u) {
   g_w8c8_watch = s.r[0] + 4u; g_watch_addr = g_w8c8_watch; g_watch_val = 0xDEADBEEFu;
   uint8_t* _wq = GP(g_watch_addr); if (_wq) std::memcpy(&g_watch_val, _wq, 4);
   printf("[DWATCH] object=%08X state=%08X initial=%08X\n", s.r[0], g_watch_addr, g_watch_val); fflush(stdout);
+}
+if ((pc & ~1u) == 0x81181CBEu && s.r[4] >= 0x80000000u && g_eprov_set.count(s.r[4]) == 0 && g_eprov_n++ < 200) {   // M785b: upgrade registry entry type 0 -> 0xC from CPK
+  uint32_t _e = s.r[4]; uint16_t _ty = 0; { uint8_t* _q = GP(_e + 4u); if (_q) std::memcpy(&_ty, _q, 2); }
+  if (_ty != 0xCu) {
+    char _nm[192] = {0}; uint8_t* _ns = GP(_e + 8u);
+    if (_ns) { for (int _i = 0; _i < 180; ++_i) { char _c = (char)_ns[_i]; _nm[_i] = _c; if (!_c) break; } }
+    std::vector<std::string> _cands; if (_nm[0]) { std::string _s(_nm); _cands.push_back(_s);
+      std::string _lo = _s; for (char& _c : _lo) _c = (char)tolower((unsigned char)_c);
+      if (_lo != _s) _cands.push_back(_lo); _cands.push_back(std::string("gfd/") + _s); _cands.push_back(std::string("gfd/") + _lo); }
+    std::vector<uint8_t> _dat; bool _ok = false; std::string _used;
+    for (auto& _cd : _cands) { if (cpk_read_any_impl(_cd, _dat) && !_dat.empty()) { _ok = true; _used = _cd; break; } }
+    if (_ok) {
+      uint32_t _buf = hle_malloc((uint32_t)_dat.size()); if (_buf) std::memcpy(GP(_buf), _dat.data(), _dat.size());
+      uint32_t _sz = (uint32_t)_dat.size(); uint32_t _ptr = _buf;
+      { uint8_t* _q = GP(_e + 0x88u); if (_q) std::memcpy(_q, &_sz, 4); }
+      { uint8_t* _q = GP(_e + 0x94u); if (_q) std::memcpy(_q, &_ptr, 4); }
+      uint16_t _tc = 0xCu; { uint8_t* _q = GP(_e + 4u); if (_q) std::memcpy(_q, &_tc, 2); }
+      { uint8_t* _q = GP(_e + 0xa0u); if (_q) *_q = 0; }
+      g_eprov_set.insert(_e); g_eprov_ok++;
+      printf("[EPROV] entry=%08X name=%s data=%s size=%u buf=%08X\n", _e, _nm, _used.c_str(), _sz, _buf); fflush(stdout);
+    } else if (g_eprov_miss_n++ < 6) { printf("[EPROV-MISS] entry=%08X name=%s\n", _e, _nm); fflush(stdout); }
+  }
+}
+if (!g_uncond3_env && (pc & ~1u) == 0x811830CCu && s.r[4] >= 0x80000000u && g_prov_set.count(s.r[4]) == 0 && g_provide_n++ < 400) {   // M785: HLE virtual-file data provider
+  uint32_t _obj = s.r[4]; uint16_t _st0 = 0; { uint8_t* _q = GP(_obj + 4u); if (_q) std::memcpy(&_st0, _q, 2); }
+  if (_st0 == 0) {
+    uint32_t _ent = 0; { uint8_t* _q = GP(_obj); if (_q) std::memcpy(&_ent, _q, 4); }
+    char _nm[192] = {0}; uint8_t* _ns = _ent ? GP(_ent + 8u) : nullptr;
+    if (_ns) { for (int _i = 0; _i < 180; ++_i) { char _c = (char)_ns[_i]; _nm[_i] = _c; if (!_c) break; } }
+    std::vector<std::string> _cands;
+    if (_nm[0]) { std::string _s(_nm); _cands.push_back(_s);
+      std::string _lo = _s; for (char& _c : _lo) _c = (char)tolower((unsigned char)_c);
+      if (_lo != _s) _cands.push_back(_lo);
+      _cands.push_back(std::string("gfd/") + _s); _cands.push_back(std::string("gfd/") + _lo);
+      _cands.push_back(std::string("data/gfd/") + _s); _cands.push_back(std::string("data/gfd/") + _lo); }
+    std::vector<uint8_t> _dat; bool _ok = false; std::string _used;
+    for (auto& _cd : _cands) { if (cpk_read_any_impl(_cd, _dat) && !_dat.empty()) { _ok = true; _used = _cd; break; } }
+    if (_ok) {
+      uint32_t _buf = hle_malloc((uint32_t)_dat.size());
+      if (_buf) { std::memcpy(GP(_buf), _dat.data(), _dat.size()); }
+      uint32_t _sz = (uint32_t)_dat.size(); uint32_t _ptr = _buf;
+      { uint8_t* _q = GP(_obj + 0x8cu); if (_q) std::memcpy(_q, &_ptr, 4); }
+      { uint8_t* _q = GP(_obj + 0x90u); if (_q) std::memcpy(_q, &_sz, 4); }
+      uint16_t _st3 = 3; { uint8_t* _q = GP(_obj + 4u); if (_q) std::memcpy(_q, &_st3, 2); }
+      { uint8_t _z6 = 0; uint8_t* _q = GP(_obj + 6u); if (_q) *_q = _z6; }
+      g_prov_set.insert(_obj); g_provide_done++; ++g_provide_ok;
+      printf("[PROVIDE] obj=%08X entry=%08X name=%s data=%s size=%u buf=%08X\n", _obj, _ent, _nm, _used.c_str(), _sz, _buf); fflush(stdout);
+    } else if (g_provide_miss_n++ < 4) {
+      printf("[PROVIDE-MISS] obj=%08X entry=%08X name=%s tried=%zu first=%s\n", _obj, _ent, _nm, _cands.size(), _cands.empty() ? "" : _cands[0].c_str()); fflush(stdout);
+    }
+  }
 }
 if (g_uncond3_env && (pc & ~1u) == 0x811830CCu && s.r[4] >= 0x80000000u) {   // uncond3-main
   uint8_t* _f3m = GP(s.r[4] + 4u);
