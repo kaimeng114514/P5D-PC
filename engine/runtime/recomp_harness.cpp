@@ -90,7 +90,7 @@ extern "C" uint32_t (*find_block_000(uint32_t pc))(RecState*);
 #define FB(N) extern "C" uint32_t (*find_block_##N(uint32_t pc))(RecState*);
 FB(000) FB(001) FB(002) FB(003) FB(004) FB(005) FB(006) FB(007) FB(008) FB(009)
 FB(010) FB(011) FB(012) FB(013) FB(014) FB(015) FB(016) FB(017) FB(018) FB(019)
-FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027)
+FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027) FB(028)
 extern "C" const void* get_table_000(unsigned* cnt);
 extern "C" const void* get_table_001(unsigned* cnt);
 extern "C" const void* get_table_002(unsigned* cnt);
@@ -119,6 +119,7 @@ extern "C" const void* get_table_024(unsigned* cnt);
 extern "C" const void* get_table_025(unsigned* cnt);
 extern "C" const void* get_table_026(unsigned* cnt);
 extern "C" const void* get_table_027(unsigned* cnt);
+extern "C" const void* get_table_028(unsigned* cnt);
 static const uint32_t IMG_VA_BASE = 0x80600000;
 static const uint32_t IMG_SIZE = 0x38000000;   // 18.4279: 896MB - extended 224MB tail window for memblock capacity
 static const uint32_t REGIONB_OFF = 0x7000000u;  // region B base -> image+0x7A00000 (VA 0x88000000), no aliasing
@@ -1989,12 +1990,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   return s->r[14];
 }
 typedef BlockFn (*FinderFn)(uint32_t);
-static FinderFn ALL_FINDERS[28] = {
+static FinderFn ALL_FINDERS[29] = {
   find_block_000, find_block_001, find_block_002, find_block_003, find_block_004, find_block_005,
   find_block_006, find_block_007, find_block_008, find_block_009, find_block_010, find_block_011,
   find_block_012, find_block_013, find_block_014, find_block_015, find_block_016, find_block_017,
   find_block_018, find_block_019, find_block_020, find_block_021, find_block_022, find_block_023,
-  find_block_024, find_block_025, find_block_026, find_block_027 };
+  find_block_024, find_block_025, find_block_026, find_block_027, find_block_028 };
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
@@ -3020,7 +3021,7 @@ static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg) {
   return fiber_exec_to_completion(s);
 }
 static void build_all_blocks() {
-  for (int i = 0; i < 28; ++i) {
+  for (int i = 0; i < 29; ++i) {
     unsigned cnt = 0;
     const GBlk* tab = (const GBlk*)(
         i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
@@ -3031,7 +3032,7 @@ static void build_all_blocks() {
         i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
         i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
         i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
-        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : get_table_027(&cnt));
+        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : get_table_028(&cnt));
     for (unsigned k = 0; k < cnt; ++k) g_all.push_back(tab[k]);
   }
   std::sort(g_all.begin(), g_all.end(), [](const GBlk&a, const GBlk&b){ return a.va < b.va; });
@@ -3174,6 +3175,13 @@ static uint32_t mb_811DB5E0(RecState* s) {   // tail: adds r0,r6,#0; bl 0x812073
   if (!fn) return s->r[14];
   return fn(s);
 }
+// M834: the batch generator skips the fall-through block 0x8102A50E inside FUN_8102A500 (block 0x8102A500 returns
+// 0x8102A50E but no block is emitted there; batch_028 has 0x8102A500 and 0x8102A516 but not 0x8102A50E). Emulate it:
+// movs r4,#0 ; cmp r5,#0 ; beq.w 0x8102A654 (empty list -> epilogue) ; fall-through 0x8102A516.
+static uint32_t mb_8102A50E(RecState* s) {
+  s->r[4] = 0;
+  return (s->r[5] == 0u) ? 0x8102A654u : 0x8102A516u;   // flags unused by the successor block (starts with ldr r1,[r5])
+}
 static void init_manual_blocks(void) {
   g_manual_blocks[0x81032CF8u] = (BlockFn)mb_81032CF8;
   g_manual_blocks[0x81032CC8u] = (BlockFn)mb_81032CC8;
@@ -3184,6 +3192,7 @@ static void init_manual_blocks(void) {
   g_manual_blocks[0x8102A654u] = (BlockFn)mb_8102A654;
   g_manual_blocks[0x811DB4AEu] = (BlockFn)mb_811DB4AE;
   g_manual_blocks[0x811DB5E0u] = (BlockFn)mb_811DB5E0;
+  g_manual_blocks[0x8102A50Eu] = (BlockFn)mb_8102A50E;
 }
 static BlockFn gbn(uint32_t pc) {
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
