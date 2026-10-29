@@ -483121,3 +483121,23 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M825 frame-loop disasm 0x81198C8E bl 0x812071F8 (frame timing=GetProcessTimeWide 812B28E0 delta seconds) -> flags&0xC==0 path 0x81198D0C -> 0x81199336 -> FUN_811DB020 GFD task-pool scheduler (978B; ACTIVE node[0]==2, step +0x28 at 0x811DB1F0/244, -1 taskFinish 0x811DAD8C, 0 keep, else switch) -> 0x81198CD8 bl 0x8119934A frame update -> counter++ -> manager 0x812067A0 -> loop flags&2; [FL3] one tick: 81198C8E x1, 811DB1F0 x4 + 8116FA5C/8116F748 x4, 8115FA98 x1, 8116E49E/6E522 x4; 0x8119934A NEVER reached => GFD task-pool path doesn't return; [GFD3] traces deployed; default 30M green.
 
 LOOKUP: 0x81198C8E, 0x811DB020, 0x8119934A, 0x812071F8 -> §18.4369 [relevant: per-frame chain], §18.4367 [relevant: Mana timer HLE], §18.4171 [relevant: old frame-loop blockage]
+
+
+POST-RUN UPDATE (M825 addendum): the `[GFD3]` trace run **finished** (`done: blocks=150000000`) and gives the exact one-tick path:
+```
+[GFD3] #1 pc=81198C8E  (frame-loop top)                    n=26629 fib=848468E0
+[GFD3] #2 pc=812071F8  (frame timing = GetProcessTimeWide delta)
+[GFD3] #3 pc=81198D0C  (flags&0xC==0 path)
+[GFD3] #4 pc=81199336  (call task pool)
+[GFD3] #5 pc=811DB020  (GFD task-pool scheduler entry)
+[GFD3] #6..#25: scheduler task-step loop (0x811DB1F0 / 0x811DB244 / 0x811DB25A); the step return LRs identify the tasks:
+     0x811DA52A (internal helper), 0x8117BC66 (appResourceList_8117BC32 - resource-list task),
+     0x811853AA (FUN_8118532c - draw-task builder), 0x81022316 (process update FUN_810222F8),
+     0x81179338 (process update FUN_811792B2)
+```
+The trace **stops at #25 inside a `FUN_811792B2` process-update step** (no `0x8119934A` frame update, no `0x81198D10` return,
+no further scheduler iterations; total 25 events only, cap was 300). => the first frame tick enters the GFD task-pool scheduler,
+runs 5 task steps, and **blocks inside the FUN_811792B2-based process update** (the same update that executes as cb0 of processes
+`859FF95C/859FF9EC`, `[PROC] exec cb0=811792B3`).
+NEXT: decompile `FUN_811792B2` (130 B) and its callees to find the blocking wait inside it; likely it waits for the preceding
+`appResourceList_8117BC32` resource-load task / GFD job completion, or for a movie/stream event.
