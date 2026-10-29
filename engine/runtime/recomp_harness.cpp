@@ -86,7 +86,7 @@ extern "C" uint32_t (*find_block_000(uint32_t pc))(RecState*);
 #define FB(N) extern "C" uint32_t (*find_block_##N(uint32_t pc))(RecState*);
 FB(000) FB(001) FB(002) FB(003) FB(004) FB(005) FB(006) FB(007) FB(008) FB(009)
 FB(010) FB(011) FB(012) FB(013) FB(014) FB(015) FB(016) FB(017) FB(018) FB(019)
-FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026)
+FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027)
 extern "C" const void* get_table_000(unsigned* cnt);
 extern "C" const void* get_table_001(unsigned* cnt);
 extern "C" const void* get_table_002(unsigned* cnt);
@@ -114,6 +114,7 @@ extern "C" const void* get_table_023(unsigned* cnt);
 extern "C" const void* get_table_024(unsigned* cnt);
 extern "C" const void* get_table_025(unsigned* cnt);
 extern "C" const void* get_table_026(unsigned* cnt);
+extern "C" const void* get_table_027(unsigned* cnt);
 static const uint32_t IMG_VA_BASE = 0x80600000;
 static const uint32_t IMG_SIZE = 0x38000000;   // 18.4279: 896MB - extended 224MB tail window for memblock capacity
 static const uint32_t REGIONB_OFF = 0x7000000u;  // region B base -> image+0x7A00000 (VA 0x88000000), no aliasing
@@ -866,6 +867,12 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { uint32_t _ap = pcv & ~1u;
+    if (_ap==0x8116F748u) { static int _pc=0; if (_pc++ < 60) { uint32_t c0=0,c1=0,nm=0; uint8_t* q=GP(s->r[0]); if(q){ std::memcpy(&c0,q,4); std::memcpy(&c1,q+4,4); std::memcpy(&nm,q+0x18,4);} printf("[PROC] exec p=%08X cb0=%08X cb1=%08X nameptr=%08X n=%u fib=%08X\n", s->r[0], c0, c1, nm, g_blkcnt_total, g_cur_fiber); fflush(stdout);} }
+    else if (_ap==0x8116F75Eu) { static int _pd=0; if (_pd++ < 30) { printf("[PROC] delete p=%08X n=%u fib=%08X\n", s->r[0], g_blkcnt_total, g_cur_fiber); fflush(stdout);} }
+    else if (_ap==0x8116F900u) { static int _pm=0; if (_pm++ < 40) { uint32_t _cur=0; uint8_t* q=GP(0x815554C0u); if(q) std::memcpy(&_cur,q,4); printf("[PROC] api900 p=%08X cur=%08X n=%u fib=%08X\n", s->r[0], _cur, g_blkcnt_total, g_cur_fiber); fflush(stdout);} }
+    else if (_ap==0x8116F88Cu) { static int _rg=0; if (_rg++ < 30) { uint32_t _p=s->r[5], c0=0,c1=0,nm=0,pv=0,nx=0; uint8_t* _q=GP(_p); if(_q){ std::memcpy(&c0,_q,4); std::memcpy(&c1,_q+4,4); std::memcpy(&nm,_q+0x18,4); std::memcpy(&pv,_q+0x10,4); std::memcpy(&nx,_q+0x14,4);} printf("[PREGRO] p=%08X cb0=%08X cb1=%08X nameptr=%08X prev=%08X next=%08X n=%u\n", _p, c0, c1, nm, pv, nx, g_blkcnt_total); fflush(stdout);} }
+    else if (_ap==0x8116FA5Cu) { static int _pr=0; if (_pr++ < 20) { printf("[PROC] runner fa5c a0=%08X n=%u fib=%08X\n", s->r[0], g_blkcnt_total, g_cur_fiber); fflush(stdout);} } }
   { uint32_t _ap = pcv & ~1u;
     if (_ap==0x81172EFCu || _ap==0x8116F7CAu || _ap==0x81193344u || _ap==0x81007F24u || _ap==0x81173088u || _ap==0x81158DF0u || _ap==0x81082A78u || _ap==0x81042520u || _ap==0x8119320Cu || _ap==0x8119343Au) {
       static std::map<uint32_t,int> _ac; int _c = ++_ac[_ap];
@@ -1900,12 +1907,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   return s->r[14];
 }
 typedef BlockFn (*FinderFn)(uint32_t);
-static FinderFn ALL_FINDERS[27] = {
+static FinderFn ALL_FINDERS[28] = {
   find_block_000, find_block_001, find_block_002, find_block_003, find_block_004, find_block_005,
   find_block_006, find_block_007, find_block_008, find_block_009, find_block_010, find_block_011,
   find_block_012, find_block_013, find_block_014, find_block_015, find_block_016, find_block_017,
   find_block_018, find_block_019, find_block_020, find_block_021, find_block_022, find_block_023,
-  find_block_024, find_block_025, find_block_026 };
+  find_block_024, find_block_025, find_block_026, find_block_027 };
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
@@ -2875,7 +2882,7 @@ static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg) {
   return fiber_exec_to_completion(s);
 }
 static void build_all_blocks() {
-  for (int i = 0; i < 27; ++i) {
+  for (int i = 0; i < 28; ++i) {
     unsigned cnt = 0;
     const GBlk* tab = (const GBlk*)(
         i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
@@ -2886,7 +2893,7 @@ static void build_all_blocks() {
         i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
         i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
         i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
-        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : get_table_026(&cnt));
+        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : get_table_027(&cnt));
     for (unsigned k = 0; k < cnt; ++k) g_all.push_back(tab[k]);
   }
   std::sort(g_all.begin(), g_all.end(), [](const GBlk&a, const GBlk&b){ return a.va < b.va; });
@@ -4957,8 +4964,8 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       _q = GP(0x81513DECu); if (_q) std::memcpy(&_cb, _q, 4);
       _q = GP(0x816CC630u); if (_q) std::memcpy(&_fl, _q, 4);
       _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_th, _q, 4);
-      { uint32_t _a0=0,_a4=0,_a8=0,_proc=0; uint8_t* _qa; _qa=GP(0x81555EA0u); if(_qa) std::memcpy(&_a0,_qa,4); _qa=GP(0x81555EA4u); if(_qa) std::memcpy(&_a4,_qa,4); _qa=GP(0x81555EA8u); if(_qa) std::memcpy(&_a8,_qa,4); _qa=GP(0x815554C4u); if(_qa) std::memcpy(&_proc,_qa,4);
-      printf("[THRD] n=%d cb=%08X flags=%08X taskhead=%08X cur=%08X curthr=%08X threads=%zu appmem=%08X jobq=%08X mtxstk=%08X prochead=%08X\n", n, _cb, _fl, _th, g_cur_fiber, g_cur_thr, g_thr.size(), _a0, _a4, _a8, _proc); }
+      { uint32_t _a0=0,_a4=0,_a8=0,_proc=0; uint8_t* _qa; _qa=GP(0x81555EA0u); if(_qa) std::memcpy(&_a0,_qa,4); _qa=GP(0x81555EA4u); if(_qa) std::memcpy(&_a4,_qa,4); _qa=GP(0x81555EA8u); if(_qa) std::memcpy(&_a8,_qa,4); _qa=GP(0x815554C4u); if(_qa) std::memcpy(&_proc,_qa,4); int _pcount=0; { uint32_t _pp=_proc; for (int _k=0; _k<32 && _pp; ++_k) { ++_pcount; uint8_t* _pq=GP(_pp+0x10u); if(!_pq) break; std::memcpy(&_pp,_pq,4);} }
+      printf("[THRD] n=%d cb=%08X flags=%08X taskhead=%08X cur=%08X curthr=%08X threads=%zu appmem=%08X jobq=%08X mtxstk=%08X prochead=%08X pcount=%d\n", n, _cb, _fl, _th, g_cur_fiber, g_cur_thr, g_thr.size(), _a0, _a4, _a8, _proc, _pcount); }
       for (auto& kv : g_thr) { HThread& _t = kv.second; printf("[THRD]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X pc=%08X sp=%08X r0=%08X\n",
         kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.wait_mode, _t.ctx.r[15], _t.ctx.r[13], _t.ctx.r[0]); }
       { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[THRD]  ef:"); for (auto& ek : g_eflag) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%08X", ek.first, ek.second); if (_o>430) break; } printf("%s\n", _b); }
