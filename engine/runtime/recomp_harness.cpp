@@ -2896,10 +2896,24 @@ static uint32_t mb_81181D90(RecState* s) {
   }
   return s->r[14];
 }
+// M802: safe worker block - avoid null linked-entry deref at 0x8118310A (BADMEM va=4 abort)
+static int g_mb8310a_n = 0;
+static uint32_t mb_8118310A(RecState* s) {
+  uint32_t r7 = 0; uint8_t* q = GP(s->r[6]); if (q) std::memcpy(&r7, q, 4);
+  if (r7 == 0u) {
+    if (g_mb8310a_n++ < 12) { printf("[MB8310A] r6=%08X linked=0 -> skip to 811831D0\n", s->r[6]); fflush(stdout); }
+    s->r[7] = 0; s->r[1] = 0; return 0x811831D0u;
+  }
+  s->r[7] = r7;
+  uint32_t r1 = 0; q = GP(r7 + 4u); if (q) std::memcpy(&r1, q, 4);
+  s->r[1] = r1;
+  return (r1 != 0xCu) ? 0x811831D0u : 0x81183112u;
+}
 static void init_manual_blocks(void) {
   g_manual_blocks[0x81032CF8u] = (BlockFn)mb_81032CF8;
   g_manual_blocks[0x81032CC8u] = (BlockFn)mb_81032CC8;
   g_manual_blocks[0x81181D90u] = (BlockFn)mb_81181D90;
+  g_manual_blocks[0x8118310Au] = (BlockFn)mb_8118310A;
   g_manual_blocks[0x81032CEAu] = (BlockFn)mb_81032CEA;
 }
 static BlockFn gbn(uint32_t pc) {
