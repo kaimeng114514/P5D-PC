@@ -483602,3 +483602,21 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M832 balanced-return appMessage guard: old guard returned lr without balancing push.w {r4,r5,r6,r7,r8,sb,sl,lr} (0x20) -> caller frame 0x20 off; [SPLOOP] #5 normal sp=848568F0 [sp+4]=8116FA64 -> #6 sp=848568D0 [sp]=815554C0 [sp+4]=846182D0 (process ptr in saved-LR slot) -> empty frames -> pop pc=0; fiber ctx stays canary stub 812B2810 x699 + [CHKFIX2] 19946 with saved_lr/r4/r5=0; fix mb_8102A500 emulates prologue push (sp-=0x20, store r4..r10,lr), r4=0, jump 0x8102A654 epilogue (adds r0,r4,#0; pop.w ...); [A500GUARD] logs balanced-return; default 30M green; validation out150m_m843.txt.
 
 LOOKUP: 0x8102A500, 0x8102A654, 0x812B2810, 0x8116F758 -> §18.4376 [relevant: canary retry], §18.4374 [relevant: SPLOOP evidence], §18.4373 [relevant: livelock cycle]
+
+
+M832 VALIDATION RESULT (`out150m_m843.txt`): the balanced-return guard is now active
+(`[A500GUARD] depth=1 sp=848568D0->848568B0 lr=8116F758 -> balanced-return via 8102A654`), but the downstream evidence is **unchanged**:
+`[SPLOOP] #6/#7/#8` still show `sp=848568D0 [sp]=815554C0 [sp+4]=846182D0` / empty frames, `[CHKFIX2]` is still 19,946,
+`[CHKFIX3] retry=81153D00`, and the switch histogram still has `to=848468E0 tgtpc=812B2810 tgtsp=848568A0 x699`.
+=> the appMessage guard path is **not** the source of the 0x20-off frame (its push+epilogue is net-zero on sp, so the observed frames are produced by another
+chain). The 0x20-off frame appears exactly at the **6th process (appMessage, 85AA3D9C)** exec continuation, so the next step is to see who invokes that
+process's update/exec again from inside its own call chain. A new `[IDREG]` probe logs every **indirect call** whose target is
+`0x8102A500` (appMessage update) / `0x8116F748` (exec) / `0x8116FA5C` (runner), with `from_blk`, `lr`, `sp`, fiber, r0 and a 12-entry pcring (caps 40 each).
+VERIFIED: default 30M green with the IDREG build (`exit=0, GXM=12, FSW=16, FRAMEDUMP=6000, [NOFN]=0, [DLIST]=6, [IDREG]=0, BADMEM=0,
+[TABLE] blocks=229776, done: blocks=30000000 pc=81206894`).
+VALIDATION: 150M run launched (`out150m_m844.txt`).
+
+NEXT:
+1. read `out150m_m844.txt` `[IDREG]` entries: who calls `0x8102A500` (from_blk/lr/sp), and whether the 6th process update is re-entered from a nested chain;
+2. instrument that call chain's stack frames (the first 0x20 anomaly) and make the nested return balanced;
+3. then frame loop -> `0x8119934A` -> `0x811CBE9A` -> `BeginScene`.

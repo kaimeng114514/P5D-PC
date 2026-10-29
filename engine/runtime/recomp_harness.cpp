@@ -3248,6 +3248,9 @@ static uint8_t* gimg_ptr() { return gp_img; }
 static int g_ind_n = 0;
 extern "C" uint32_t id_reg(int idx, RecState* s) {
   uint32_t t = s->r[idx & 15] & ~1u;
+  if (t == 0x8102A500u || t == 0x8116F748u || t == 0x8116FA5Cu) { static int _ir[3] = {0,0,0}; int _k = (t == 0x8102A500u) ? 0 : (t == 0x8116F748u ? 1 : 2);
+    if (_ir[_k]++ < 40) { printf("[IDREG] #%d target=%08X from_blk=%08X lr=%08X sp=%08X fib=%08X thr=%08X reg0=%08X ring:", _ir[_k], t, g_cur_block, s->r[14], s->r[13], g_cur_fiber, g_cur_thr, s->r[0]);
+      for (int _c = 0; _c < 12; ++_c) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_c) & 63u]); printf("\n"); fflush(stdout); } }
   if (g_cur_block == 0x811DB244u) { static int _st = 0; if (_st++ < 120) { printf("[STEP] #%d target=%08X in_table=%d n=%u fib=%08X sp=%08X lr=%08X\n", _st, t, (gbn(t) != nullptr), g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14]); fflush(stdout); } }
   if (t >= 0x811830E0u && t <= 0x81183200u && g_ind_n++ < 60) { printf("[INDR] reg%d raw=%08X t=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", idx, s->r[idx & 15], t, g_cur_block, g_cur_fiber, g_cur_thr, s->r[13]); fflush(stdout); }
   if (t >= 0x81181A00u && t <= 0x81181C60u && g_ind_n++ < 60) { printf("[INDR2] reg%d raw=%08X t=%08X blk=%08X fib=%08X thr=%08X\n", idx, s->r[idx & 15], t, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); }
