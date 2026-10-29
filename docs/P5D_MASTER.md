@@ -483546,3 +483546,16 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M831 canary __stack_chk_fail retry fix: legacy retry pc=0x8120682A (fiber manager, stale frame) and raw-lr retry both wrong; disasm 0x81153CF4 adds;ldr r2,[sp,#4];ldr r1,[r6];cmp;bne 0x81153D02; add sp,#8; pop {r4,r5,r6,pc}; 0x81153D02 blx 812B2810; nop; next push - passing epilogue = after bne (0x81153CFE); new canary_retry_pc scans back from blx skipping 0xB0xx add-sp / 0xBDxx/0xBC00 pop / 0xE8BD|0xE92D prefixes, returns bne+2; [CHKFIX3] log; fiber ctx was 812B2810 x699 in switches; default 30M green; validation out150m_m842.txt.
 
 LOOKUP: 0x812B2810, 0x81153D02, 0x81153CFE, 0x8116F758 -> §18.4375 [relevant: fiber restart + metadata], §18.4374 [relevant: [SPLOOP] + old-runtime fix], §18.4373 [relevant: livelock cycle]
+
+
+M831 VALIDATION RESULT (`out150m_m842.txt`): the backward scan works - `[CHKFIX3] lr=81153D06 B=81153D02 scan->bne@81153CFE retry=81153D00 hw=D101` -
+but **`[CHKFIX2]` count is still 19,946 and the switch target histogram is unchanged** (`to=848468E0 tgtpc=812B2810 tgtsp=848568A0 x699`).
+The reason is in the repair log itself: at the failing point `sp=848568A0` but **`saved_lr=00000000 saved_r4=00000000 saved_r5=00000000`** -
+the function frame that should be at this sp is already **zeroed/destroyed**, so no epilogue retry (pop from those slots) can recover:
+the pop returns 0 and the canary check re-fires. => the repeated canary failure is a **symptom of an earlier stack desync/zeroing**, not of
+the retry address. The `[SPLOOP]` evidence already pointed the same way (exec continuation frames at sp 848568F0 normally, then 848568D0 with the
+saved-LR slot overwritten by 846182D0, then empty frames `[sp]=[sp+4]=0`).
+NEXT: find the first point where the frame/stack is lost - instrument the transition from the normal exec frames (`sp=848568F0`, `[sp+4]=8116FA64`)
+to the corrupted ones (`sp=848568D0`, `[sp]=815554C0`, `[sp+4]=846182D0`); candidates: the appMessage guard skip path, the canary repair itself
+(stack slot writes), or a fiber context save/restore with an sp 0x20 off. Once the frame is preserved, canary checks should start passing and the
+fiber livelock (812B2810 x699) should disappear.
