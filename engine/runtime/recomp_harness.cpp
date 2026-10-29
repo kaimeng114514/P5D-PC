@@ -368,6 +368,7 @@ static uint32_t g_dfe_pc[20] = {0}, g_dfe_r0[20] = {0}, g_dfe_sp[20] = {0}, g_df
 static uint32_t g_drg_pc[20] = {0}, g_drg_r0[20] = {0}, g_drg_sp[20] = {0}, g_drg_n = 0;
 static uint32_t g_dr_n = 0;
 static uint32_t g_blkcnt_total = 1;
+static int g_mainthrd_n = 0;
 static std::chrono::steady_clock::time_point g_run_t0 = std::chrono::steady_clock::now();
 static int g_dec_calls = 0; static uint32_t g_dec_lastpct = 0;
 static bool nested_allowed(void) { return g_fiber_nested || (g_nested_until && g_blkcnt_total < g_nested_until); }
@@ -3302,6 +3303,7 @@ extern "C" void wr16_watch(uint32_t a, uint32_t v) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  if (a == 0x81513DECu) { static int _cw=0; if (_cw++ < 24) { printf("[CBWR] v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   if (g_sw8_on && ((a >= g_stkw_lo && a < g_stkw_hi) || (a >= 0x84856500u && a < 0x848565A0u))) stkw_note("w32", a, v, 32);
   if (g_canw_on) { uint32_t _c = 0; { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); }
     if (_c && v == _c) { g_canmap[a] = v; }
@@ -4943,6 +4945,16 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     if ((pc & ~1u) == 0x811DFB4Eu) {
       uint32_t _len2 = 0; uint8_t* _lq2 = GP(s.r[13] + 0x73ecu); if (_lq2) std::memcpy(&_len2, _lq2, 4);
       if (g_dec_calls++ < 12 || (g_dec_calls % 64) == 0) { printf("[DEC-CALL] #%d len=%u done\n", g_dec_calls, _len2); fflush(stdout); } }
+    if ((n % 5000000) == 0 && g_mainthrd_n++ < 30) {
+      uint32_t _cb=0, _fl=0, _th=0; uint8_t* _q;
+      _q = GP(0x81513DECu); if (_q) std::memcpy(&_cb, _q, 4);
+      _q = GP(0x816CC630u); if (_q) std::memcpy(&_fl, _q, 4);
+      _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_th, _q, 4);
+      printf("[THRD] n=%d cb=%08X flags=%08X taskhead=%08X cur=%08X curthr=%08X threads=%zu\n", n, _cb, _fl, _th, g_cur_fiber, g_cur_thr, g_thr.size());
+      for (auto& kv : g_thr) { HThread& _t = kv.second; printf("[THRD]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X pc=%08X sp=%08X r0=%08X\n",
+        kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.wait_mode, _t.ctx.r[15], _t.ctx.r[13], _t.ctx.r[0]); }
+      { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[THRD]  ef:"); for (auto& ek : g_eflag) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%08X", ek.first, ek.second); if (_o>430) break; } printf("%s\n", _b); }
+      fflush(stdout); }
     if ((n % 5000) == 0) {
       { uint32_t _fw[4] = {0,0,0,0}; uint8_t* _fq0 = GP(0x816CC630u); if (_fq0) std::memcpy(_fw, _fq0, 16);
   printf("[FRAMEDUMP] n=%d flags=%08X t4=%u t8=%u ctr=%u pc=%08X blk=%08X sp=%08X fib=%08X gxm(b/e/p)=%d/%d/%d\n", n, _fw[0], _fw[1], _fw[2], _fw[3], nxt, g_cur_block, s.r[13], g_cur_fiber, g_gxm_begin_n, g_gxm_end_n, g_gxm_present_n); }
