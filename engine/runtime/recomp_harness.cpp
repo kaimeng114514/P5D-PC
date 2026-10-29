@@ -1505,7 +1505,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (it != g_memblks.end() && s->r[1]) {
         uint8_t* p = GP(s->r[1]);
         if (p) { uint32_t vals[8] = { it->second.first, it->second.second, it->second.second, 0, 0, 0, 0, 0 };
-          std::memcpy(p, vals, 32); }   // keep 32B (18.3758 behaviour; the "write 4 bytes only" doc note refers to sceKernelGetMemBlockBase, not GetMemBlockInfo)
+          std::memcpy(p, vals, 4); }    // M837: write ONLY 4 bytes. decodeMemory_81153c70 passes info = sp (its stack local at [sp])
+                                        // while its stack canary lives at [sp+4]; the old 32-byte write overwrote the canary and made
+                                        // every call fail its canary check -> 19,946 retry loop. The game only reads [info] (base address)
+                                        // for the following GxmMapMemory call (ldr r0,[sp]; blx 0x812B1640).
         printf("[MEMB] GetMemBlockInfo uid=%08X -> base=%08X size=%08X info=%08X lr=%08X hit=1\n", s->r[0], it->second.first, it->second.second, s->r[1], s->r[14]); fflush(stdout);
         if (g_memdbg_n < 20) { printf("[MEMINFO] uid=%08X -> base=%08X size=%08X info=%08X\n", s->r[0], it->second.first, it->second.second, s->r[1]); }
       }
