@@ -884,6 +884,7 @@ static void job_probes(uint32_t pcv, RecState* s) {
     if (_a==0x811846A2u || _a==0x811846ACu || _a==0x811846B4u || _a==0x811846CAu || _a==0x811846D2u || _a==0x811846D6u || _a==0x811846DEu || _a==0x811846E6u || _a==0x811846ECu || _a==0x811846F6u || _a==0x811846FAu || _a==0x81184702u || _a==0x8118470Au || _a==0x8118470Eu || _a==0x81184712u || _a==0x81184716u || _a==0x8118471Eu || _a==0x81184722u || _a==0x81184726u || _a==0x8118472Au || _a==0x8118472Eu || _a==0x81184736u || _a==0x8118473Eu || _a==0x81184746u || _a==0x8118474Eu || _a==0x8118475Au) { int _c = ++_ai[_a]; if (_c <= 2) { printf("[APPINIT] pc=%08X n=%u fib=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, s->r[13], _c); fflush(stdout); } } }
   { static std::map<uint32_t,int> _mn; uint32_t _a = pcv & ~1u;
     if (_a==0x8129B0AEu||_a==0x8129AD70u||_a==0x8129B826u||_a==0x8115922Cu||_a==0x81157E70u||_a==0x8118464Cu||_a==0x81158DF0u||_a==0x81159CB0u||_a==0x81185308u||_a==0x810222F8u||_a==0x811792B2u||_a==0x8102A500u) {
+      if (_a==0x8102A500u) { static int _rc=0; if (_rc++ < 10) { printf("[RECUR] #%d n=%u fib=%08X sp=%08X lr=%08X r0=%08X r5=%08X pcring:", _rc, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14], s->r[0], s->r[5]); for (int _k=0;_k<14;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 14u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       int _c = ++_mn[_a]; if (_c <= 6) { printf("[MANA] pc=%08X n=%u fib=%08X thr=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, g_cur_thr, s->r[13], _c); fflush(stdout); } } }
   { static std::map<uint32_t,int> _gm; uint32_t _a = pcv & ~1u;
     if (_a==0x811E9066u||_a==0x811EA3C0u||_a==0x811EB9DAu||_a==0x811EBC14u||_a==0x811EBECCu||_a==0x811EC190u||_a==0x811EE8C4u||_a==0x811EEA20u||_a==0x811EEB2Cu||_a==0x811EB930u||_a==0x811EE7C2u||_a==0x811EA3E6u||_a==0x811EBE88u||_a==0x811EBF84u||_a==0x811EC264u||_a==0x811EE826u||_a==0x811EE9D0u||_a==0x811EEAD8u) {
@@ -3106,6 +3107,7 @@ static uint8_t* gimg_ptr() { return gp_img; }
 static int g_ind_n = 0;
 extern "C" uint32_t id_reg(int idx, RecState* s) {
   uint32_t t = s->r[idx & 15] & ~1u;
+  if (g_cur_block == 0x811DB244u) { static int _st = 0; if (_st++ < 120) { printf("[STEP] #%d target=%08X in_table=%d n=%u fib=%08X sp=%08X lr=%08X\n", _st, t, (gbn(t) != nullptr), g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14]); fflush(stdout); } }
   if (t >= 0x811830E0u && t <= 0x81183200u && g_ind_n++ < 60) { printf("[INDR] reg%d raw=%08X t=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", idx, s->r[idx & 15], t, g_cur_block, g_cur_fiber, g_cur_thr, s->r[13]); fflush(stdout); }
   if (t >= 0x81181A00u && t <= 0x81181C60u && g_ind_n++ < 60) { printf("[INDR2] reg%d raw=%08X t=%08X blk=%08X fib=%08X thr=%08X\n", idx, s->r[idx & 15], t, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); }
   if (gbn(t)) return t;
