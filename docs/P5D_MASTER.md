@@ -483396,3 +483396,21 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M829 master-doc recovery #2 old-runtime SceFiberSwitch ping-pong fix: resumePC must be (oldpc&~1)+2, i.e. skip the import stub (svc stub+0 / bx lr stub+2); AOT equivalent g_switch_save_pc=s->r[14], fiber_save stores s->r[15]; current final stall fiber1 saved pc=8116F758 (FUN_8116F748 exec continuation after blx r1: push {r4,lr}; [0x815554C0]=r0; r1=[r0]; blx r1; 8116F758 movs r1,#0; str r1,[r4]; pop {r4,pc}) restored repeatedly; [SPLOOP] probe logs sp/[sp]/[sp+4]/r14/r4 at 0x8116F758; [WAITP] app-phase wait probe (123 hits, CRI server DelayThread/WaitEventFlag/WaitSema lr=81207612 ring 8127BE36..8127C0F4); default 30M green; 150M validation out150m_m839.txt.
 
 LOOKUP: 0x8116F748, 0x812B1BA0, 0x8116F758 -> §18.4373 [relevant: livelock cycle], §18.4372 [relevant: appMessage update], §18.4370 [relevant: frame loop disasm]
+
+
+M829 VALIDATION RESULT (`out150m_m839.txt`): `[SPLOOP]` captured the exec continuation frames at `0x8116F758` (sp/[sp]/[sp+4]/r14/r4):
+```
+#1-#5 sp=848568F0  [sp]=00000000 [sp+4]=8116FA64  r14=8117BC66/811853AA/81022316/81179338  r4=815554C0   <- normal exec frames
+      (exec prologue push {r4,lr}: [sp]=saved r4, [sp+4]=runner return 0x8116FA64) *** five process updates OK
+#6    sp=848568D0  [sp]=815554C0 [sp+4]=846182D0  r14=8116F758 r4=815554C0   <- 0x20 deeper; saved-LR slot OVERWRITTEN by the
+                                                                                process pointer (846182D0), not the runner return
+#7    sp=848568D8  [sp]=00000000 [sp+4]=00000000  r14=8116F758
+#8    sp=848568E0  [sp]=00000000 [sp+4]=00000000  r14=8116F758 r4=00000000   <- exec pop {r4,pc} would return to pc=0
+```
+=> The stall is a **fiber resume with a mismatched stack**: when the exec continuation is reached the second/third time, its stack frame is 0x20 deeper (#6) and the saved-LR slot has been overwritten (846182D0 = the 6th process pointer), then it works down to an empty frame (#8, `[sp]=[sp+4]=0`) so `pop {r4,pc}` returns 0 (fiber "finished") while the **saved context pc remains 0x8116F758**. Fiber1 is then restored at 0x8116F758 forever (watchdog `[WDCTX] fib=848468E0 pc=8116F758 sp=848568E0`, `[FIB-LIVEWIN] stale/live pc=8116F758`), and every restore replays `pop` with a stale sp.
+Root cause direction: a context switch is being saved/restored **in the middle of the exec call frame with an sp that does not match the call depth** (the guard skip path and/or a blocking wait save inside the nested appMessage path produce a saved sp that is 0x20 off); this matches the old-runtime master-doc lesson: the resume PC must be the instruction *after* the switch stub and the saved sp must belong to the same frame chain. Also `[WAITP]` shows 305 app-phase wait hits (DelayThread/WaitEventFlag/WaitSema/WaitVblank/FiberSwitch, cap 60 each) - the wait set is dominated by the CRI server loop again.
+
+NEXT:
+1. instrument `fiber_save` call sites that save fiber1 while `g_in_fiber_exec` is true and print `s->r[15]/s->r[13]/g_cur_block/lr` (find the save with the 0x20-off sp); compare against the frame chain;
+2. enforce the documented rule on save/restore: on resume, if pc is an exec continuation (0x8116F758) then sp must equal the exec frame sp (0x848568F0); repair mismatches and/or clear the saved pc to 0 when the frame was already popped so the fiber restarts cleanly from its user entry;
+3. then the frame loop repeats -> 0x8119934A -> 0x811CBE9A -> BeginScene.
