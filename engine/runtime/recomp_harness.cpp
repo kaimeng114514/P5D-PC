@@ -865,6 +865,10 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { uint32_t _ap = pcv & ~1u;
+    if (_ap==0x81172EFCu || _ap==0x8116F7CAu || _ap==0x81193344u || _ap==0x81007F24u || _ap==0x81173088u || _ap==0x81158DF0u) {
+      static std::map<uint32_t,int> _ac; int _c = ++_ac[_ap];
+      if (_c <= 6) { printf("[APPFN] pc=%08X n=%u fib=%08X thr=%08X cnt=%d\n", _ap, g_blkcnt_total, g_cur_fiber, g_cur_thr, _c); fflush(stdout); } } }
   { static std::chrono::steady_clock::time_point _t0 = std::chrono::steady_clock::now(); static uint32_t _n0 = 0;
     if ((g_blkcnt_total % 1000000u) == 0u && g_blkcnt_total != _n0) {
       auto _t1 = std::chrono::steady_clock::now();
@@ -4950,7 +4954,8 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       _q = GP(0x81513DECu); if (_q) std::memcpy(&_cb, _q, 4);
       _q = GP(0x816CC630u); if (_q) std::memcpy(&_fl, _q, 4);
       _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_th, _q, 4);
-      printf("[THRD] n=%d cb=%08X flags=%08X taskhead=%08X cur=%08X curthr=%08X threads=%zu\n", n, _cb, _fl, _th, g_cur_fiber, g_cur_thr, g_thr.size());
+      { uint32_t _a0=0,_a4=0,_a8=0,_proc=0; uint8_t* _qa; _qa=GP(0x81555EA0u); if(_qa) std::memcpy(&_a0,_qa,4); _qa=GP(0x81555EA4u); if(_qa) std::memcpy(&_a4,_qa,4); _qa=GP(0x81555EA8u); if(_qa) std::memcpy(&_a8,_qa,4); _qa=GP(0x815554C4u); if(_qa) std::memcpy(&_proc,_qa,4);
+      printf("[THRD] n=%d cb=%08X flags=%08X taskhead=%08X cur=%08X curthr=%08X threads=%zu appmem=%08X jobq=%08X mtxstk=%08X prochead=%08X\n", n, _cb, _fl, _th, g_cur_fiber, g_cur_thr, g_thr.size(), _a0, _a4, _a8, _proc); }
       for (auto& kv : g_thr) { HThread& _t = kv.second; printf("[THRD]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X pc=%08X sp=%08X r0=%08X\n",
         kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.wait_mode, _t.ctx.r[15], _t.ctx.r[13], _t.ctx.r[0]); }
       { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[THRD]  ef:"); for (auto& ek : g_eflag) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%08X", ek.first, ek.second); if (_o>430) break; } printf("%s\n", _b); }
