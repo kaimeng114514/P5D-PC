@@ -2765,6 +2765,10 @@ static uint32_t mb_81032CEA(RecState* s) {   // M786: transparent trampoline (fu
   // through 0x81032CF8, eventually causing a pop-pc=1 stack corruption.
   uint32_t fp = 0; { uint8_t* q = GP(0x8132AEB8u); if (q) std::memcpy(&fp, q, 4); }
   s->r[2] = fp;
+  if (!fp || !gbn(fp & ~1u)) {
+    static int _sk=0; if (_sk++ < 12) { printf("[MANSKIP] fp=%08X caller_lr=%08X blk=%08X -> skip callback, return to caller\n", fp, s->r[14], g_cur_block); fflush(stdout); }
+    return s->r[14];
+  }
   return fp & ~1u;
 }
 static void init_manual_blocks(void) {
