@@ -2960,7 +2960,23 @@ static void hw_check(uint32_t pcv) {
         printf("[FDUMP]  f%zu=%08X top_old=%08X fctx=%d", _i, _fb, 0xA0E00000u - (uint32_t)_i*0x800000u, (_it!=g_fctx.end())?1:0);
         if (_it!=g_fctx.end()) printf(" pc=%08X sp=%08X lr=%08X", _it->second.r[15], _it->second.r[13], _it->second.r[14]);
         printf("\n"); }
-      printf("[FDUMP]  all fctx:"); for (auto& _kv : g_fctx) printf(" [%08X pc=%08X sp=%08X]", _kv.first, _kv.second.r[15], _kv.second.r[13]); printf("\n"); fflush(stdout); } }
+      printf("[FDUMP]  all fctx:"); for (auto& _kv : g_fctx) printf(" [%08X pc=%08X sp=%08X]", _kv.first, _kv.second.r[15], _kv.second.r[13]); printf("\n");
+      for (auto& _kv : g_fctx) {
+        uint32_t _idx = 0xFFFFFFFFu; for (size_t _k=0;_k<g_fiber_list.size();++_k) if (g_fiber_list[_k]==_kv.first) { _idx=(uint32_t)_k; break; }
+        uint32_t _top = 0xA0E00000u - (_idx==0xFFFFFFFFu?0u:_idx)*0x800000u; uint32_t _bot = _top - 0x800000u;
+        uint32_t _sp = _kv.second.r[13]; bool _ok = (_sp >= _bot && _sp <= _top);
+        printf("[FDUMP-OWN] fib=%08X idx=%d exp=[%08X,%08X] actual_sp=%08X pc=%08X %s\n", _kv.first, (_idx==0xFFFFFFFFu?-1:(int)_idx), _bot, _top, _sp, _kv.second.r[15], _ok?"ok":"NO");
+      }
+      fflush(stdout); } }
+  { static uint32_t _psp[8]={0}, _ppc[8]={0}; static bool _ini[8]={false}; static int _ot_n=0; int _n=0;
+    for (auto& _kv : g_fctx) { if (_n>=8) break;
+      uint32_t _idx=0xFFFFFFFFu; for (size_t _k=0;_k<g_fiber_list.size();++_k) if (g_fiber_list[_k]==_kv.first) { _idx=(uint32_t)_k; break; }
+      uint32_t _top = 0xA0E00000u - (_idx==0xFFFFFFFFu?0u:_idx)*0x800000u; uint32_t _bot=_top-0x800000u;
+      uint32_t _sp=_kv.second.r[13], _pc=_kv.second.r[15]; bool _ok=(_sp>=_bot && _sp<=_top);
+      if (_ini[_n] && !_ok && _psp[_n]>=_bot && _psp[_n]<=_top && _ot_n++<40) {
+        printf("[OWNTRANS] fib=%08X prev_pc=%08X prev_sp=%08X -> pc=%08X sp=%08X blk=%08X ring:", _kv.first, _ppc[_n], _psp[_n], _pc, _sp, g_cur_block);
+        for (int _k=32;_k>0;--_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+      _psp[_n]=_sp; _ppc[_n]=_pc; _ini[_n]=true; ++_n; } }
   if (!g_hw_handle) return;
   uint32_t _st=0,_p=0,_sz=0; uint8_t* _q;
   _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st,_q,4); _q=GP(g_hw_handle+0x8cu); if(_q) std::memcpy(&_p,_q,4); _q=GP(g_hw_handle+0x90u); if(_q) std::memcpy(&_sz,_q,4);
@@ -4268,6 +4284,8 @@ BlockFn fn = gbn(pc);
       uint32_t g_pump_total0 = g_blkcnt_total;   // 18.4180: nested progress base
       while (budget-- > 0) {
         uint32_t ppc = s.r[15];
+        { static uint32_t _lppc=0, _rep=0; if (ppc==_lppc) { if (++_rep > 400000u) { printf("[PMP2WATCH] same ppc=%08X for %u iters blk=%08X fib=%08X sp=%08X r0=%08X lr=%08X\n", ppc, _rep, g_cur_block, g_cur_fiber, s.r[13], s.r[0], s.r[14]);
+            for (auto& _kv : g_fctx) printf("[PMP2WATCH]  fctx [%08X pc=%08X sp=%08X]\n", _kv.first, _kv.second.r[15], _kv.second.r[13]); fflush(stdout); _rep=0; } } else { _lppc=ppc; _rep=0; } }
         { static uint32_t _lg2=0; if (g_blkcnt_total - _lg2 > 300000u) { _lg2 = g_blkcnt_total;
             if (g_stall2_n++ < 24) { printf("[PMPTRACE] n=%u ppc=%08X blk=%08X fib=%08X sp=%08X\n", g_blkcnt_total, ppc, g_cur_block, g_cur_fiber, s.r[13]); fflush(stdout); } } }
         if (g_hacks && (ppc & ~1u) == 0x8115F9D0u) { s.r[0] = 0u; }  // [ABORTSKIP3] fiber2 pump loop
