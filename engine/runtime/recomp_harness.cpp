@@ -45,6 +45,7 @@ static int g_thrtr_n = 0;
 static int g_thrpump_env = 0;
 static int g_thrpump3 = 0;   // M817: pump guest threads only at main-fiber idle points
 static int g_pump_force = 0; // M819: allow thread pump inside fiber exec during main-thread blocking waits
+static int g_timer_n = 0;    // M822: SceKernelTimer debug
 static int g_tidp_n = 0;   // 18.4228c
 static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
@@ -374,6 +375,9 @@ static uint32_t g_blkcnt_total = 1;
 static uint64_t g_vtime_extra = 0;   // M815: virtual time advanced by guest sleeps (deterministic)
 static std::map<uint32_t,uint32_t> g_sema_owner;      // M820: who currently holds a sema token
 static std::map<uint32_t,uint32_t> g_sema_owner_lr;   // M820: LR at acquisition
+struct HleTimer { uint64_t acc=0, start_us=0; int running=0; };   // M822: SceKernelTimer emulation (CRI Mana timer)
+static std::map<uint32_t,HleTimer> g_timers;
+static uint32_t g_next_timer = 0x50030000u;
 static int g_mainthrd_n = 0;
 static std::chrono::steady_clock::time_point g_run_t0 = std::chrono::steady_clock::now();
 static int g_dec_calls = 0; static uint32_t g_dec_lastpct = 0;
@@ -1707,6 +1711,30 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       { uint32_t _np = s->r[0]; char _nm[48]; int _i=0; uint8_t* _q = GP(_np); if (_q) { for (; _i<40; ++_i) { char _c=(char)_q[_i]; if(!_c) break; _nm[_i] = (_c>=32&&_c<127)?_c:'.'; } } _nm[_i]=0; if (g_sc_n++ < 30) { printf("[SCREATE] obj=%08X init=%u name='%s' lr=%08X thr=%08X\n", obj, cnt, _nm, s->r[14], g_cur_thr); fflush(stdout); } }
       if (g_thr_log_n++ < 20) printf("[THR] create_sema obj=%08X init=%u\n", obj, cnt);
       r0 = obj; break; }
+    case 0x812B27D0u: {                                               // M822: sceKernelCreateTimer(name,opt,attr) -> uid (SceLibKernel 2255B2A5)
+      uint32_t uid = (g_next_timer += 0x1000u);
+      g_timers[uid] = HleTimer();
+      if (g_timer_n++ < 20) { printf("[TIMER] create uid=%08X name=%08X lr=%08X\n", uid, s->r[0], s->r[14]); fflush(stdout); }
+      r0 = uid; break; }
+    case 0x812B2A40u: {                                               // M822: sceKernelStartTimer(uid)
+      auto& t = g_timers[s->r[0]];
+      if (!t.running) { t.running = 1; t.start_us = hle_tick_us(); }
+      if (g_timer_n++ < 20) { printf("[TIMER] start uid=%08X\n", s->r[0]); fflush(stdout); }
+      r0 = 0; break; }
+    case 0x812B2A70u: {                                               // M822: sceKernelStopTimer(uid)
+      auto it = g_timers.find(s->r[0]);
+      if (it != g_timers.end() && it->second.running) { it->second.acc += hle_tick_us() - it->second.start_us; it->second.running = 0; }
+      if (g_timer_n++ < 20) { printf("[TIMER] stop uid=%08X\n", s->r[0]); fflush(stdout); }
+      r0 = 0; break; }
+    case 0x812B2A90u: {                                               // M822: sceKernelDeleteTimer(uid)
+      g_timers.erase(s->r[0]);
+      r0 = 0; break; }
+    case 0x812B2A30u: {                                               // M822: sceKernelGetTimerTime(uid) -> uint64 r0:r1 (us)
+      uint64_t v = 0;
+      auto it = g_timers.find(s->r[0]);
+      if (it != g_timers.end()) { v = it->second.acc; if (it->second.running) v += hle_tick_us() - it->second.start_us; }
+      if (g_timer_n++ < 30) { printf("[TIMER] time uid=%08X v=%llu lr=%08X\n", s->r[0], (unsigned long long)v, s->r[14]); fflush(stdout); }
+      s->r[1] = (uint32_t)(v >> 32); r0 = (uint32_t)v; break; }
     case 0x812B27A0u: {                                               // sceKernelWaitSema
       uint32_t obj = s->r[0], need = s->r[1] ? s->r[1] : 1u;
       auto it = g_sema.find(obj);
