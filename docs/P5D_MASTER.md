@@ -482994,3 +482994,18 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M823 app boot init FUN_8118464C (~30 inits; called n=26628 fib=f1) -> FUN_8115922C plays movie (paths @0x813AF6C0/0x813AF768 "movie/p4d_dummy*.usm", appDrawTask_8115FA3E(0x2f), appMovie_81157E70(path,2,0x81159277,slot), appMoviePlayer_811587FC(0.6f)); SystemParamGetInt(1) via 812B18B0 sets DAT_81670354 (HLE 0->1); [APPINIT] probes on 26 call sites of FUN_8118464C; default 30M green; next find non-returning init then USM decode.
 
 LOOKUP: 0x8118464C, 0x8115922C, 0x813AF768, 0x812B18B0 -> §18.4367 [relevant: Mana timer HLE], §18.4366 [relevant: SEMREC], §18.4363 [relevant: render pipeline]
+
+
+POST-RUN UPDATE (M823 addendum): the 150M pair run with the `[APPINIT]` probes **finished** (`done: blocks=150000000 pc=81206832`).
+ALL **26** `[APPINIT]` call sites executed in order (`811846A2 -> 811846AC -> ... -> 8118475A`), i.e. the whole app boot init
+sequence **completes**, and `[MANA]` proves the movie tail runs:
+```
+[MANA] pc=8118464C (init seq) -> pc=8115922C (PLAY MOVIE) -> pc=81157E70 (appMovie play)
+       -> pc=81158DF0 (movie_app_movie...)      at n=26628 fib=848468E0
+[MANA] pc=81159CB0/81185308/810222F8/811792B2/8102A500  (the six process update callbacks) at n=26629
+```
+`[PROC]=12`, `[EPROV]=3`, `[F2LOAD]=2`; but `[TIMER]=0` for the whole run, `[GXMK]=0`, `[GXM-BEGIN]=0`, `[DLIST]` all zero.
+=> The boot reaches movie playback initiation (`appMovie_81157E70(movie/p4d_dummy*.usm, 2, cb, slot)`) and then the movie player runs
+asynchronously (the main thread returns into the CRI fiber loop); the USM playback/frame loop never produces frames or a draw task.
+NEXT: decompile `appMovie_81157E70` / `appMoviePlayer_811587FC` / `movie_app_movie_81158DF0` to see the USM open + decode entry,
+trace the Fios/CPK open of `movie/p4d_dummy*.usm`, and determine which movie HLE (file open, Mana timer, video decode callback) is missing.
