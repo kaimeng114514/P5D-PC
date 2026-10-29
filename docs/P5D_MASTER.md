@@ -482872,3 +482872,14 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M821 SEMREC recursive sema self-re-wait tolerance (same fiber token owner) -> [SEMW] 2->0, SEMREC x2 on gfdSema 0x50018000 at n=26628; long run with THRPUMP3: F2LOAD=2 EPROV=3 MAINRET n=60912859 with pcring showing normal CRI fiber-loop return (81198BEA/811E5CDA/812B1BA0) => main-return normal; [PROC]=0 [GXM-BEGIN]=0 still; default 30M green.
 
 LOOKUP: 0x50018000, 0x812B27A0, 0x811E5CDA -> §18.4365 [relevant: gfdSema protocol], §18.4364 [relevant: fail-open lead], §18.4362 [relevant: thread pump barrier]
+
+
+POST-RUN UPDATE (M821 addendum): the SEMREC long run finished **150M blocks** (`done: blocks=150000000 pc=81206832`):
+`[SEMREC]=2`, `[SEMW]=0`, `[EPROV]=3`, `[F2LOAD]=2`, **`[PROC]=12`** (all six app-process updates executed: `runner fa5c` + `exec` for
+`859F113C 81159CB1/CC3`, `859FF62C 81185309/AF`, `859FFB4C 810222F9/2327`, `859FF95C/859FF9EC 811792B3/933D`, `85AA3D9C 8102A501/A65B`),
+but `[GXMK]=0`, `[GXM-BEGIN]=0`, `[DLIST]` all zero the whole run. The FIRST `[MAINRET]` (n=60912769) pcring is now significant:
+`81153DD4 x11 ... 81153DEC 81153C70 81153C8E 812B29F0 81153CAE 812B29E0 81153CB6 81153CD0 812B1640 81153CDA 81153CF4 ...`
+- these are **movieTest_/appMovie_ (0x81153xxx) functions** plus HLE event-flag stubs (`812B29F0`/`812B29E0`), i.e. the guest main thread's
+last work is the **S0_LOGO movie/boot-flow code**, then it returns into the CRI fiber loop and the app idles forever.
+=> The next milestone is the **video/USM (Sofdec) path**: S0_LOGO is a movie; without USM/AVC decode the boot flow cannot advance to S1_TITLE
+(explains why the app process update rounds never start a scene draw / draw lists stay empty).
