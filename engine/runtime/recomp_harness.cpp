@@ -2017,6 +2017,23 @@ static void fiber_save(RecState* s) {
     if ((c.r[15] & ~1u) == 0x81206BDCu || c.r[0] == 2u)
       printf("[FSAVE-BAD] fiber=%08X r0=%08X r13=%08X r15=%08X\n", g_cur_fiber, c.r[0], c.r[13], c.r[15]); }
 }
+// M830: per-fiber first-start metadata. A fiber whose exec loop returned pc=0 is "finished"; instead of reading the
+// (possibly cleared) user entry from guest memory, restart it from the recorded first-start context. This fixes the
+// observed livelock where fiber1's saved ctx stayed at 0x8116F758 / eventually pc=0 and every switch to it was a no-op.
+struct FibMeta { uint32_t entry; uint32_t sp; };
+static std::map<uint32_t, FibMeta> g_fib_meta;
+static int g_fibrst_n = 0;
+static bool fib_restart(FCtx& c, uint32_t fiber, const char* where) {
+  auto mi = g_fib_meta.find(fiber);
+  if (mi == g_fib_meta.end()) return false;
+  std::memset(&c, 0, sizeof(c));
+  c.r[0] = fiber;                 // start stub expects r0 = fiber object ([r4+0x84]/[r4+0x88])
+  c.r[13] = mi->second.sp;
+  c.r[14] = 0xFFFFFFF0u;
+  c.r[15] = mi->second.entry;
+  if (g_fibrst_n++ < 20) { printf("[FIBRST] fiber=%08X entry=%08X sp=%08X where=%s\n", fiber, c.r[15], c.r[13], where); fflush(stdout); }
+  return true;
+}
 static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg) {
   { auto _mi = g_fctx.find(fiber); if (_mi != g_fctx.end() && ((_mi->second.r[15] & ~1u) >= 0x8127C0C0u && (_mi->second.r[15] & ~1u) <= 0x8127C100u)) {
       if (g_dly_n++ < 20) { printf("[LOAD-DLY] fiber=%08X savedpc=%08X sp=%08X lr=%08X\n", fiber, _mi->second.r[15], _mi->second.r[13], _mi->second.r[14]); fflush(stdout); } } }
@@ -2052,6 +2069,8 @@ static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg
     c.r[13] = f13; c.r[14] = 0xFFFFFFF0u; c.r[15] = (entry ? entry : 0) & ~1u;
     if (f84) { c.r[15] = g_fiber_entry & ~1u; }  // start stub reads the user entry itself
     g_fctx[fiber] = c;
+    g_fib_meta[fiber] = FibMeta{c.r[15], c.r[13]};
+    if (g_fibrst_n++ < 20) { printf("[FIBMETA] fiber=%08X entry=%08X sp=%08X\n", fiber, c.r[15], c.r[13]); fflush(stdout); }
   }
   FCtx& c = g_fctx[fiber];
   // 18.3728: do NOT reset SP here - the fiber's stack frame must survive yields (the old per-load reset
@@ -2126,14 +2145,17 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       // 18.3730: if the target fiber already finished (pc==0), restart it from its user entry so the
       // game can schedule its task again (the scheduler re-switches to it every round).
       if (it != g_fctx.end() && it->second.r[15] == 0u) {
-        uint32_t off2 = t - IMG_VA_BASE; uint32_t entry2 = 0;
-        if (off2 + 0x90 <= IMG_SIZE) std::memcpy(&entry2, gp_img + off2 + 0x84, 4);
-        if (entry2) {
-          uint32_t idx1 = 0; for (size_t k = 0; k < g_fiber_list.size(); ++k) if (g_fiber_list[k] == t) { idx1 = (uint32_t)k; break; }
-          FCtx cc; std::memset(&cc, 0, sizeof(cc));
-          cc.r[0] = t; cc.r[13] = 0xA0E00000u - idx1 * 0x800000u; cc.r[14] = 0xFFFFFFF0u; cc.r[15] = entry2 & ~1u;
-          it->second = cc;
-          if (g_swrst_n++ < 12) printf("[SWRST2] rebuild fiber=%08X entry=%08X sp=%08X\n", t, entry2, cc.r[13]);
+        if (fib_restart(it->second, t, "switch")) { /* restarted from recorded first-start ctx */ }
+        else {
+          uint32_t off2 = t - IMG_VA_BASE; uint32_t entry2 = 0;
+          if (off2 + 0x90 <= IMG_SIZE) std::memcpy(&entry2, gp_img + off2 + 0x84, 4);
+          if (entry2) {
+            uint32_t idx1 = 0; for (size_t k = 0; k < g_fiber_list.size(); ++k) if (g_fiber_list[k] == t) { idx1 = (uint32_t)k; break; }
+            FCtx cc; std::memset(&cc, 0, sizeof(cc));
+            cc.r[0] = t; cc.r[13] = 0xA0E00000u - idx1 * 0x800000u; cc.r[14] = 0xFFFFFFF0u; cc.r[15] = entry2 & ~1u;
+            it->second = cc;
+            if (g_swrst_n++ < 12) printf("[SWRST2] rebuild fiber=%08X entry=%08X sp=%08X\n", t, entry2, cc.r[13]);
+          }
         }
       }
       if (it == g_fctx.end()) {
@@ -2853,11 +2875,13 @@ BlockFn fn = gbn(pc);
       auto it2 = g_fctx.find(t);
       if (it2 != g_fctx.end()) {
         if (it2->second.r[15] == 0u) {
-          uint32_t off3 = t - IMG_VA_BASE; uint32_t e3 = 0;
-          if (off3 + 0x90 <= IMG_SIZE) std::memcpy(&e3, gp_img + off3 + 0x84, 4);
-          if (e3) { uint32_t idx3 = 0; for (size_t k2 = 0; k2 < g_fiber_list.size(); ++k2) if (g_fiber_list[k2] == t) { idx3 = (uint32_t)k2; break; }
-            FCtx c3; std::memset(&c3, 0, sizeof(c3)); c3.r[0] = t; c3.r[13] = 0xA0E00000u - idx3 * 0x800000u;
-            c3.r[14] = 0xFFFFFFF0u; c3.r[15] = e3 & ~1u; it2->second = c3; }
+          if (!fib_restart(it2->second, t, "slice")) {
+            uint32_t off3 = t - IMG_VA_BASE; uint32_t e3 = 0;
+            if (off3 + 0x90 <= IMG_SIZE) std::memcpy(&e3, gp_img + off3 + 0x84, 4);
+            if (e3) { uint32_t idx3 = 0; for (size_t k2 = 0; k2 < g_fiber_list.size(); ++k2) if (g_fiber_list[k2] == t) { idx3 = (uint32_t)k2; break; }
+              FCtx c3; std::memset(&c3, 0, sizeof(c3)); c3.r[0] = t; c3.r[13] = 0xA0E00000u - idx3 * 0x800000u;
+              c3.r[14] = 0xFFFFFFF0u; c3.r[15] = e3 & ~1u; it2->second = c3; }
+          }
         }
         if (it2->second.r[15] != 0u) {
           fiber_save(s);
