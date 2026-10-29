@@ -483856,3 +483856,23 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M837 GetMemBlockInfo HLE wrote 32 bytes at info=sp overwriting stack canary [sp+4] in decodeMemory_81153c70 (prologue push {r4,r5,r6,lr}; sub sp,#8; ldr r2,[0x812B414C]; str r2,[sp,#4]; call AllocMemBlock then GetMemBlockInfo(uid, info=sp); compare ldr r2,[sp,#4] vs [r6] -> bne fail) -> guaranteed canary mismatch -> 19946-loop + tgtpc=812B2810 x699; fix memcpy 4 bytes (only [info]=base read by GxmMapMemory call ldr r0,[sp]; movs r2,#3; blx 812B1640); default 30M green CHKFIX2=0 MEMB=93; validation out150m_m848.txt.
 
 LOOKUP: 0x81153C70, 0x812B29E0, 0x812B2810, 0x812B1640 -> §18.4381 [relevant: canary retry off-by-2], §18.4380 [relevant: batch_028 validation], §18.4376 [relevant: canary retry]
+
+
+M837 VALIDATION RESULT (`out150m_m848.txt`, run in progress at the time of writing): **the canary loop and ALL bad returns are GONE**:
+```
+[CHKFIX2] = 0        (was 19,946)
+[NOFN]    = 0        (was 4: 812B4150/816708B4/85AA519C/84856994)
+[RECUR]   = 1        (appMessage update entered exactly once)
+[SPLOOP]  #1-#8 all normal exec frames (sp=848568F0, [sp+4]=8116FA64)
+[STEP]    = 10 task steps
+switch histogram: the `tgtpc=812B2810 tgtsp=848568A0 x699` entry is GONE
+```
+i.e. writing only 4 bytes in `sceKernelGetMemBlockInfo` (instead of 32) removed the last systematic stack corruption: no canary failures, no NOFN
+recoveries, no duplicated update entries. The run then proceeds normally through boot into the app phase (`[RATE2] n=60,000,000`, fibers f0/f1
+healthy in `[FDUMP]`, `[GXMABI]` 4024 renderer/shader-patcher init calls) and currently sits in the **movie/display wait path**:
+`[WD] stall=196 blk=8115F9CA` (`0x8115Fxxx` = app draw-task builder area) with `hle_ring` repeating
+`812B1810 (WaitVblank) @ 0x811539FE` - i.e. the movie player waiting for a frame buffer / next vblank (`0x811539FE` is inside the movie frame path).
+`[FLPROBE]` is still 1 and `[GXM-BEGIN]`/`[GXM-PRESENT]` are still 0 (the frame renderer has not been driven yet).
+NEXT: (1) finish reading `out150m_m848.txt`; (2) the new front is the **movie/frame-buffer wait path** `0x811539FE -> 812B1810 WaitVblank`
+(the video player waits for display frames; our WaitVblank stub returns immediately but nothing produces the expected frame-buffer state); make the
+display/vblank path deliver the expected state or make the movie path progress, and (3) then the frame loop should repeat and `BeginScene` should fire.
