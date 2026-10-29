@@ -205,6 +205,8 @@ static int g_cbtr_n = 0;
 static int g_lktr_n = 0;
 static int g_acc_n = 0, g_lkin_n = 0, g_lkout_n = 0;
 extern "C" int g_watch_on = 1;
+static int g_trc_n = 0;
+static int g_pumpst_n = 0;
 // moved-globals-4177
 static uint32_t g_watch_addr = 0;
 static uint32_t g_watch_val = 0;
@@ -1764,6 +1766,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       break; }
     default: r0 = 0; break;                                            // default: success code 0
   }
+  hw_check(stub_va ^ 0x1u);
   s->r[0] = r0;
   if (g_ws_on) { uint32_t _v = 0; uint8_t* _q = GP(g_ws_addr); if (_q) std::memcpy(&_v, _q, 4); if (_v != g_ws_snap && g_ws_n++ < 20) { printf("[WSLOT-HLE] blk=%08X old=%08X new=%08X\n", g_cur_block, g_ws_snap, _v); g_ws_snap = _v; fflush(stdout); } }
   return s->r[14];
@@ -3003,6 +3006,15 @@ static int g_wl2_n = 0, g_wl2b_n = 0;
 static int g_dd4bc_n = 0, g_dd4c8_n = 0;
 static int g_sched_n = 0;
 static int g_de912_n = 0, g_de9ba_n = 0;
+extern "C" void wr64_watch(uint32_t a, uint64_t v) {
+  { static int _lw=0; if ((a == 0x816CDB8Cu || a == 0x816CDB88u || a == 0x816CDB90u) && _lw++ < 40) { printf("[REGWR64] a=%08X v=%08X%08X blk=%08X fib=%08X thr=%08X\n", a, (uint32_t)(v>>32), (uint32_t)v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW64] a=%08X off=%03X v=%08X%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, (uint32_t)(v>>32), (uint32_t)v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+}
+extern "C" void wr8_watch(uint32_t a, uint32_t v) {
+  { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 120) { printf("[OBJW8] a=%08X off=%03X v=%02X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _rg=0; if ((a >= 0x816CDB80u && a < 0x816CDBA0u) && _rg++ < 60) { printf("[REGWR8] a=%08X v=%02X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _all=0; if (a == 0x84D2AAA4u && _all++ < 20) { printf("[STATEW8] v=%02X blk=%08X fib=%08X thr=%08X sp=%08X\n", v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
+}
 extern "C" void wr16_watch(uint32_t a, uint32_t v) {
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW16] a=%08X off=%03X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { if (a >= 0x84600000u && a < 0x84600080u) { static int _tw=0; if (_tw++ < 40) { printf("[TLSWR16] a=%08X v=%04X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
@@ -4360,7 +4372,11 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         if (g_pump_setg_n++ < 20) { printf("[WAITPUMP] n=%u task=%08X state=%u (global was %08X next=%08X) force+run state machine\n", g_blkcnt_total, _t, (unsigned)_st, _gprev, _nxt24); fflush(stdout); }
         uint32_t _sv[40]; uint32_t _sp0 = s.r[13];
         if (g_wl_frame_guard) { for (int _k = 0; _k < 40; ++_k) { _sv[_k]=0; uint8_t* _q=GP(_sp0 + (uint32_t)_k*4u); if(_q) std::memcpy(&_sv[_k],_q,4); } }
-        call_guest_cb(&s, 0x811E5928u, 0, 30000);
+        { uint32_t _st0=0,_p0=0,_s0=0; if (g_hw_handle) { uint8_t* _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st0,_q,4); _q=GP(g_hw_handle+0x8cu); if(_q) std::memcpy(&_p0,_q,4); _q=GP(g_hw_handle+0x90u); if(_q) std::memcpy(&_s0,_q,4); }
+          if (g_pumpst_n++ < 20) { printf("[PUMPST] before task=%08X blk=%08X st=%08X p=%08X sz=%08X fib=%08X\n", _t, g_cur_block, _st0, _p0, _s0, g_cur_fiber); fflush(stdout); }
+          call_guest_cb(&s, 0x811E5928u, 0, 30000);
+          { uint32_t _st1=0,_p1=0,_s1=0; if (g_hw_handle) { uint8_t* _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st1,_q,4); _q=GP(g_hw_handle+0x8cu); if(_q) std::memcpy(&_p1,_q,4); _q=GP(g_hw_handle+0x90u); if(_q) std::memcpy(&_s1,_q,4); }
+            if (g_pumpst_n++ < 40) { printf("[PUMPST] after st=%08X p=%08X sz=%08X (last blk=%08X fib=%08X)\n", _st1, _p1, _s1, g_cur_block, g_cur_fiber); fflush(stdout); } } }
         if (g_wl_frame_guard) { for (int _k = 0; _k < 40; ++_k) { uint8_t* _q=GP(_sp0 + (uint32_t)_k*4u); if(_q) std::memcpy(_q,&_sv[_k],4); } }
         if (_nxt24) { uint8_t* _q = GP(_t + 0x24u); if (_q) std::memcpy(_q, &_nxt24, 4); }
         { if (_gprev != _t) { uint8_t* _q = GP(0x816CDA2Cu); if (_q) std::memcpy(_q, &_gprev, 4); } }
@@ -4420,6 +4436,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     if ((pc & ~1u) == 0x811E5EE8u && g_last_main_pc != 0x811E5EE4u && g_ee8ent_n++ < 20) {
       printf("[EE8-ENTRY] prevblk=%08X sp=%08X lr=%08X r4=%08X r5=%08X fib=%08X ring:", g_last_main_pc, s.r[13], s.r[14], s.r[4], s.r[5], g_cur_fiber);
       for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
+    hw_check(pc ^ 0x2u);
+    if (g_hw_handle && g_trc_n < 300) { uint32_t _st=0; uint8_t* _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st,_q,4);
+      if (_st==0) { printf("[TRC] %03d pc=%08X fib=%08X lr=%08X sp=%08X r0=%08X r1=%08X r2=%08X r3=%08X\n", g_trc_n++, pc, g_cur_fiber, s.r[14], s.r[13], s.r[0], s.r[1], s.r[2], s.r[3]); fflush(stdout); } }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
     if (nxt >= 0x84600000u && nxt < 0x8C600000u && g_heaptgt_n++ < 8) {
@@ -4436,7 +4455,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         uint32_t _st=0,_p=0,_sz=0; uint8_t* _q;
         _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st,_q,4); _q=GP(g_hw_handle+0x8cu); if(_q) std::memcpy(&_p,_q,4); _q=GP(g_hw_handle+0x90u); if(_q) std::memcpy(&_sz,_q,4);
         if (_st!=g_hw_st || _p!=g_hw_p || _sz!=g_hw_sz) {
-          if (g_hw_n++ < 60) { printf("[HW] byblk=%08X st:%08X->%08X p:%08X->%08X sz:%08X->%08X fib=%08X\n", _cb, g_hw_st, _st, g_hw_p, _p, g_hw_sz, _sz, g_cur_fiber); fflush(stdout); }
+          if (g_hw_n++ < 60) { printf("[HW] byblk=%08X st:%08X->%08X p:%08X->%08X sz:%08X->%08X fib=%08X words:", _cb, g_hw_st, _st, g_hw_p, _p, g_hw_sz, _sz, g_cur_fiber);
+            for (int _k=0;_k<10;++_k) { uint32_t _w=0; uint8_t* _q=GP(g_hw_handle+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); } printf(" ring:");
+            for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
           g_hw_st=_st; g_hw_p=_p; g_hw_sz=_sz; }
       }
       if (_cb == 0x8127C0E8u) {
