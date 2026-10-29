@@ -207,7 +207,7 @@ static int g_cbtr_n = 0;
 static int g_lktr_n = 0;
 static int g_acc_n = 0, g_lkin_n = 0, g_lkout_n = 0;
 extern "C" int g_watch_on = 1;
-static std::map<uint32_t,uint32_t> g_canmap; static uint32_t g_trap_can = 0; static int g_trapcan_n = 0; static int g_canw_n = 0; static uint32_t g_canary_sp = 0; static uint32_t g_cur_hle_ret_lr = 0;
+static std::map<uint32_t,uint32_t> g_canmap; static uint32_t g_trap_can = 0; static int g_trapcan_n = 0; static int g_canw_n = 0; static int g_canw_on = 0; static uint32_t g_canary_sp = 0; static uint32_t g_cur_hle_ret_lr = 0;
 static int g_trc_n = 0;
 static int g_pumpst_n = 0;
 // moved-globals-4177
@@ -393,7 +393,8 @@ static int g_io_n = 0;
 static uint32_t g_fh_id = 0x3000u, g_op_id = 0x5000u;
 static std::string g_inject_name;
 static int g_pumping2 = 0, g_pump2_n = 0;
-static int g_pump_disabled_ab = 1;   // A/B: 1 = pump disabled
+static int g_pump_disabled_ab = 1;
+static int g_p2_restarts = 0; static int g_p2skip_n = 0;   // A/B: 1 = pump disabled
 static int g_after_nofn = 0;
 static int g_stub_n = 0;
 static int g_stub_fix_n = 0;
@@ -3150,7 +3151,7 @@ extern "C" void wr16_watch(uint32_t a, uint32_t v) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
-  { uint32_t _c = 0; { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); }
+  if (g_canw_on) { uint32_t _c = 0; { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); }
     if (_c && v == _c) { g_canmap[a] = v; }
     if (g_trap_can && a == g_trap_can && v != 0x812B4150u) { if (g_trapcan_n++ < 200) { printf("[TRAPCAN] a=%08X v=%08X blk=%08X lr=%08X\n", a, v, g_cur_block, g_cur_hle_ret_lr); fflush(stdout); } }
     else { auto _it = g_canmap.find(a); if (_it != g_canmap.end() && a >= 0x9F000000u && g_canw_n++ < 4000) { printf("[CANWCORRUPT2] a=%08X v=%08X was=%08X blk=%08X\n", a, v, _it->second, g_cur_block); fflush(stdout); } } }
@@ -3446,6 +3447,7 @@ int main(int argc, char** argv) {
   { const char* _st = getenv("P5D_SPTRACE"); g_sptrace = (_st && atoi(_st) != 0) ? 1 : 0; }
   { const char* _df = getenv("P5D_DEFERFSW"); g_deferfsw = (_df && atoi(_df) != 0) ? 1 : 0; }
   { const char* _sl = getenv("P5D_SWLOG"); g_swlog = (_sl && atoi(_sl) != 0) ? 1 : 0; }
+  { const char* _cw = getenv("P5D_CANW"); g_canw_on = (_cw && atoi(_cw) != 0) ? 1 : 0; }
   { const char* _ns = getenv("P5D_NOSCHEDRUN"); g_noschedrun = (_ns && atoi(_ns) != 0) ? 1 : 0; }
   { const char* _ss = getenv("P5D_SCHEDRUNSMART"); g_schrunsmart = (_ss && atoi(_ss) != 0) ? 1 : 0; }
   { const char* _si = getenv("P5D_SCHEDIDX"); if (_si) g_schedidx = atoi(_si); }
@@ -4244,7 +4246,8 @@ BlockFn fn = gbn(pc);
     if (((pc & ~1u) == 0x811E5CDAu || (n % 2000) == 0) && !g_pumping2 && g_fiber_list.size() > 1 && g_pump_cool == 0) {   // 18.4217: pump more often so the loader fiber gets enough time to run GXM init
       // 18.3860: fiber2 pump v4 - per-frame task; FIRST pump force-resets fiber2's FCtx to the user entry
       // (M319: the leftover FCtx had a non-zero pc=0x8115D7C4 which corrupted every pass).
-      if (!g_pump_disabled_ab) g_pumping2 = 1; if (g_seq_n++ < 60) printf("[SEQ] #%d pump_start\n", g_seq_n);
+      if (!g_pump_disabled_ab) g_pumping2 = 1; else { if (g_p2skip_n++ < 8) { printf("[PMP2-DISABLED] skip pass (fiber2 pump disabled)\n"); fflush(stdout); } g_pump_cool = 1000; goto pump2_skip; }
+      if (g_seq_n++ < 60) printf("[SEQ] #%d pump_start\n", g_seq_n);
       static int pump_first = 1;
       const bool _mainctx = (g_cur_fiber == 0);   // M795: pump started from the MAIN THREAD (g_cur_fiber==0)
       FCtx _msaved; std::memset(&_msaved, 0, sizeof(_msaved));
@@ -4282,6 +4285,7 @@ BlockFn fn = gbn(pc);
         if (g_pump2_n <= 6) { printf("[BOOTTHUNK] fiber=%08X entry=%08X sp=%08X\n", f2, c2.r[15], c2.r[13]); fflush(stdout); }
       } else if ((pump_first && !f2_ran) || c2.r[15] == 0u) {
         pump_first = 0;
+        if (c2.r[15] == 0u && ++g_p2_restarts > 6) { g_pump_disabled_ab = 1; if (g_p2skip_n++ < 8) { printf("[PMP2-F2DONE] fiber=%08X completed/restarted %d times -> pump disabled\n", f2, g_p2_restarts); fflush(stdout); } }
         uint32_t off2 = f2 - IMG_VA_BASE, arg2 = 0;
         if (off2 + 0x90 <= IMG_SIZE) std::memcpy(&arg2, gp_img + off2 + 0x88, 4);
         std::memset(&c2, 0, sizeof(c2));
@@ -4396,6 +4400,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       // 18.3988: fix stale fn - re-evaluate pc/fn from the RESTORED fiber1 context (the stale fn made the loop dispatch the pump-trigger block and jump back into the loader chain -> BADMEM 0x94)
       pc = s.r[15]; fix682a(&s, &pc); h7344_probe(&s, pc); fn = gbn(pc);
     }
+    pump2_skip: ;
     if (!fn) {
       // 18.3804: unknown pc right after the main thread returned = fiber return address into non-AOT space.
       // Resume the live fiber instead of stopping so the game keeps running in its fiber world.
