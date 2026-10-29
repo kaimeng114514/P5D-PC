@@ -483262,3 +483262,20 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M827 FUN_8102A500 appMessage window update (process 85AA3D9C cb0): walks [0x8132AE60] mgr, per-window appMessageWindow_81029BFC(596B, ends with handler (*(code*)**(w+0x10))(w,-1,2)), then vtable[0](w,-1,1), frees w+0x44/0x94/0xF8, FUN_81025BEA(w+0x11C), appList_810162E8(w[4][0]), next node +0x1A0/+0x18, return 0x8102A654 pop.w; recursion 10x with lr=8116F758 (exec 8116F748 call site) sp -0x20/level -> mid-function 0x8102A50E NOFN -> fiber0; guard manual blocks mb_8102A500 (depth>=3 -> return lr r0=0, [A500GUARD]) + mb_8102A654 (epilogue depth--), gbn_raw bypass; default 30M green; validation runs out150m_m833.txt/out150m_m833b.txt in progress; next check GXM-BEGIN/frame update/scene driver.
 
 LOOKUP: 0x8102A500, 0x81029BFC, 0x8132AE60, 0x8116F748 -> §18.4371 [relevant: [STEP]/[RECUR] evidence], §18.4370 [relevant: frame loop disasm], §18.4369 [relevant: per-frame chain]
+
+
+M827b VALIDATION RESULT (`out150m_m834.txt`, threshold=1, run finished): the guard now fires on the **first nested re-entry**:
+```
+[A500GUARD] depth=1 n=26629 sp=848568D0 lr=8116F758 -> skip recursive appMessage update
+```
+Effects vs threshold=3: the bad-return `[NOFN]` list changed from `8102A50E x2` to **`8102A50E x1 + 846182D0 x1`** (still corrupted
+returns, but one fewer mid-function landing), `[FLPROBE]=1`, `[FL3]=26` (same single frame tick), `[GFD3]=25`, `[GXMABI]=4024` (same full GXM
+renderer/shader-patcher init). However the run still ends in a **nested-exec livelock**: final `[SNAP]`/`[WD]` show
+`fex=0 ex=1 blk=8116F758` - a nested `fiber_exec` is stuck at the appProcess exec return point `0x8116F758`, i.e. after the skipped update returns,
+the caller (appMessage window handler / appProcess message dispatch) keeps re-invoking exec without making progress (a livelock, not a stack overflow).
+=> the recursion guard alone converts the stack overflow into an infinite message-dispatch retry; the real fix is to understand the
+appMessage window handler -> appProcess exec call (what message/flag it expects the update to consume) - likely our appProcess message-queue
+state never marks the message consumed, so the handler retries forever.
+NEXT: (1) instrument FUN_8116F748's callers inside the window handler (the call site that re-invokes exec) and the message object it processes;
+(2) find why the message is not consumed (appProcess message API FUN_8116F900 / task state fields); (3) make the nested update return the
+"processed" status or clear the message; (4) then frame loop repeats -> 0x8119934A -> 0x811CBE9A -> BeginScene.
