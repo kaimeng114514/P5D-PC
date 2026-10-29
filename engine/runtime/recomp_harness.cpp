@@ -878,6 +878,14 @@ static void pending_req_scan() {
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x81163508u || _a == 0x8115FFCEu) { static int _gx_n = 0;
+      if (_gx_n++ < 40) { uint32_t _c = 0, _d = 0, _c64 = 0, _d65 = 0;
+        { uint8_t* q = GP(0x8155543Cu); if (q) std::memcpy(&_c, q, 4); }
+        { uint8_t* q = GP(0x8155543Du); if (q) std::memcpy(&_d, q, 4); }
+        { uint8_t* q = GP(0x81555464u); if (q) std::memcpy(&_c64, q, 4); }
+        { uint8_t* q = GP(0x81555465u); if (q) std::memcpy(&_d65, q, 4); }
+        printf("[GXCHK] #%d at=%08X r0=%08X r1=%08X lr=%08X sp=%08X pend=%08X/%08X app=%08X/%08X ring:", _gx_n, _a, s->r[0], s->r[1], s->r[14], s->r[13], _c, _d, _c64, _d65);
+        for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x8116F758u) { static int _sl = 0; if (_sl++ < 30) { uint32_t _w0 = 0, _w1 = 0; uint8_t* _q = GP(s->r[13]); if (_q) std::memcpy(&_w0, _q, 4); _q = GP(s->r[13] + 4u); if (_q) std::memcpy(&_w1, _q, 4);
       printf("[SPLOOP] #%d n=%u fib=%08X sp=%08X [sp]=%08X [sp+4]=%08X r14=%08X r4=%08X\n", _sl, g_blkcnt_total, g_cur_fiber, s->r[13], _w0, _w1, s->r[14], s->r[4]); fflush(stdout); } }
     if (_a == 0x811DB4AEu) { static int _fn = 0; if (_fn++ < 40) { printf("[FLUSH] #%d n=%u fib=%08X sp=%08X lr=%08X ring:", _fn, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14]); for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
