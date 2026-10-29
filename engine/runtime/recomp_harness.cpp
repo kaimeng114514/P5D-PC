@@ -875,6 +875,8 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { static std::map<uint32_t,int> _fp; uint32_t _a = pcv & ~1u;
+    if (_a==0x81198C8Eu || _a==0x8119934Au || _a==0x811857C2u || _a==0x8118586Eu || _a==0x811DB1F0u || _a==0x811CBE9Au || _a==0x8115FA98u || _a==0x8115FA3Eu || _a==0x8116E522u || _a==0x8116E49Eu || _a==0x8116FA5Cu || _a==0x8116F748u) { int _c = ++_fp[_a]; if (_c <= 4) { printf("[FL3] pc=%08X n=%u fib=%08X thr=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, g_cur_thr, s->r[13], _c); fflush(stdout); } } }
   { static std::map<uint32_t,int> _ai; uint32_t _a = pcv & ~1u;
     if (_a==0x811846A2u || _a==0x811846ACu || _a==0x811846B4u || _a==0x811846CAu || _a==0x811846D2u || _a==0x811846D6u || _a==0x811846DEu || _a==0x811846E6u || _a==0x811846ECu || _a==0x811846F6u || _a==0x811846FAu || _a==0x81184702u || _a==0x8118470Au || _a==0x8118470Eu || _a==0x81184712u || _a==0x81184716u || _a==0x8118471Eu || _a==0x81184722u || _a==0x81184726u || _a==0x8118472Au || _a==0x8118472Eu || _a==0x81184736u || _a==0x8118473Eu || _a==0x81184746u || _a==0x8118474Eu || _a==0x8118475Au) { int _c = ++_ai[_a]; if (_c <= 2) { printf("[APPINIT] pc=%08X n=%u fib=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, s->r[13], _c); fflush(stdout); } } }
   { static std::map<uint32_t,int> _mn; uint32_t _a = pcv & ~1u;
