@@ -868,6 +868,9 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { static std::map<uint32_t,int> _gm; uint32_t _a = pcv & ~1u;
+    if (_a==0x811E9066u||_a==0x811EA3C0u||_a==0x811EB9DAu||_a==0x811EBC14u||_a==0x811EBECCu||_a==0x811EC190u||_a==0x811EE8C4u||_a==0x811EEA20u||_a==0x811EEB2Cu||_a==0x811EB930u||_a==0x811EE7C2u||_a==0x811EA3E6u||_a==0x811EBE88u||_a==0x811EBF84u||_a==0x811EC264u||_a==0x811EE826u||_a==0x811EE9D0u||_a==0x811EEAD8u) {
+      int _c = ++_gm[_a]; if (_c <= 4) { printf("[GXMK] blk=%08X n=%u fib=%08X thr=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, g_cur_thr, s->r[13], _c); fflush(stdout); } } }
   { uint32_t _ap = pcv & ~1u;
     if (_ap==0x8116F748u) { static int _pc=0; if (_pc++ < 60) { uint32_t c0=0,c1=0,nm=0; uint8_t* q=GP(s->r[0]); if(q){ std::memcpy(&c0,q,4); std::memcpy(&c1,q+4,4); std::memcpy(&nm,q+0x18,4);} printf("[PROC] exec p=%08X cb0=%08X cb1=%08X nameptr=%08X n=%u fib=%08X\n", s->r[0], c0, c1, nm, g_blkcnt_total, g_cur_fiber); fflush(stdout);} }
     else if (_ap==0x8116F75Eu) { static int _pd=0; if (_pd++ < 30) { printf("[PROC] delete p=%08X n=%u fib=%08X\n", s->r[0], g_blkcnt_total, g_cur_fiber); fflush(stdout);} }
@@ -4966,6 +4969,12 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       _q = GP(0x81513DECu); if (_q) std::memcpy(&_cb, _q, 4);
       _q = GP(0x816CC630u); if (_q) std::memcpy(&_fl, _q, 4);
       _q = GP(0x816CDA2Cu); if (_q) std::memcpy(&_th, _q, 4);
+      { uint32_t _dl0=0,_dl1=0,_dl2=0,_s3=0; uint8_t* _qd;
+        _qd=GP(0x816CD468u); if(_qd) std::memcpy(&_dl0,_qd,4);
+        _qd=GP(0x816CD480u); if(_qd) std::memcpy(&_dl1,_qd,4);
+        _qd=GP(0x816CD498u); if(_qd) std::memcpy(&_dl2,_qd,4);
+        _qd=GP(0x816CC43Cu); if(_qd) std::memcpy(&_s3,_qd,4);
+        printf("[DLIST] n=%d draw2d=%08X draw3dA=%08X draw3dB=%08X scene3dflag=%08X\n", n, _dl0, _dl1, _dl2, _s3); fflush(stdout); }
       { uint32_t _a0=0,_a4=0,_a8=0,_proc=0; uint8_t* _qa; _qa=GP(0x81555EA0u); if(_qa) std::memcpy(&_a0,_qa,4); _qa=GP(0x81555EA4u); if(_qa) std::memcpy(&_a4,_qa,4); _qa=GP(0x81555EA8u); if(_qa) std::memcpy(&_a8,_qa,4); _qa=GP(0x815554C4u); if(_qa) std::memcpy(&_proc,_qa,4); int _pcount=0; { uint32_t _pp=_proc; for (int _k=0; _k<32 && _pp; ++_k) { ++_pcount; uint8_t* _pq=GP(_pp+0x10u); if(!_pq) break; std::memcpy(&_pp,_pq,4);} }
       printf("[THRD] n=%d cb=%08X flags=%08X taskhead=%08X cur=%08X curthr=%08X threads=%zu appmem=%08X jobq=%08X mtxstk=%08X prochead=%08X pcount=%d\n", n, _cb, _fl, _th, g_cur_fiber, g_cur_thr, g_thr.size(), _a0, _a4, _a8, _proc, _pcount); }
       for (auto& kv : g_thr) { HThread& _t = kv.second; printf("[THRD]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X pc=%08X sp=%08X r0=%08X\n",
