@@ -2060,8 +2060,10 @@ static uint32_t canary_retry_pc(RecState* s) {
     if ((hw & 0xFF00u) == 0xBD00u) { p -= 2u; continue; }              // pop {...,pc} (16-bit)
     if ((hw & 0xFF00u) == 0xBC00u) { p -= 2u; continue; }              // pop {...,lr} (16-bit)
     if (hw == 0xE8BDu || hw == 0xE92Du) { p -= 2u; continue; }          // pop.w / push.w prefix halfword
-    if ((hw & 0xF000u) == 0xD000u) { uint32_t r = p + 2u;              // conditional branch: pass-through = start of epilogue
-      if (g_chkfix_n < 8) printf("[CHKFIX3] lr=%08X B=%08X scan->bne@%08X retry=%08X hw=%04X\n", lr, B, p, r, hw);
+    if ((hw & 0xF000u) == 0xD000u) { uint32_t r = p;                    // M836: p points one instruction AFTER the bne halfword (we scanned backwards
+      // from p and found the branch at p-2); the fall-through/ epilogue start is p itself. The old p+2 skipped the first epilogue instruction
+      // (e.g. `add sp,#8`), so the retry popped the frame without adjusting sp -> zeroed slots -> canary-fail loop.
+      if (g_chkfix_n < 8) printf("[CHKFIX3] lr=%08X B=%08X scan->bne@%08X retry=%08X hw=%04X\n", lr, B, p - 2u, r, hw);
       return r; }
     break;
   }
