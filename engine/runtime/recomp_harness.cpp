@@ -877,6 +877,11 @@ static void pending_req_scan() {
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x811DB4AEu) { static int _fn = 0; if (_fn++ < 40) { printf("[FLUSH] #%d n=%u fib=%08X sp=%08X lr=%08X ring:", _fn, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14]); for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+    if (_a == 0x8116F748u || _a == 0x8116FA5Cu) { static int _en = 0; static int _ex = 0, _rn = 0; int _c = (_a == 0x8116F748u) ? ++_ex : ++_rn;
+      if (_en < 90) { ++_en; printf("[EXEC2] %s #%d n=%u fib=%08X sp=%08X r0=%08X lr=%08X ring:", _a == 0x8116F748u ? "exec" : "runner", _c, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[0], s->r[14]);
+        for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } } }
+  { uint32_t _a = pcv & ~1u;
     if (_a==0x811DB020u || _a==0x811DB1F0u || _a==0x811DB244u || _a==0x811DB25Au || _a==0x811DB26Eu || _a==0x81198C8Eu || _a==0x81198D0Cu || _a==0x81198D10u || _a==0x81198D16u || _a==0x81198CD8u || _a==0x81199336u || _a==0x8119934Au || _a==0x812071F8u || _a==0x8119934Au || _a==0x811DB3F2u) { if (g_gfd3_n++ < 300) { printf("[GFD3] #%d pc=%08X n=%u fib=%08X sp=%08X r0=%08X r4=%08X lr=%08X\n", g_gfd3_n, _a, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[0], s->r[4], s->r[14]); fflush(stdout); } } }
   { static std::map<uint32_t,int> _fp; uint32_t _a = pcv & ~1u;
     if (_a==0x81198C8Eu || _a==0x8119934Au || _a==0x811857C2u || _a==0x8118586Eu || _a==0x811DB1F0u || _a==0x811CBE9Au || _a==0x8115FA98u || _a==0x8115FA3Eu || _a==0x8116E522u || _a==0x8116E49Eu || _a==0x8116FA5Cu || _a==0x8116F748u) { int _c = ++_fp[_a]; if (_c <= 4) { printf("[FL3] pc=%08X n=%u fib=%08X thr=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, g_cur_thr, s->r[13], _c); fflush(stdout); } } }
@@ -884,7 +889,7 @@ static void job_probes(uint32_t pcv, RecState* s) {
     if (_a==0x811846A2u || _a==0x811846ACu || _a==0x811846B4u || _a==0x811846CAu || _a==0x811846D2u || _a==0x811846D6u || _a==0x811846DEu || _a==0x811846E6u || _a==0x811846ECu || _a==0x811846F6u || _a==0x811846FAu || _a==0x81184702u || _a==0x8118470Au || _a==0x8118470Eu || _a==0x81184712u || _a==0x81184716u || _a==0x8118471Eu || _a==0x81184722u || _a==0x81184726u || _a==0x8118472Au || _a==0x8118472Eu || _a==0x81184736u || _a==0x8118473Eu || _a==0x81184746u || _a==0x8118474Eu || _a==0x8118475Au) { int _c = ++_ai[_a]; if (_c <= 2) { printf("[APPINIT] pc=%08X n=%u fib=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, s->r[13], _c); fflush(stdout); } } }
   { static std::map<uint32_t,int> _mn; uint32_t _a = pcv & ~1u;
     if (_a==0x8129B0AEu||_a==0x8129AD70u||_a==0x8129B826u||_a==0x8115922Cu||_a==0x81157E70u||_a==0x8118464Cu||_a==0x81158DF0u||_a==0x81159CB0u||_a==0x81185308u||_a==0x810222F8u||_a==0x811792B2u||_a==0x8102A500u) {
-      if (_a==0x8102A500u) { static int _rc=0; if (_rc++ < 10) { printf("[RECUR] #%d n=%u fib=%08X sp=%08X lr=%08X r0=%08X r5=%08X pcring:", _rc, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14], s->r[0], s->r[5]); for (int _k=0;_k<14;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 14u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+      if (_a==0x8102A500u) { static int _rc=0; if (_rc++ < 60) { printf("[RECUR] #%d n=%u fib=%08X sp=%08X lr=%08X r0=%08X r5=%08X pcring:", _rc, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14], s->r[0], s->r[5]); for (int _k=0;_k<14;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 14u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       int _c = ++_mn[_a]; if (_c <= 6) { printf("[MANA] pc=%08X n=%u fib=%08X thr=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, g_cur_thr, s->r[13], _c); fflush(stdout); } } }
   { static std::map<uint32_t,int> _gm; uint32_t _a = pcv & ~1u;
     if (_a==0x811E9066u||_a==0x811EA3C0u||_a==0x811EB9DAu||_a==0x811EBC14u||_a==0x811EBECCu||_a==0x811EC190u||_a==0x811EE8C4u||_a==0x811EEA20u||_a==0x811EEB2Cu||_a==0x811EB930u||_a==0x811EE7C2u||_a==0x811EA3E6u||_a==0x811EBE88u||_a==0x811EBF84u||_a==0x811EC264u||_a==0x811EE826u||_a==0x811EE9D0u||_a==0x811EEAD8u) {
@@ -3062,6 +3067,27 @@ static uint32_t mb_8102A654(RecState* s) {   // adds r0,r4,#0; pop.w {r4,r5,r6,r
   if (!fn) { s->r[0] = s->r[4]; return s->r[14]; }
   return fn(s);
 }
+// M828: GFD task-pool flush FUN_811DB4AE re-entry guard. Its tail is `while (DAT_816cd9d0) FUN_811db020(0);` and it is called from the
+// app-kernel update path; when the appMessage window handler re-enters the app-kernel update, this flush+nested scheduler runs the process
+// runner again -> exec -> appMessage update -> livelock. Guard: skip a nested flush entirely (return to caller), count depth via its exit block.
+static int g_flush_depth = 0;
+static uint32_t mb_811DB4AE(RecState* s) {
+  if (g_flush_depth > 0) {
+    static int _n = 0;
+    if (_n++ < 30) { printf("[FLUSHGUARD] depth=%d n=%u sp=%08X lr=%08X -> skip nested task-pool flush\n", g_flush_depth, g_blkcnt_total, s->r[13], s->r[14]); fflush(stdout); }
+    return s->r[14];
+  }
+  g_flush_depth++;
+  BlockFn fn = gbn_raw(0x811DB4AEu);
+  if (!fn) { g_flush_depth--; return s->r[14]; }
+  return fn(s);
+}
+static uint32_t mb_811DB5E0(RecState* s) {   // tail: adds r0,r6,#0; bl 0x81207332; pop.w {r4,r5,r6,r7,r8,pc}
+  if (g_flush_depth > 0) g_flush_depth--;
+  BlockFn fn = gbn_raw(0x811DB5E0u);
+  if (!fn) return s->r[14];
+  return fn(s);
+}
 static void init_manual_blocks(void) {
   g_manual_blocks[0x81032CF8u] = (BlockFn)mb_81032CF8;
   g_manual_blocks[0x81032CC8u] = (BlockFn)mb_81032CC8;
@@ -3070,6 +3096,8 @@ static void init_manual_blocks(void) {
   g_manual_blocks[0x81032CEAu] = (BlockFn)mb_81032CEA;
   g_manual_blocks[0x8102A500u] = (BlockFn)mb_8102A500;
   g_manual_blocks[0x8102A654u] = (BlockFn)mb_8102A654;
+  g_manual_blocks[0x811DB4AEu] = (BlockFn)mb_811DB4AE;
+  g_manual_blocks[0x811DB5E0u] = (BlockFn)mb_811DB5E0;
 }
 static BlockFn gbn(uint32_t pc) {
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
