@@ -155,7 +155,7 @@ static int g_pump_brk_n = 0;
 static int g_yield_to_main = 0;
 static uint32_t g_yield_main_tick = 0;
 static int g_ytest_n = 0;
-static int g_uncond3_n = 0; static int g_uncond3_env = 0; static int g_tdump_n = 0; static int g_provide_done = 0, g_provide_miss_n = 0; static int g_provide_n = 0, g_provide_ok = 0; static int g_eprov_n = 0, g_eprov_ok = 0, g_eprov_miss_n = 0; static std::set<uint32_t> g_prov_set, g_eprov_set;
+static int g_uncond3_n = 0; static int g_uncond3_env = 0; static int g_tdump_n = 0; static int g_bad1_n = 0; static int g_provide_done = 0, g_provide_miss_n = 0; static int g_provide_n = 0, g_provide_ok = 0; static int g_eprov_n = 0, g_eprov_ok = 0, g_eprov_miss_n = 0; static std::set<uint32_t> g_prov_set, g_eprov_set;
 static int g_always3 = 0;
 static int g_force3_done = 0;
 static uint32_t g_force3_obj = 0;
@@ -811,6 +811,7 @@ static void job_probes(uint32_t pcv, RecState* s) {
     if (_lh != g_lh_last) { printf("[REGHEAD] bypc=%08X old=%08X new=%08X fib=%08X thr=%08X ring:", pcv, g_lh_last, _lh, g_cur_fiber, g_cur_thr);
       for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); g_lh_last=_lh; }
     if (pcv >= 0x81181A00u && pcv <= 0x81181C60u && g_reg_n++ < 60) printf("[REGR] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X\n", pcv, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14], s->r[13], g_cur_fiber); }
+  if (pcv == 0x8115DA8Cu && g_wkp_n++ < 40) { uint32_t _w[8]; for(int _k=0;_k<8;++_k){_w[_k]=0; uint8_t* _q=GP(s->r[13]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w[_k],_q,4);} printf("[DA8C] pc=%08X r0=%08X r1=%08X r4=%08X r5=%08X lr=%08X sp=%08X fib=%08X stk:", pcv, s->r[0], s->r[1], s->r[4], s->r[5], s->r[14], s->r[13], g_cur_fiber); for(int _k=0;_k<8;++_k) printf(" %08X", _w[_k]); printf("\n"); fflush(stdout); }
   if (pcv >= 0x811830E0u && pcv <= 0x811831D8u && g_wkp_n++ < 60) {
     printf("[WKP] pc=%08X r0=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", pcv, s->r[0], s->r[4], s->r[5], s->r[6], s->r[7], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
     for (int _k=0;_k<10;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 10u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
@@ -2753,14 +2754,17 @@ static uint32_t mb_81032CF8(RecState* s) {   // pop {r4, pc}
   uint32_t sp = s->r[13]; uint32_t r4 = 0, nx = 0;
   { uint8_t* q = GP(sp); if (q) std::memcpy(&r4, q, 4); }
   { uint8_t* q = GP(sp + 4u); if (q) std::memcpy(&nx, q, 4); }
-  s->r[13] = sp + 8u; s->r[4] = r4; return nx;
+  s->r[13] = sp + 8u; s->r[4] = r4;
+  { static int _n=0; if (_n++ < 20) { printf("[MANPOP] sp=%08X r4=%08X nx=%08X\n", sp, r4, nx); fflush(stdout); } }
+  return nx;
 }
-static uint32_t mb_81032CEA(RecState* s) {   // push {r4,lr}; ldr r2,[0x8132AEB8]; blx r2; -> returns to 0x81032CF8
-  uint32_t sp = s->r[13] - 4u; { uint8_t* q = GP(sp); uint32_t v = s->r[14]; if (q) std::memcpy(q, &v, 4); }
-  sp -= 4u; { uint8_t* q = GP(sp); uint32_t v = s->r[4]; if (q) std::memcpy(q, &v, 4); }
-  s->r[13] = sp;
+static uint32_t mb_81032CEA(RecState* s) {   // M786: transparent trampoline (function pointer tail-call)
+  // original: push {r4,lr}; ldr r2,[0x8132AEB8]; blx r2; pop {r4,pc}
+  // Since r4 is callee-saved, the push/pop of r4 is a no-op; the net effect is a tail call to the pointer with the
+  // caller return address (already in s->r[14]). Push/pop emulation leaked 8 stack bytes when the callee did not return
+  // through 0x81032CF8, eventually causing a pop-pc=1 stack corruption.
   uint32_t fp = 0; { uint8_t* q = GP(0x8132AEB8u); if (q) std::memcpy(&fp, q, 4); }
-  s->r[2] = fp; s->r[14] = 0x81032CF8u;
+  s->r[2] = fp;
   return fp & ~1u;
 }
 static void init_manual_blocks(void) {
@@ -4529,6 +4533,12 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       if (_st==0) { printf("[TRC] %03d pc=%08X fib=%08X lr=%08X sp=%08X r0=%08X r1=%08X r2=%08X r3=%08X\n", g_trc_n++, pc, g_cur_fiber, s.r[14], s.r[13], s.r[0], s.r[1], s.r[2], s.r[3]); fflush(stdout); } }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
     uint32_t nxt = fn(&s);
+    if (nxt == 1u && g_bad1_n++ < 3) {
+      printf("[BAD1] pc=%08X blk=%08X sp=%08X lr=%08X fib=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X stk:", pc, g_cur_block, s.r[13], s.r[14], g_cur_fiber, s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7]);
+      for (int _k=0;_k<10;++_k) { uint32_t _w=0; uint8_t* _q=GP(s.r[13]+(uint32_t)_k*4u); if(_q) std::memcpy(&_w,_q,4); printf(" %08X", _w); } printf("\n");
+      printf("[BAD1] last blocks (pc/sp):");
+      for (int _k=80;_k>0;--_k) { uint32_t _i=(g_splog_n-(uint32_t)_k)&255u; printf(" [%08X/%08X]", g_splog_pc[_i], g_splog_sp[_i]); if((_k&15)==0) printf("\n"); }
+      fflush(stdout); }
     hw_check(0xE0000001u);
     if (nxt >= 0x84600000u && nxt < 0x8C600000u && g_heaptgt_n++ < 8) {
       printf("[HEAPTGT] nxt=%08X blk=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X sp=%08X fib=%08X ring:",
