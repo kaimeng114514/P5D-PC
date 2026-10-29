@@ -877,6 +877,8 @@ static void pending_req_scan() {
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x8116F758u) { static int _sl = 0; if (_sl++ < 30) { uint32_t _w0 = 0, _w1 = 0; uint8_t* _q = GP(s->r[13]); if (_q) std::memcpy(&_w0, _q, 4); _q = GP(s->r[13] + 4u); if (_q) std::memcpy(&_w1, _q, 4);
+      printf("[SPLOOP] #%d n=%u fib=%08X sp=%08X [sp]=%08X [sp+4]=%08X r14=%08X r4=%08X\n", _sl, g_blkcnt_total, g_cur_fiber, s->r[13], _w0, _w1, s->r[14], s->r[4]); fflush(stdout); } }
     if (_a == 0x811DB4AEu) { static int _fn = 0; if (_fn++ < 40) { printf("[FLUSH] #%d n=%u fib=%08X sp=%08X lr=%08X ring:", _fn, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[14]); for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x8116F748u || _a == 0x8116FA5Cu) { static int _en = 0; static int _ex = 0, _rn = 0; int _c = (_a == 0x8116F748u) ? ++_ex : ++_rn;
       if (_en < 90) { ++_en; printf("[EXEC2] %s #%d n=%u fib=%08X sp=%08X r0=%08X lr=%08X ring:", _a == 0x8116F748u ? "exec" : "runner", _c, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[0], s->r[14]);
@@ -1049,6 +1051,25 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     printf("[SCENE-STUB] va=%08X blk=%08X lr=%08X sp=%08X fib=%08X gxmabi=%d ring:", stub_va, g_cur_block, s->r[14], s->r[13], g_cur_fiber, g_gxmabi);
     for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
   ++g_hlecnt[stub_va];
+  // M829: app-phase blocking-wait probe (which wait never completes in the frame-fiber wait/yield loop)
+  if (g_blkcnt_total >= 26628u) {
+    static int _wn[10] = {0};
+    int _wi = -1;
+    if (stub_va == 0x812B27A0u) _wi = 0;        // WaitSema
+    else if (stub_va == 0x812B2880u) _wi = 1;   // WaitEventFlag
+    else if (stub_va == 0x812B2930u) _wi = 2;   // WaitEventFlagCB
+    else if (stub_va == 0x812B2A50u) _wi = 3;   // DelayThread
+    else if (stub_va == 0x812B2A80u) _wi = 4;   // DelayThreadCB
+    else if (stub_va == 0x812B1810u) _wi = 5;   // display wait/present stub
+    else if (stub_va == 0x812B1BA0u) _wi = 6;   // sceFiberSwitch
+    else if (stub_va == 0x812B2A40u) _wi = 7;   // StartTimer
+    else if (stub_va == 0x812B2A70u) _wi = 8;   // StopTimer
+    if (_wi >= 0 && _wn[_wi]++ < 60) {
+      printf("[WAITP] va=%08X #%d lr=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X fib=%08X blk=%08X ring:", stub_va, _wn[_wi], s->r[14], s->r[0], s->r[1], s->r[2], s->r[3], s->r[13], g_cur_fiber, g_cur_block);
+      for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]);
+      printf("\n"); fflush(stdout);
+    }
+  }
   if (g_gxmabi) {
     const gxm_abi_entry* _ge = gxm_abi_lookup(stub_va);
     if (_ge) {
