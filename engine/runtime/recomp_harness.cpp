@@ -368,6 +368,7 @@ static uint32_t g_dfe_pc[20] = {0}, g_dfe_r0[20] = {0}, g_dfe_sp[20] = {0}, g_df
 static uint32_t g_drg_pc[20] = {0}, g_drg_r0[20] = {0}, g_drg_sp[20] = {0}, g_drg_n = 0;
 static uint32_t g_dr_n = 0;
 static uint32_t g_blkcnt_total = 1;
+static uint64_t g_vtime_extra = 0;   // M815: virtual time advanced by guest sleeps (deterministic)
 static int g_mainthrd_n = 0;
 static std::chrono::steady_clock::time_point g_run_t0 = std::chrono::steady_clock::now();
 static int g_dec_calls = 0; static uint32_t g_dec_lastpct = 0;
@@ -982,7 +983,7 @@ static bool io_open_host(const std::string& raw, HostFd& h, std::string& used) {
 static uint64_t hle_tick_us() {
   // M814: DETERMINISTIC VIRTUAL CLOCK - derive from executed block count instead of the host wall clock.
   // Host time made boot nondeterministic (game timers/timeouts saw different real elapsed times each run).
-  return 0x100000ull + (uint64_t)g_blkcnt_total * 2ull;   // 2 us per executed guest block
+  return 0x100000ull + (uint64_t)g_blkcnt_total * 2ull + g_vtime_extra;   // 2 us per block + explicit sleep advances
 }
 static void canhle_check(uint32_t dst, uint32_t n, const char* k) {
   if (!n || n > 0x1000000u) return;
@@ -1872,8 +1873,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       r0 = hle_malloc((uint32_t)tot);
       if (g_calloc_n++ < 12) printf("[CALLOC] n=%u sz=%u -> %08X lr=%08X\n", n, sz, r0, s->r[14]);
       break; }
-    case 0x812B2A80u:                                                 // 18.4272: sceKernelDelayThreadCB (CriFs wait-loop lr=0x8127C0F8; 72,518 calls/100M blocks)
+    case 0x812B2A80u:                                                 // 18.4272: sceKernelDelayThreadCB
+      g_vtime_extra += (uint64_t)(s->r[0] ? s->r[0] : 1u);   // M815: deterministic virtual sleep (CriFs wait-loop lr=0x8127C0F8; 72,518 calls/100M blocks)
     case 0x812B2A50u: {                                               // sceKernelDelayThread -> cooperative yield (per-frame pacing)
+      g_vtime_extra += (uint64_t)(s->r[0] ? s->r[0] : 1u);   // M815: deterministic virtual sleep
       r0 = 0;
       if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
       if (g_in_fex == 1 && ((++g_yield_main_tick & 0x3F) == 0)) { g_yield_to_main = 1;
