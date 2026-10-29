@@ -1715,6 +1715,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_thr_log_n++ < 80) printf("[SEM] wait obj=%08X need=%u have=%u cur_thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]);
       if (tl_ht_tid) { for (;;) { if (g_shutdown) break; uint32_t _h = (g_sema.count(obj) ? g_sema[obj] : 0u); if (_h >= need) { g_sema[obj] = _h - need; break; } std::this_thread::sleep_for(std::chrono::microseconds(200)); } r0 = 0; break; }
       if (g_sem2_n++ < 60) { printf("[SEM2] wait obj=%08X need=%u have=%u thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]); fflush(stdout); }
+      { uint32_t _mytok = g_cur_thr ? g_cur_thr : (0xF0000000u | (g_cur_fiber & 0xFFFFFFu));
+        if (have < need && g_sema_owner.count(obj) && g_sema_owner[obj] == _mytok) {
+          static int _sr=0; if (_sr++ < 40) { printf("[SEMREC] self-re-wait obj=%08X need=%u have=%u tok=%08X lr=%08X blk=%08X n=%u -> success (no decrement)\n", obj, need, have, _mytok, s->r[14], g_cur_block, g_blkcnt_total); fflush(stdout); }
+          r0 = 0; break; } }
       if (have >= need) { if (it != g_sema.end()) it->second = have - need; { uint32_t _tok = g_cur_thr ? g_cur_thr : (0xF0000000u | (g_cur_fiber & 0xFFFFFFu)); g_sema_owner[obj] = _tok; g_sema_owner_lr[obj] = s->r[14]; } r0 = 0; }
       else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = 0; r0 = 0; }
       else {   // main-block-pump: main thread must BLOCK by running workers until sema satisfied
@@ -1728,7 +1732,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         uint32_t _c2 = (g_sema.count(obj) ? g_sema[obj] : 0u);
         if (_c2 >= need) g_sema[obj] = _c2 - need;
         if (g_thr_log_n++ < 80) printf("[SEM] main-block obj=%08X need=%u got=%u spins=%d\n", obj, need, _c2, _spins);
-        { static int _smw=0; if ((obj==0x50018000u || _c2<need) && _smw++ < 60) { uint32_t _ow = g_sema_owner.count(obj)?g_sema_owner[obj]:0u; uint32_t _olr = g_sema_owner_lr.count(obj)?g_sema_owner_lr[obj]:0u; printf("[SEMW] main obj=%08X need=%u got=%u spins=%d lr=%08X blk=%08X n=%u owner=%08X owner_lr=%08X\n", obj, need, _c2, _spins, s->r[14], g_cur_block, g_blkcnt_total, _ow, _olr); fflush(stdout); } }
+        { static int _smw=0; if ((obj==0x50018000u || _c2<need) && _smw++ < 60) { uint32_t _ow = g_sema_owner.count(obj)?g_sema_owner[obj]:0u; uint32_t _olr = g_sema_owner_lr.count(obj)?g_sema_owner_lr[obj]:0u; printf("[SEMW] main obj=%08X need=%u got=%u spins=%d lr=%08X blk=%08X n=%u owner=%08X owner_lr=%08X fex=%d\n", obj, need, _c2, _spins, s->r[14], g_cur_block, g_blkcnt_total, _ow, _olr, g_in_fex); printf("[SEMW]   pcring:"); for (int _k=0;_k<20;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 20u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
         r0 = 0;
       }
       break; }
