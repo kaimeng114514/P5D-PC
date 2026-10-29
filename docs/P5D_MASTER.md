@@ -483456,3 +483456,35 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M830 finished-fiber restart: exec loop pop pc=0 marks fiber finished; saved ctx stayed at 0x8116F758 / pc=0; old restart read user entry [fiber+0x84] from guest memory (cleared) -> switch no-op livelock; new g_fib_meta{entry=start stub 81206BDC, sp=context buffer top} recorded in fiber_load new-ctx branch + fib_restart() rebuilds FCtx r0=fiber/r13=meta.sp/r14=FFFFFFF0/r15=meta.entry, used in switch handler (where=switch) and slice handler (where=slice); [FIBMETA]/[FIBRST] logs; default 30M green (FIBMETA=2); validation out150m_m840.txt.
 
 LOOKUP: 0x81206BDC, 0x8116F758, 0x81198C0B -> §18.4374 [relevant: [SPLOOP] evidence + old-runtime fix], §18.4373 [relevant: livelock cycle], §18.4372 [relevant: appMessage update guard]
+
+
+M830 VALIDATION RESULT (`out150m_m840.txt`): the restart metadata is correct but **`[FIBRST]=0`** - the saved fiber1 context is
+never pc=0, so the restart path is not the one being exercised. The real loop is now visible in the switch records
+`[FIB-XFER-FEX]` / `[FIB-XFER]` (838 switches):
+```
+[FIBMETA] fiber=84836840 entry=81206BDC sp=848468D0
+[FIBMETA] fiber=848468E0 entry=81206BDC sp=84856970
+[FIB-XFER-FEX] cur=84836840 ... -> to=848468E0 tgtpc=00000000 tgtsp=00000000       (first start)
+... tgtpc = 81170C3E / 8115DA3A / 8116456E ... (normal app-init progress)
+top switch target contexts:  to=848468E0 tgtpc=812B2810 tgtsp=848568A0  x699
+                             to=848468E0 tgtpc=8127C0F8 tgtsp=84856580  x63
+```
+=> fiber1's saved context ends up at **`0x812B2810` = the `__stack_chk_fail` HLE stub** (sp 848568A0), and the switch keeps
+re-entering it. The harness canary handler (0x812B2810) repairs `[sp+4]` and forces a retry pc:
+`lr==0x8120767A -> 0x81207672`, **else the legacy fallback `0x8120682A` (jump into the fiber manager with a stale frame)**.
+So every canary failure jumps into the fiber-manager compare block with a mismatched stack -> later the saved context is the
+canary stub again -> repeated canary-fail/retry cycle (the 699 switches), plus the NOFN pcs (`8102A50E`, `846182D0`) come from
+those mismatched frames.
+
+M830b FIX: the canary-fail retry for the generic case now **returns to the caller's own continuation** `s->r[14]` (the instruction
+after the `blx __stack_chk_fail`) instead of jumping to `0x8120682A`, so the caller's epilogue (`pop {r4,pc}` etc.) runs with its
+own frame. Special-case `lr==0x8120767A -> 0x81207672` kept.
+VERIFIED: default 30M green with the fix: `exit=0, GXM=12, FSW=16, FRAMEDUMP=6000, [NOFN]=0, [DLIST]=6, [CHKFIX2]=0, [FIBRST]=0,
+BADMEM=0, [TABLE] blocks=229776, done: blocks=30000000 pc=81206894`.
+VALIDATION: 150M run launched (`out150m_m841.txt`).
+
+NEXT:
+1. read `out150m_m841.txt`: do `[FIB-XFER*]` target contexts stop showing `tgtpc=812B2810`? Does `[FIBRST]` appear / frame loop repeat?
+2. if canary failures still occur, log the exact lr sites (which functions fail) - the remaining mismatch source is probably a
+   clobbered canary slot in a specific function family;
+3. then frame loop -> `0x8119934A` -> `0x811CBE9A` -> `BeginScene`.

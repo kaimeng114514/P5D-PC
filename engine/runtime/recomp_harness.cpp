@@ -1115,7 +1115,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       // frame is popped (helper 0x81207632: fail blx at 0x81207676, lr=0x8120767A -> epilogue 0x81207672).
       { uint32_t _lr = s->r[14];
         if (_lr == 0x8120767Au) s->r[15] = 0x81207672u;      // helper 81207632 epilogue: add sp,#0xc; pop {r4,r5,pc}
-        else s->r[15] = 0x8120682Au;                          // legacy behaviour (scheduler compare block)
+        else s->r[15] = _lr;                                  // M831: continue in the caller's epilogue after the blx (the legacy 0x8120682A jump enters the fiber manager with a stale frame -> NOFN/corruption)
         if (g_chkfix_n++ < 20) { printf("[CHKFIX2] failpc_lr=%08X -> retry=%08X sp=%08X saved_lr=%08X fib=%08X\n", _lr, s->r[15], sp, slr, g_cur_fiber); fflush(stdout); } }
       s->r[0] = 0u;
     }
