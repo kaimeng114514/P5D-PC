@@ -43,6 +43,7 @@ static int g_thrst_n = 0;
 static int g_thrtrace = 0;   // 18.4232 trace off by default (P5D_THRTRACE=1 enables)
 static int g_thrtr_n = 0;
 static int g_thrpump_env = 0;
+static int g_thrpump3 = 0;   // M817: pump guest threads only at main-fiber idle points
 static int g_tidp_n = 0;   // 18.4228c
 static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
@@ -3381,7 +3382,7 @@ extern "C" void wr32_watch(uint32_t a, uint32_t v) {
 
 static void hle_thr_pump(RecState* s, int quantum) {
   if (g_cur_thr || g_hostthreads) return;   // 18.4239: in host-thread mode the guest threads run on their own host threads
-  if (g_in_fiber_exec && !g_thrpump_env) return;   // 18.4232: worker-trace mode (P5D_THRPUMP=1) allows pumping from the fiber world
+  if (g_in_fiber_exec && !g_thrpump_env && !g_thrpump3) return;   // 18.4232: worker-trace mode (P5D_THRPUMP=1) allows pumping from the fiber world
   if (g_thrtrace && g_thrst_n++ < 20) { printf("[THRST] n=%zu:", g_thr.size()); for (auto& _kv : g_thr) { auto& _t=_kv.second; printf(" %08X(a%d,r%d,w%d,obj=%08X,bits=%08X,sp=%08X)", _kv.first, _t.alive?1:0, _t.ready?1:0, _t.waiting?1:0, _t.wait_obj, _t.wait_bits, _t.ctx.r[13]); } printf("\n"); fflush(stdout); }   // 18.4228: allow the pump from the main-loop world (g_cur_fiber is the app fiber there); never nest inside thread execution
   for (auto& kv : g_thr) {
     HThread& t = kv.second;
@@ -3631,6 +3632,7 @@ int main(int argc, char** argv) {
   { const char* _bt = getenv("P5D_BOOT_THUNK"); g_boot_thunk = (_bt && atoi(_bt) != 0) ? 1 : 0; }
   { const char* _hx = getenv("P5D_HACKS"); g_hacks = (_hx && atoi(_hx) != 0) ? 1 : 0;
   { const char* _ht = getenv("P5D_HOSTTHREADS"); g_hostthreads = (_ht && atoi(_ht) != 0) ? 1 : 0; }
+  { const char* _ht3 = getenv("P5D_THRPUMP3"); g_thrpump3 = (_ht3 && atoi(_ht3) != 0) ? 1 : 0; }
   { const char* _tp = getenv("P5D_THRPUMP"); g_thrpump_env = (_tp && atoi(_tp) != 0) ? 1 : 0; }   // 18.4265: re-wire the fiber-world thread pump (was dead code since the env parse was missing)
     printf("[HACKS] semantic patch stack %s\n", g_hacks ? "ENABLED (P5D_HACKS=1)" : "DISABLED (clean baseline)"); fflush(stdout); }
   g_target_alloc = 0x8534B160u;   // 18.4194: trace who allocates the object whose +0x20 is null
@@ -4970,6 +4972,8 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.wait_mode, _t.ctx.r[15], _t.ctx.r[13], _t.ctx.r[0]); }
       { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[THRD]  ef:"); for (auto& ek : g_eflag) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%08X", ek.first, ek.second); if (_o>430) break; } printf("%s\n", _b); }
       fflush(stdout); }
+    if (g_thrpump3 && ((n & 0x3F) == 0) && !g_thr.empty() && ((nxt & ~1u) == 0x8120682Au || (nxt & ~1u) == 0x812067A0u)) {
+      hle_thr_pump(&s, 80); }
     if ((n % 5000) == 0) {
       { uint32_t _fw[4] = {0,0,0,0}; uint8_t* _fq0 = GP(0x816CC630u); if (_fq0) std::memcpy(_fw, _fq0, 16);
   printf("[FRAMEDUMP] n=%d flags=%08X t4=%u t8=%u ctr=%u pc=%08X blk=%08X sp=%08X fib=%08X gxm(b/e/p)=%d/%d/%d\n", n, _fw[0], _fw[1], _fw[2], _fw[3], nxt, g_cur_block, s.r[13], g_cur_fiber, g_gxm_begin_n, g_gxm_end_n, g_gxm_present_n); }
