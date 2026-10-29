@@ -2956,6 +2956,7 @@ static void build_all_blocks() {
 }
 // M785c: manual blocks for functions missed by IDA function bounds (only reachable via function pointers)
 static std::map<uint32_t, BlockFn> g_manual_blocks;
+static BlockFn gbn_raw(uint32_t pc);   // M827: lookup without manual overrides
 static uint32_t mb_81032CF8(RecState* s) {   // pop {r4, pc}
   uint32_t sp = s->r[13]; uint32_t r4 = 0, nx = 0;
   { uint8_t* q = GP(sp); if (q) std::memcpy(&r4, q, 4); }
@@ -3038,17 +3039,48 @@ static uint32_t mb_8118310A(RecState* s) {
   s->r[1] = r1;
   return (r1 != 0xCu) ? 0x811831D0u : 0x81183112u;
 }
+// M827: recursion guard for appMessage window update FUN_8102A500 (process 85AA3D9C cb0).
+// The update re-enters appProcess exec via its window handler callback (lr=8116F758 repeatedly, sp -0x20 per level),
+// recursing until the return path corrupts (NOFN pc=8102A50E). Guard: after 3 nested entries, simulate an immediate
+// return to the caller; the real function epilogue block (0x8102A654) decrements the depth.
+static int g_a500_depth = 0;
+static uint32_t mb_8102A500(RecState* s) {
+  if (g_a500_depth >= 1) {
+    static int _n = 0;
+    if (_n++ < 30) { printf("[A500GUARD] depth=%d n=%u sp=%08X lr=%08X -> skip recursive appMessage update\n", g_a500_depth, g_blkcnt_total, s->r[13], s->r[14]); fflush(stdout); }
+    s->r[0] = 0;
+    return s->r[14];
+  }
+  g_a500_depth++;
+  BlockFn fn = gbn_raw(0x8102A500u);
+  if (!fn) { g_a500_depth--; s->r[0] = 0; return s->r[14]; }
+  return fn(s);
+}
+static uint32_t mb_8102A654(RecState* s) {   // adds r0,r4,#0; pop.w {r4,r5,r6,r7,r8,sb,sl,pc}
+  if (g_a500_depth > 0) g_a500_depth--;
+  BlockFn fn = gbn_raw(0x8102A654u);
+  if (!fn) { s->r[0] = s->r[4]; return s->r[14]; }
+  return fn(s);
+}
 static void init_manual_blocks(void) {
   g_manual_blocks[0x81032CF8u] = (BlockFn)mb_81032CF8;
   g_manual_blocks[0x81032CC8u] = (BlockFn)mb_81032CC8;
   g_manual_blocks[0x81181D90u] = (BlockFn)mb_81181D90;
   g_manual_blocks[0x8118310Au] = (BlockFn)mb_8118310A;
   g_manual_blocks[0x81032CEAu] = (BlockFn)mb_81032CEA;
+  g_manual_blocks[0x8102A500u] = (BlockFn)mb_8102A500;
+  g_manual_blocks[0x8102A654u] = (BlockFn)mb_8102A654;
 }
 static BlockFn gbn(uint32_t pc) {
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
 
   pc &= ~1u;   // 18.3939: normalize Thumb bit (block table is keyed by even instruction addresses)
+  auto it = std::lower_bound(g_all.begin(), g_all.end(), pc, [](const GBlk&a, uint32_t v){ return a.va < v; });
+  if (it != g_all.end() && it->va == pc) return it->fn;
+  return nullptr;
+}
+static BlockFn gbn_raw(uint32_t pc) {
+  pc &= ~1u;
   auto it = std::lower_bound(g_all.begin(), g_all.end(), pc, [](const GBlk&a, uint32_t v){ return a.va < v; });
   if (it != g_all.end() && it->va == pc) return it->fn;
   return nullptr;
