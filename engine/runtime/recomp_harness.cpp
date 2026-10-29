@@ -2005,7 +2005,12 @@ static void fiber_save(RecState* s) {
     { auto _fs = g_fib_stack.find(g_cur_fiber);
       if (_fs != g_fib_stack.end()) { uint32_t _lo = _fs->second.first, _hi = _fs->second.first + _fs->second.second; uint32_t _sp = s->r[13];
         if (_sp >= _lo && _sp < _hi) { if (g_spown_ok_n++ < 6) { printf("[SPOWN-OK] fiber=%08X sp=%08X in [%08X,%08X) pc=%08X\n", g_cur_fiber, _sp, _lo, _hi, s->r[15]); fflush(stdout); } }
-        else if (g_spown_n++ < 40) { printf("[SPOWN-VIOL] fiber=%08X sp=%08X outside [%08X,%08X) pc=%08X lr=%08X blk=%08X\n", g_cur_fiber, _sp, _lo, _hi, s->r[15], s->r[14], g_cur_block); fflush(stdout); } } } g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr; if (g_switch_save_pc) { c.r[15] = g_switch_save_pc; g_switch_save_pc = 0; } if (g_cur_fiber == 0x848468E0u) fw742_note("SAVE", g_cur_fiber, c.r[15], c.r[13], c.r[14], c.r[4]);
+        else if (g_spown_n++ < 40) { printf("[SPOWN-VIOL] fiber=%08X sp=%08X outside [%08X,%08X) pc=%08X lr=%08X blk=%08X\n", g_cur_fiber, _sp, _lo, _hi, s->r[15], s->r[14], g_cur_block); fflush(stdout); } } } g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr; if (g_switch_save_pc) { c.r[15] = g_switch_save_pc; g_switch_save_pc = 0; }
+    if ((c.r[15] & ~1u) == 0x8102A500u || (c.r[15] & ~1u) == 0x8116F758u || (c.r[15] & ~1u) == 0x81198C8Eu) {
+      static int _sp_n = 0;
+      if (_sp_n++ < 30) { printf("[SAVE-SUSP] #%d fiber=%08X pc=%08X sp=%08X lr=%08X curblk=%08X infex=%d ring:", _sp_n, g_cur_fiber, c.r[15], c.r[13], c.r[14], g_cur_block, g_in_fiber_exec);
+        for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+    if (g_cur_fiber == 0x848468E0u) fw742_note("SAVE", g_cur_fiber, c.r[15], c.r[13], c.r[14], c.r[4]);
     if (((c.r[15] & ~1u) >= 0x8127C0C0u && (c.r[15] & ~1u) <= 0x8127C100u) && g_dly_save_n++ < 20) {
       uint32_t _w0=0,_w1=0; uint8_t* _q=GP(c.r[13]); if(_q) std::memcpy(&_w0,_q,4); _q=GP(c.r[13]+4u); if(_q) std::memcpy(&_w1,_q,4);
       if ((c.r[15] & ~1u) != g_dly_last_pc || c.r[13] != g_dly_last_sp || _w0 != g_dly_last_w0 || _w1 != g_dly_last_w1) {
