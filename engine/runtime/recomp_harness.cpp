@@ -866,7 +866,7 @@ static void pending_req_scan() {
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
   { uint32_t _ap = pcv & ~1u;
-    if (_ap==0x81172EFCu || _ap==0x8116F7CAu || _ap==0x81193344u || _ap==0x81007F24u || _ap==0x81173088u || _ap==0x81158DF0u) {
+    if (_ap==0x81172EFCu || _ap==0x8116F7CAu || _ap==0x81193344u || _ap==0x81007F24u || _ap==0x81173088u || _ap==0x81158DF0u || _ap==0x81082A78u || _ap==0x81042520u || _ap==0x8119320Cu || _ap==0x8119343Au) {
       static std::map<uint32_t,int> _ac; int _c = ++_ac[_ap];
       if (_c <= 6) { printf("[APPFN] pc=%08X n=%u fib=%08X thr=%08X cnt=%d\n", _ap, g_blkcnt_total, g_cur_fiber, g_cur_thr, _c); fflush(stdout); } } }
   { static std::chrono::steady_clock::time_point _t0 = std::chrono::steady_clock::now(); static uint32_t _n0 = 0;
@@ -980,10 +980,9 @@ static bool io_open_host(const std::string& raw, HostFd& h, std::string& used) {
   return false;
 }
 static uint64_t hle_tick_us() {
-  static uint64_t t0 = 0;
-  if (!t0) t0 = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  return now - t0 + 0x100000ull;
+  // M814: DETERMINISTIC VIRTUAL CLOCK - derive from executed block count instead of the host wall clock.
+  // Host time made boot nondeterministic (game timers/timeouts saw different real elapsed times each run).
+  return 0x100000ull + (uint64_t)g_blkcnt_total * 2ull;   // 2 us per executed guest block
 }
 static void canhle_check(uint32_t dst, uint32_t n, const char* k) {
   if (!n || n > 0x1000000u) return;
@@ -3307,6 +3306,7 @@ extern "C" void wr16_watch(uint32_t a, uint32_t v) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  if (a == 0x815554C4u || a == 0x815554C8u || a == 0x815554C0u) { static int _pw=0; if (_pw++ < 200) { printf("[PROCWR] a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   if (a == 0x81513DECu) { static int _cw=0; if (_cw++ < 24) { printf("[CBWR] v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   if (g_sw8_on && ((a >= g_stkw_lo && a < g_stkw_hi) || (a >= 0x84856500u && a < 0x848565A0u))) stkw_note("w32", a, v, 32);
   if (g_canw_on) { uint32_t _c = 0; { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); }
