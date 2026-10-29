@@ -694,7 +694,20 @@ static int assert_hle(RecState* s, uint32_t pcv) {   // 18.4205: platform ASSERT
   uint32_t m = s->r[2], f = s->r[3];
   if (m >= 0x80000000u) { uint8_t* q = GP(m); if (q) for (int i = 0; i < 159 && q[i]; ++i) msg[i] = (char)q[i]; }
   if (f >= 0x80000000u) { uint8_t* q = GP(f); if (q) for (int i = 0; i < 159 && q[i]; ++i) file[i] = (char)q[i]; }
-  if (g_assert_n++ < 40) { printf("[ASSERT] #%d msg='%s' file='%s' lr=%08X sp=%08X fib=%08X\n", g_assert_n, msg, file, s->r[14], s->r[13], g_cur_fiber); fflush(stdout); }
+  static long long _acnt = 0; ++_acnt;
+  static unsigned long long _prev3 = 0, _prevblk = 0;
+  if ((_acnt % 1000000) == 0) {
+    printf("[ASSERTRATE] n=%lld loop3=%u (+%llu) blk=%llu (+%llu) pc15=%08X lr=%08X sp=%08X\n",
+           _acnt, g_loop_cnt[3], (unsigned long long)g_loop_cnt[3] - _prev3,
+           (unsigned long long)g_blkcnt_total, (unsigned long long)g_blkcnt_total - _prevblk,
+           s->r[15], s->r[14], s->r[13]);
+    _prev3 = g_loop_cnt[3]; _prevblk = g_blkcnt_total; fflush(stdout);
+  }
+  if (_acnt <= 30 || (_acnt & 0x3FFFFFF) == 0) {
+    printf("[ASSERT] #%lld msg='%s' file='%s' lr=%08X sp=%08X fib=%08X ring:", _acnt, msg, file, s->r[14], s->r[13], g_cur_fiber);
+    for (int _k = 0; _k < 24; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]);
+    printf("\nstack:"); for (int _k = 0; _k < 24; ++_k) { uint32_t _w = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_k * 4u); if (_q) std::memcpy(&_w, _q, 4); printf(" %08X", _w); }
+    printf("\n"); fflush(stdout); }
   s->r[0] = 0u; s->r[15] = s->r[14];
   return 1;
 }
