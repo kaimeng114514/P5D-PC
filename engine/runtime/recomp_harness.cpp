@@ -1027,6 +1027,7 @@ static void canhle_check(uint32_t dst, uint32_t n, const char* k) {
       static int _n = 0; if (_n++ < 300) { printf("[CANWHLE] %s dst=%08X n=%u slot=%08X blk=%08X lr=%08X\n", k, dst, n, kv.first, g_cur_block, g_cur_hle_ret_lr); fflush(stdout); }
       break; } }
 }
+static uint32_t canary_retry_pc(RecState* s);   // M831 (defined near fiber_load)
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   hw_check(stub_va);
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
@@ -1115,7 +1116,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       // frame is popped (helper 0x81207632: fail blx at 0x81207676, lr=0x8120767A -> epilogue 0x81207672).
       { uint32_t _lr = s->r[14];
         if (_lr == 0x8120767Au) s->r[15] = 0x81207672u;      // helper 81207632 epilogue: add sp,#0xc; pop {r4,r5,pc}
-        else s->r[15] = _lr;                                  // M831: continue in the caller's epilogue after the blx (the legacy 0x8120682A jump enters the fiber manager with a stale frame -> NOFN/corruption)
+        else s->r[15] = canary_retry_pc(s);                    // M831: skip the never-returning fail path -> resume at the passing epilogue (the legacy 0x8120682A jump entered the fiber manager with a stale frame; raw lr enters the next function)
         if (g_chkfix_n++ < 20) { printf("[CHKFIX2] failpc_lr=%08X -> retry=%08X sp=%08X saved_lr=%08X fib=%08X\n", _lr, s->r[15], sp, slr, g_cur_fiber); fflush(stdout); } }
       s->r[0] = 0u;
     }
@@ -2033,6 +2034,33 @@ static bool fib_restart(FCtx& c, uint32_t fiber, const char* where) {
   c.r[15] = mi->second.entry;
   if (g_fibrst_n++ < 20) { printf("[FIBRST] fiber=%08X entry=%08X sp=%08X where=%s\n", fiber, c.r[15], c.r[13], where); fflush(stdout); }
   return true;
+}
+// M831: find the passing-path epilogue of a stack-canary check given lr (instruction after `blx __stack_chk_fail`).
+// Typical Thumb-2 layout:  cmp r1,r2 ; bne fail ; <epilogue: add sp,#N / pop {..pc}> ; fail: blx __stack_chk_fail ; nop
+// We scan backwards over the epilogue to the bne and return its fall-through address (the epilogue start).
+static uint32_t canary_retry_pc(RecState* s) {
+  uint32_t lr = s->r[14];
+  if (lr < 0x80600000u) return lr;
+  { uint8_t* q = GP(lr - 2u); if (!q) return lr; }
+  uint32_t B = lr - 4u;   // assume 32-bit BLX
+  { uint16_t hw = 0; uint8_t* q = GP(lr - 2u); if (q) std::memcpy(&hw, q, 2);
+    if ((hw & 0xFF80u) == 0x4780u || (hw & 0xFF87u) == 0x4780u) B = lr - 2u; }   // 16-bit blx rN
+  uint32_t p = B;
+  for (int i = 0; i < 16; ++i) {
+    if (p < 0x80600000u + 4u) break;
+    uint16_t hw = 0; { uint8_t* q = GP(p - 2u); if (q) std::memcpy(&hw, q, 2); else break; }
+    if (hw == 0u) break;
+    if ((hw & 0xFF00u) == 0xB000u) { p -= 2u; continue; }              // add sp, #imm
+    if ((hw & 0xFF00u) == 0xBD00u) { p -= 2u; continue; }              // pop {...,pc} (16-bit)
+    if ((hw & 0xFF00u) == 0xBC00u) { p -= 2u; continue; }              // pop {...,lr} (16-bit)
+    if (hw == 0xE8BDu || hw == 0xE92Du) { p -= 2u; continue; }          // pop.w / push.w prefix halfword
+    if ((hw & 0xF000u) == 0xD000u) { uint32_t r = p + 2u;              // conditional branch: pass-through = start of epilogue
+      if (g_chkfix_n < 8) printf("[CHKFIX3] lr=%08X B=%08X scan->bne@%08X retry=%08X hw=%04X\n", lr, B, p, r, hw);
+      return r; }
+    break;
+  }
+  if (g_chkfix_n < 8) printf("[CHKFIX3] lr=%08X B=%08X scan failed -> retry=lr\n", lr, B);
+  return lr;
 }
 static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg) {
   { auto _mi = g_fctx.find(fiber); if (_mi != g_fctx.end() && ((_mi->second.r[15] & ~1u) >= 0x8127C0C0u && (_mi->second.r[15] & ~1u) <= 0x8127C100u)) {
