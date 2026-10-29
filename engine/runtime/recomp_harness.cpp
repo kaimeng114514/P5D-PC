@@ -2953,6 +2953,14 @@ static void hw_check(uint32_t pcv) {
         { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[TDUMP]  eflags:"); for (auto& ek : g_eflag) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%08X", ek.first, ek.second); if (_o>440) break; } printf("%s\n",_b); }
         { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[TDUMP]  semas:"); for (auto& sk : g_sema) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%u", sk.first, sk.second); if (_o>440) break; } printf("%s\n",_b); }
         fflush(stdout); } } }
+  { static uint32_t _fd=0, _hc=0; _hc++; if ((_hc % 100000u) == 0u && _fd++ < 14) {
+      printf("[FDUMP] hc=%u cur_fib=%08X list=%zu:", _hc, g_cur_fiber, g_fiber_list.size());
+      for (size_t _i=0;_i<g_fiber_list.size() && _i<8;++_i) printf(" f%zu=%08X", _i, g_fiber_list[_i]); printf("\n");
+      for (size_t _i=0;_i<g_fiber_list.size() && _i<8;++_i) { uint32_t _fb=g_fiber_list[_i]; auto _it=g_fctx.find(_fb);
+        printf("[FDUMP]  f%zu=%08X top_old=%08X fctx=%d", _i, _fb, 0xA0E00000u - (uint32_t)_i*0x800000u, (_it!=g_fctx.end())?1:0);
+        if (_it!=g_fctx.end()) printf(" pc=%08X sp=%08X lr=%08X", _it->second.r[15], _it->second.r[13], _it->second.r[14]);
+        printf("\n"); }
+      printf("[FDUMP]  all fctx:"); for (auto& _kv : g_fctx) printf(" [%08X pc=%08X sp=%08X]", _kv.first, _kv.second.r[15], _kv.second.r[13]); printf("\n"); fflush(stdout); } }
   if (!g_hw_handle) return;
   uint32_t _st=0,_p=0,_sz=0; uint8_t* _q;
   _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st,_q,4); _q=GP(g_hw_handle+0x8cu); if(_q) std::memcpy(&_p,_q,4); _q=GP(g_hw_handle+0x90u); if(_q) std::memcpy(&_sz,_q,4);
