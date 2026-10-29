@@ -11,67 +11,23 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 
 ---
 
-## 项目进度总览（2026-10-29，诚实估计：整体约 30–35%）
+## 当前状态（2026-10-29，持续更新；整体约 30–35%）
 
-| 目标模块 | 完成度 | 现状（证据见 `docs/P5D_MASTER.md`） |
+| 模块 | 完成度 | 当前状态 |
 |---|---|---|
-| ARM/Thumb → x86-64 **AOT 静态重编译** | **85–90%** | 12,921 函数 / 约 22 万基本块已可翻译、编译、原生执行；不靠逐指令运行时模拟，语义仍在用差分测试打磨 |
+| ARM/Thumb → x86-64 **AOT 静态重编译** | 85–90% | 12,921 函数 / 约 22 万基本块可翻译、编译、原生运行；不靠逐指令运行时模拟，语义仍在用差分测试打磨 |
 | 原版 eboot/SELF **原样加载** | ~85% | ELF 段映射、导入表、NID 解析可用；30M guest 块执行 `exit=0` |
 | **HLE 系统 API 接管** | 50–60% | 内存/线程/fiber/文件骨架工作；导入 API 仍有大量返回 0 的桩；12 个 Fios API 已映射 |
-| **GXM → Vulkan** | **25–30%** | 真实桥接层（`gxm_abi.o` + 旧后端 `gxm_sce.o`/`gxm_vk.o`）已链接；游戏真实 GXM 初始化序列 **60 次调用全部 ret=0**、Vulkan 后端初始化成功、shader patcher 注册循环已有 **2550 次真实 ABI 调用**；但 BeginScene/EndScene/Present 仍为 0 次，尚未画出第一帧 |
-| 资源 / 文件系统 | ~30% | CPK 挂载与读取代码在；guest 虚拟文件注册表可建立；**payload（type 0→0xC）加载通路缺失**（当前阻塞点） |
-| 线程 / fiber | 60–65% | 配对模式 `exit=0`、无漂移；仍依赖多个 env 开关，默认模式处于平台期 |
-| 音频（SceNgs） | 3–5% | 未开始 |
-| 输入（SceCtrl/SceTouch） | ~10% | 无实际事件注入 |
-| 视频解码 | 0% | 未开始 |
-| 场景链 S0→S4→RESULT | **0/7** | 尚未到达第一个 BeginScene |
-| 单 exe 打包 | ~40% | 仓库/许可/发布审计/CI 在；未产出单文件成品 |
-| 移动端 | 0% | 未开始 |
+| **GXM → Vulkan** | 25–30% | 真实桥接层（`gxm_abi.o` + 旧后端 `gxm_sce.o`/`gxm_vk.o`）已链接；GXM 初始化 60 次调用全部 `ret=0`、Vulkan 后端初始化成功、shader patcher 注册出现 2550 次真实 ABI 调用；**BeginScene/EndScene/Present 仍为 0 次，尚未画出第一帧** |
+| 资源 / 文件系统 | ~30% | CPK 挂载与读取代码在；guest 虚拟文件注册表可建立；**payload 加载通路缺失（当前阻塞）** |
+| 线程 / fiber | 60–65% | 配对模式 `exit=0`、无漂移；仍依赖多个 env 开关 |
+| 音频（SceNgs）/ 输入（SceCtrl、SceTouch）/ 视频解码 | 3–5% / ~10% / 0% | 桩或未开始 |
+| 场景链 S0→S4→RESULT | 0/7 | 尚未到达第一个 BeginScene |
+| 单 exe 打包 / 移动端 | ~40% / 0% | 仓库/许可/审计/CI 在，未产出单文件成品；移动端未开始 |
 
-**一句话**：最难的「原版二进制 + AOT 引擎」骨架已经立住并能跑真实 GXM 初始化；但渲染还差最后一脚，场景链尚未开始。
+**当前阻塞**：游戏向自己的 guest 虚拟文件系统请求 `GFDPSP2PRESET.GSC`（GFD shader preset 容器）。VFS 自动注册了该名字（`FUN_81181A3C`，条目 `type=0`、`size=-1`，仅名字与哈希），但没有任何子系统把它升级为 `type=0xC`（数据指针 `+0x94` / 尺寸 `+0x88`）；应消费该记录的 worker `0x811830E2` 从未被调用（无 BL、无间接调用、无尾跳转）。游戏因此停在等待该流对象完成的循环中；此前观测到的 `state=0→3` 已确认是 harness 遗留 `uncond3` 修补（宿主侧 `memcpy`）伪造的，并非游戏行为。当前零崩溃基线：默认配置 30M guest 块 `exit=0, BADMEM=0, GXM=12, FSW=16, FRAMEDUMP=6000`；`kb_audit / verify_doc_integrity / run_all_regressions` 全绿，`release_audit` PASS。
 
-## 本项目与 Vita3K 模拟器的区别（简表）
-
-> 完整说明见 **[docs/COMPARISON_VITA3K.md](docs/COMPARISON_VITA3K.md)**。
-> 一句话：**Vita3K 是"模拟整台 Vita"的通用模拟器；本项目是"把 P5D 这一款游戏的原版二进制静态重编译成 PC 原生代码"的移植。**
-
-| 维度 | 本项目（P5D 静态重编译移植） | Vita3K（通用 PS Vita 模拟器） |
-|---|---|---|
-| 本质/目标 | 单个游戏的**静态重编译移植**，原版代码原生绘制 | 通用**系统模拟器**，按兼容性列表运行大量游戏 |
-| CPU | 启动前一次性 AOT 翻译为 x86-64 原生代码，执行路径无运行时 JIT；解释器仅 fallback | 运行时动态重编译（JIT）+ 解释器 |
-| 系统层 | 按 NID 的 **HLE 兼容层**，只实现本作实际用到的 API；不需要固件 | 模拟 Vita 内核/服务/模块，通常需要玩家自备固件 |
-| GPU | 在 **GXM API 层**映射到 Vulkan，不模拟 GPU 命令流 | 模拟 SceGxm/GPU 到宿主 OpenGL/Vulkan |
-| 着色器 | 玩家数据中的 GSC/GXP **离线一次性翻译为 SPIR-V** 并缓存 | 运行时翻译着色器并缓存 |
-| 交付 | 单一引擎可执行文件 + 玩家自备游戏数据 + 本地缓存 | 模拟器 + 玩家自备固件/游戏 |
-| 成熟度 | 实验性，尚未进入渲染帧循环（见下方状态） | 多年社区项目，兼容性广 |
-
-两者共性：都需要玩家自备正版游戏数据，都要重新实现 Sce 系统 API，都要把 GXM 翻译到宿主 GPU。
-
-## 当前状态（2026-10-29，持续更新）
-
-| 模块 | 状态 |
-|---|---|
-| ARM/Thumb → x86-64 AOT 重编译 | 12,921 个函数可翻译、编译、原生运行；语义仍在用差分测试逐项打磨 |
-| 原版 eboot/SELF 加载（ELF 段映射、导入表、NID 解析） | 可加载、可执行，HLE 按 NID 接管 |
-| 文件系统（CPK 挂载、Fios/IO 模拟） | 可挂载 `data.cpk` / `vita.cpk`；资源数据通路仍在打通中 |
-| 内存 / 线程 / fiber / 同步原语 HLE | 协作式模型可跑通；实验路径支持一 guest 线程 = 一宿主线程 |
-| GXM → Vulkan | 真实桥接层已集成：`gxm_abi.o` 把 100/100 个导入 GXM stub 映射为 guest ABI 包装，旧原生后端（`engine/gxm/`，5,694 行 Vulkan 实现 + 167 个 SceGxm API）执行真实初始化；**尚未到达 BeginScene/绘制循环** |
-| 音频（SceNgs）/ 输入（SceCtrl、SceTouch）/ 视频解码 | 桩/部分实现，待正式接入 |
-| 场景流程 S0→RESULT | 0/7，尚未进入帧循环 |
-
-当前调试进度（里程碑持续记录于 `docs/P5D_MASTER.md`，最新为 §18.4326 / M781）：
-
-- **真实 GXM 初始化已跑通**：`[VKMARK] Vulkan` 后端初始化；`sceGxmInitialize / MapMemory / CreateContext / CreateRenderTarget / ColorSurfaceInit / SyncObjectCreate / TextureInitLinear` 等 60 次调用全部 `ret=0`；随后 shader patcher 注册循环出现 2550 次真实 ABI 调用（`ShaderPatcherCreateFragmentProgram`、`ProgramFindParameterByName` 等）。
-- **当前唯一阻塞：guest 虚拟文件系统的资源负载通路**。游戏向自己的 VFS 请求 `GFDPSP2PRESET.GSC`（GFD shader preset 容器）；VFS 自动注册了该名字（`FUN_81181A3C`，条目 `type=0`、`size=-1`，仅名字与哈希），但**没有子系统把它升级为 `type=0xC`（带数据指针 `+0x94` / 尺寸 `+0x88`）**；应消费该记录的 worker `0x811830E2` 从未被调用；于是 GFD 工厂拿到零尺寸流，创建 type-3 零边界对象，`FUN_811DE912` 返回 -1，`byteswap` 尺寸 -1 ⇒ `0x3FFFFFFF` 次迭代卡死。
-- **已精确定位的证据链**：注册插入块 `0x81181BB2`（`wr32_watch` 归因）；auto-register 路径 `0x81182EC6`；worker 语义（从条目 `+0x94/+0x88` 填流对象后置 `state=3`）已反汇编确认。**M783 重要更正**：此前追踪的 `state=0→3` 并非游戏行为，而是我们 harness 里遗留的 `uncond3` 修补（`recomp_harness.cpp` 约 2653/3917 行，宿主侧 `memcpy` 直接写 guest 内存，绕过全部 `wr8/wr16/wr32/wr64` 监视）——真实情况是游戏在等待该虚拟文件记录被消费，而 worker `0x811830E2` 从未被调用（无 BL、无间接调用、无尾跳转）；该修补伪造 `state=3` 后，GFD 工厂拿到零数据流才引出巨型 byteswap。
-- **零崩溃基线保持**：默认配置 30M guest 块 `exit=0, BADMEM=0, GXM=12, FSW=16, FRAMEDUMP=6000`；`kb_audit / verify_doc_integrity / run_all_regressions` 全绿，`release_audit` PASS。
-
-近期里程碑（详细证据与历史纠正在 `docs/P5D_MASTER.md`）：
-- M772–M773：定位巨型 byteswap 根因 = `FUN_811DE912` 返回 -1 被当作 byteswap 尺寸；type-3 零边界来自 GFD 工厂参数全零。
-- M774–M775：Fios 句柄 watch 证明 "done 但未填数据指针/尺寸"；更正 `FHOpen=0`（此前 12288 为 `g_fh_id` 初值）。
-- M776–M777：锁定缺失资源名 `GFDPSP2PRESET.GSC`；解码应填数据的 worker `0x811830E2` 语义。
-- M778–M780：解码虚拟文件注册函数 `FUN_81181A3C` 与 auto-register 路径；用写监视精确抓到插入块 `0x81181BB2`。
-- M781：对象级写监视证明 `state=3` 写入绕过 `wr16/wr32`，worker 从未被调用——当前正在用字节级写监视收网。
+> 详细证据、里程碑与历史纠正在 [docs/P5D_MASTER.md](docs/P5D_MASTER.md)。
 
 ## 仓库结构
 
