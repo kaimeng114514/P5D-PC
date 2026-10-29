@@ -2771,8 +2771,31 @@ static uint32_t mb_81032CEA(RecState* s) {   // M786: transparent trampoline (fu
   }
   return fp & ~1u;
 }
+static uint32_t mb_81032CC8(RecState* s) {   // M789: canary-checked epilogue of a large function (tail branch target)
+  // movs r0,#1; r2=[sp+0x40]; r1=[0x812B414C]; cmp; bne 0x81032CE4; add sp,#0x44; vpop {s16-s25}; pop {r4-r8,sb,sl,fp,pc}
+  uint32_t sp = s->r[13];
+  uint32_t canary = 0; { uint8_t* q = GP(0x812B414Cu); if (q) std::memcpy(&canary, q, 4); }
+  uint32_t r2v = 0; { uint8_t* q = GP(sp + 0x40u); if (q) std::memcpy(&r2v, q, 4); }
+  s->r[0] = 1u;
+  if (canary != r2v) return 0x81032CE4u;
+  sp += 0x44u;
+  uint32_t w[10]; for (int k = 0; k < 10; ++k) { w[k] = 0; uint8_t* q = GP(sp + (uint32_t)k * 4u); if (q) std::memcpy(&w[k], q, 4); }
+  s->d[8]  = ((uint64_t)w[1]  << 32) | w[0];
+  s->d[9]  = ((uint64_t)w[3]  << 32) | w[2];
+  s->d[10] = ((uint64_t)w[5]  << 32) | w[4];
+  s->d[11] = ((uint64_t)w[7]  << 32) | w[6];
+  s->d[12] = ((uint64_t)w[9]  << 32) | w[8];
+  sp += 40u;
+  { uint32_t r[8]; for (int k = 0; k < 8; ++k) { r[k] = 0; uint8_t* q = GP(sp + (uint32_t)k * 4u); if (q) std::memcpy(&r[k], q, 4); }
+    s->r[4]=r[0]; s->r[5]=r[1]; s->r[6]=r[2]; s->r[7]=r[3]; s->r[8]=r[4]; s->r[9]=r[5]; s->r[10]=r[6]; s->r[11]=r[7]; }
+  sp += 32u;
+  uint32_t nx = 0; { uint8_t* q = GP(sp); if (q) std::memcpy(&nx, q, 4); }
+  s->r[13] = sp + 4u;
+  return nx;
+}
 static void init_manual_blocks(void) {
   g_manual_blocks[0x81032CF8u] = (BlockFn)mb_81032CF8;
+  g_manual_blocks[0x81032CC8u] = (BlockFn)mb_81032CC8;
   g_manual_blocks[0x81032CEAu] = (BlockFn)mb_81032CEA;
 }
 static BlockFn gbn(uint32_t pc) {
