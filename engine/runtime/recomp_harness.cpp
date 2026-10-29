@@ -2750,6 +2750,7 @@ static void build_all_blocks() {
 }
 // M785c: manual blocks for functions missed by IDA function bounds (only reachable via function pointers)
 static std::map<uint32_t, BlockFn> g_manual_blocks;
+static std::map<uint32_t,uint32_t> g_canmap; static int g_canw_n = 0;
 static uint32_t mb_81032CF8(RecState* s) {   // pop {r4, pc}
   uint32_t sp = s->r[13]; uint32_t r4 = 0, nx = 0;
   { uint8_t* q = GP(sp); if (q) std::memcpy(&r4, q, 4); }
@@ -3088,6 +3089,9 @@ extern "C" void wr16_watch(uint32_t a, uint32_t v) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { static uint32_t _c = 0; static bool _ci = false; if (!_ci) { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); _ci = true; }
+    if (v == _c) { g_canmap[a] = v; }
+    else { auto _it = g_canmap.find(a); if (_it != g_canmap.end() && g_canw_n++ < 300) { printf("[CANWCORRUPT] a=%08X v=%08X was=%08X blk=%08X\n", a, v, _it->second, g_cur_block); fflush(stdout); } } }
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW32] a=%08X off=%03X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _lw=0; if ((a == 0x816CDB8Cu || a == 0x816CDB88u || a == 0x816CDB90u) && _lw++ < 40) { printf("[REGWR] a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   { static int _ew=0; if (a >= 0x84D19A00u && a < 0x84D19C00u && _ew++ < 60) { printf("[ENTWR] a=%08X off=%03X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D19A60u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
