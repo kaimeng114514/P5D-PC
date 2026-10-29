@@ -483620,3 +483620,20 @@ NEXT:
 1. read `out150m_m844.txt` `[IDREG]` entries: who calls `0x8102A500` (from_blk/lr/sp), and whether the 6th process update is re-entered from a nested chain;
 2. instrument that call chain's stack frames (the first 0x20 anomaly) and make the nested return balanced;
 3. then frame loop -> `0x8119934A` -> `0x811CBE9A` -> `BeginScene`.
+
+
+M832 IDREG RESULT (`out150m_m844.txt`, only 7 indirect-call events): the appMessage update `0x8102A500` is entered **exactly ONCE**, via a normal call:
+```
+[IDREG] #1 target=8102A500 from_blk=8116F748 lr=8116F758 sp=848568F0 fib=848468E0 reg0=85AA3D9C
+        ring: 8116FA64 811DB24E 811DB256 811DB25A 811DB1F0 ... 811DB244 8116FA5C 8116F748      (exec <- runner <- scheduler, the only call)
+[IDREG] runner 0x8116FA5C: 6 calls, all from_blk=811DB244 lr=811DB24E sp=84856900 (the scheduler task steps; reg0 = the six process objects)
+[IDREG] exec 0x8116F748: no further entries (only the 6 runner calls' exec)
+```
+=> there is **no nested indirect call** re-entering the update/exec/runner. The second `[RECUR]` entry and the 0x20-off frames (`[SPLOOP]` #6-#8 at sp=848568D0 / `[sp]=815554C0` (exec's r4 constant) / `[sp+4]=846182D0` (6th process pointer))
+therefore come from a **direct branch or a fiber-context resume** to `0x8102A500` / `0x8116F758`, not from a call. The `[SPLOOP]` values look like exec's exposed registers
+(`r4=0x815554C0`, `r0=0x846182D0`) spilled at a context-save point.
+NEXT: add "how did we get here" logging at the manual block / dispatch for pc `0x8102A500` and `0x8116F758`:
+record the previous block pc and the ring (already have `[RECUR]`'s `pcring` - its 2nd entry's ring starts with the fiber0 loop `81198BEA 811E5CDA 812B2CEA ... 812B1BA0`, i.e. a
+**fiber-resume** path), and identify the saved context that resumes at `0x8102A500` (check all `g_fctx` entries whose `r15 == 0x8102A500` at switch time). If a fiber
+is being created/restored with pc = a function entry that expects a call frame, the switch save/restore is wrong for that context.
+Then: frame loop -> `0x8119934A` -> `0x811CBE9A` -> `BeginScene`.
