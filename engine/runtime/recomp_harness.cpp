@@ -3125,9 +3125,17 @@ static int g_a500_depth = 0;
 static uint32_t mb_8102A500(RecState* s) {
   if (g_a500_depth >= 1) {
     static int _n = 0;
-    if (_n++ < 30) { printf("[A500GUARD] depth=%d n=%u sp=%08X lr=%08X -> skip recursive appMessage update\n", g_a500_depth, g_blkcnt_total, s->r[13], s->r[14]); fflush(stdout); }
-    s->r[0] = 0;
-    return s->r[14];
+    // M832: return from the recursive appMessage update with a BALANCED frame: emulate its prologue
+    // push.w {r4,r5,r6,r7,r8,sb,sl,lr} (0x20 bytes), then jump to the real epilogue 0x8102A654
+    // (adds r0,r4,#0; pop.w {r4,r5,r6,r7,r8,sb,sl,pc}). Returning at s->r[14] without the push left the
+    // caller's frame 0x20 off (SPLOOP #6: sp=848568D0, [sp]=815554C0, [sp+4]=846182D0) -> stack desync.
+    uint32_t sp = s->r[13] - 0x20u;
+    uint32_t regs[8] = { s->r[4], s->r[5], s->r[6], s->r[7], s->r[8], s->r[9], s->r[10], s->r[14] };
+    for (int i = 0; i < 8; ++i) { uint8_t* q = GP(sp + (uint32_t)i * 4u); if (q) std::memcpy(q, &regs[i], 4); }
+    s->r[13] = sp;
+    s->r[4] = 0;              // epilogue does adds r0,r4,#0 -> return value 0
+    if (_n++ < 30) { printf("[A500GUARD] depth=%d n=%u sp=%08X->%08X lr=%08X -> balanced-return via 8102A654\n", g_a500_depth, g_blkcnt_total, sp + 0x20u, sp, s->r[14]); fflush(stdout); }
+    return 0x8102A654u;
   }
   g_a500_depth++;
   BlockFn fn = gbn_raw(0x8102A500u);
