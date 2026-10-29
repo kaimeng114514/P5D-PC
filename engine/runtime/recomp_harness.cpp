@@ -366,6 +366,8 @@ static uint32_t g_dfe_pc[20] = {0}, g_dfe_r0[20] = {0}, g_dfe_sp[20] = {0}, g_df
 static uint32_t g_drg_pc[20] = {0}, g_drg_r0[20] = {0}, g_drg_sp[20] = {0}, g_drg_n = 0;
 static uint32_t g_dr_n = 0;
 static uint32_t g_blkcnt_total = 1;
+static std::chrono::steady_clock::time_point g_run_t0 = std::chrono::steady_clock::now();
+static int g_dec_calls = 0; static uint32_t g_dec_lastpct = 0;
 static bool nested_allowed(void) { return g_fiber_nested || (g_nested_until && g_blkcnt_total < g_nested_until); }
 static int g_gxm_n = 0;
 static int g_hm3_n = 0;
@@ -845,6 +847,13 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { static std::chrono::steady_clock::time_point _t0 = std::chrono::steady_clock::now(); static uint32_t _n0 = 0;
+    if ((g_blkcnt_total % 1000000u) == 0u && g_blkcnt_total != _n0) {
+      auto _t1 = std::chrono::steady_clock::now();
+      double _dt = std::chrono::duration<double>(_t1 - _t0).count();
+      double _kbps = _dt > 0.0 ? ((double)(g_blkcnt_total - _n0) / 1000.0 / _dt) : 0.0;
+      printf("[RATE] n=%u dt=%.2fs kblk/s=%.0f pc=%08X fib=%08X loop=%d\n", g_blkcnt_total, _dt, _kbps, pcv, g_cur_fiber, g_loop_site); fflush(stdout);
+      _t0 = _t1; _n0 = g_blkcnt_total; } }
   { static uint32_t _pr = 0; if ((++_pr & 255u) == 0u) pending_req_scan(); }
   if ((pcv & ~1u) == 0x8123F04Cu) { uint8_t* _q = GP(s->r[13] + 0x100u); (void)_q; g_trap_can = s->r[13] + 0x100u; }
   else if ((pcv & ~1u) == 0x8123F14Au || (pcv & ~1u) == 0x8123F15Au) { g_trap_can = 0; }
@@ -4835,6 +4844,17 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       ++g_epi2_n;
       printf("[EPI2] after pop.w: r9=%08X sp=%08X next=%08X\n", s.r[9], s.r[13], nxt);
     }
+    if ((n % 1000000) == 0) {
+      double _el = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_run_t0).count();
+      if (_el > 0.5) { printf("[RATE2] n=%d el=%.1fs rate=%.0f blk/s pc=%08X blk=%08X fib=%08X\n", n, _el, (double)n / _el, nxt, g_cur_block, g_cur_fiber); fflush(stdout); } }
+    if ((pc & ~1u) == 0x811DFB3Eu) {
+      uint32_t _sl = s.r[10], _sb = s.r[11];
+      if ((_sl & 0xFFFFFu) == 0u && _sl != g_dec_lastpct) { g_dec_lastpct = _sl;
+        uint32_t _len = 0; uint8_t* _lq = GP(s.r[13] + 0x73ecu); if (_lq) std::memcpy(&_len, _lq, 4);
+        printf("[DEC] call=%d out=%u/%u sb=%08X\n", g_dec_calls, _sl, _len, _sb); fflush(stdout); } }
+    if ((pc & ~1u) == 0x811DFB4Eu) {
+      uint32_t _len2 = 0; uint8_t* _lq2 = GP(s.r[13] + 0x73ecu); if (_lq2) std::memcpy(&_len2, _lq2, 4);
+      if (g_dec_calls++ < 12 || (g_dec_calls % 64) == 0) { printf("[DEC-CALL] #%d len=%u done\n", g_dec_calls, _len2); fflush(stdout); } }
     if ((n % 5000) == 0) {
       { uint32_t _fw[4] = {0,0,0,0}; uint8_t* _fq0 = GP(0x816CC630u); if (_fq0) std::memcpy(_fw, _fq0, 16);
   printf("[FRAMEDUMP] n=%d flags=%08X t4=%u t8=%u ctr=%u pc=%08X blk=%08X sp=%08X fib=%08X gxm(b/e/p)=%d/%d/%d\n", n, _fw[0], _fw[1], _fw[2], _fw[3], nxt, g_cur_block, s.r[13], g_cur_fiber, g_gxm_begin_n, g_gxm_end_n, g_gxm_present_n); }
