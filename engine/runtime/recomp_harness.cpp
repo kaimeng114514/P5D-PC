@@ -44,6 +44,7 @@ static int g_thrtrace = 0;   // 18.4232 trace off by default (P5D_THRTRACE=1 ena
 static int g_thrtr_n = 0;
 static int g_thrpump_env = 0;
 static int g_thrpump3 = 0;   // M817: pump guest threads only at main-fiber idle points
+static int g_pump_force = 0; // M819: allow thread pump inside fiber exec during main-thread blocking waits
 static int g_tidp_n = 0;   // 18.4228c
 static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
@@ -1718,12 +1719,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         while (_spins++ < 4000) {
           uint32_t _c = (g_sema.count(obj) ? g_sema[obj] : 0u);
           if (_c >= need) break;
-          hle_thr_pump(s, 400);
+          g_pump_force = 1; hle_thr_pump(s, 400); g_pump_force = 0;
           if (g_thr.empty()) break;
         }
         uint32_t _c2 = (g_sema.count(obj) ? g_sema[obj] : 0u);
         if (_c2 >= need) g_sema[obj] = _c2 - need;
         if (g_thr_log_n++ < 80) printf("[SEM] main-block obj=%08X need=%u got=%u spins=%d\n", obj, need, _c2, _spins);
+        { static int _smw=0; if ((obj==0x50018000u || _c2<need) && _smw++ < 60) { printf("[SEMW] main obj=%08X need=%u got=%u spins=%d lr=%08X blk=%08X n=%u\n", obj, need, _c2, _spins, s->r[14], g_cur_block, g_blkcnt_total); fflush(stdout); } }
         r0 = 0;
       }
       break; }
@@ -1755,7 +1757,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (mode & 4u) g_eflag[obj] = 0u; else if (mode & 2u) g_eflag[obj] = cur & ~bits;
         r0 = 0; break; }
       if (!ok && !g_cur_thr) {   // main thread: run workers / retry (they may Set the flag)
-        for (int _sp = 0; _sp < 2000 && !ok; ++_sp) { hle_thr_pump(s, 400); cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); }
+        for (int _sp = 0; _sp < 2000 && !ok; ++_sp) { g_pump_force = 1; hle_thr_pump(s, 400); g_pump_force = 0; cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); }
       }
       if (g_evw_n++ < 40) { printf("[EVW] wait obj=%08X bits=%08X mode=%X cur=%08X ok=%d thr=%08X lr=%08X\n", obj, bits, mode, cur, (int)ok, g_cur_thr, s->r[14]); fflush(stdout); }
       if (ok) {
@@ -1764,7 +1766,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         else if (mode & 2u) g_eflag[obj] = cur & ~bits;        // CLEAR waited bits
         r0 = 0;
       } else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = bits; g_thr_wait_mode = mode; r0 = 0; }
-      else { if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &cur, 4); } r0 = 0; }
+      else { if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &cur, 4); }
+        { static int _mf=0; if (_mf++ < 60) { printf("[EFWAIT] main obj=%08X bits=%08X mode=%X cur=%08X lr=%08X blk=%08X n=%u\n", obj, bits, mode, cur, s->r[14], g_cur_block, g_blkcnt_total); fflush(stdout); } } r0 = 0; }
       break; }
     case 0x812B2AE0u: {                                               // sceKernelSetEventFlag
       uint32_t obj = s->r[0], bits = s->r[1];
@@ -3385,7 +3388,7 @@ extern "C" void wr32_watch(uint32_t a, uint32_t v) {
 
 static void hle_thr_pump(RecState* s, int quantum) {
   if (g_cur_thr || g_hostthreads) return;   // 18.4239: in host-thread mode the guest threads run on their own host threads
-  if (g_in_fiber_exec && !g_thrpump_env && !g_thrpump3) return;   // 18.4232: worker-trace mode (P5D_THRPUMP=1) allows pumping from the fiber world
+  if (g_in_fiber_exec && !g_thrpump_env && !g_thrpump3 && !g_pump_force) return;   // 18.4232: worker-trace mode (P5D_THRPUMP=1) allows pumping from the fiber world
   if (g_thrtrace && g_thrst_n++ < 20) { printf("[THRST] n=%zu:", g_thr.size()); for (auto& _kv : g_thr) { auto& _t=_kv.second; printf(" %08X(a%d,r%d,w%d,obj=%08X,bits=%08X,sp=%08X)", _kv.first, _t.alive?1:0, _t.ready?1:0, _t.waiting?1:0, _t.wait_obj, _t.wait_bits, _t.ctx.r[13]); } printf("\n"); fflush(stdout); }   // 18.4228: allow the pump from the main-loop world (g_cur_fiber is the app fiber there); never nest inside thread execution
   for (auto& kv : g_thr) {
     HThread& t = kv.second;
@@ -5014,7 +5017,9 @@ if (0) { uint32_t _fc = 0; uint8_t* _fq = GP(0x816CC63Cu); if (_fq) std::memcpy(
         g_cur_fiber = fb; g_in_fiber_exec = 1;
         nxt = s.r[15];
         if (nxt == 0u) nxt = g_fiber_entry & ~1u;
-        if (g_mainret_n++ < 6) printf("[MAINRET] main returned at n=%d -> resume fiber=%08X pc=%08X\n", n, fb, nxt);
+        if (g_mainret_n++ < 6) { printf("[MAINRET] main returned at n=%d -> resume fiber=%08X pc=%08X ring:", n, fb, nxt);
+          for (int _k=0;_k<24;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]);
+          printf("\n regs: r0=%08X r1=%08X r4=%08X r5=%08X sp=%08X lr=%08X\n", s.r[0], s.r[1], s.r[4], s.r[5], s.r[13], s.r[14]); fflush(stdout); }
         prev_blk = g_cur_block;
         pc = nxt;
         continue;
