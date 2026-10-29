@@ -206,6 +206,7 @@ static int g_cbtr_n = 0;
 static int g_lktr_n = 0;
 static int g_acc_n = 0, g_lkin_n = 0, g_lkout_n = 0;
 extern "C" int g_watch_on = 1;
+static std::map<uint32_t,uint32_t> g_canmap; static uint32_t g_trap_can = 0; static int g_trapcan_n = 0; static int g_canw_n = 0; static uint32_t g_canary_sp = 0; static uint32_t g_cur_hle_ret_lr = 0;
 static int g_trc_n = 0;
 static int g_pumpst_n = 0;
 // moved-globals-4177
@@ -795,6 +796,8 @@ static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own
 static void hw_check(uint32_t pcv);
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  if ((pcv & ~1u) == 0x8123F04Cu) { uint8_t* _q = GP(s->r[13] + 0x100u); (void)_q; g_trap_can = s->r[13] + 0x100u; }
+  else if ((pcv & ~1u) == 0x8123F14Au || (pcv & ~1u) == 0x8123F15Au) { g_trap_can = 0; }
   { static uint32_t _lastd=0; if (g_blkcnt_total - _lastd >= 500000u) { _lastd = g_blkcnt_total;
       if (g_tdump_n++ < 16) { printf("[TDUMP] n=%u pcv=%08X fib=%08X thr=%08X threads=%zu\n", g_blkcnt_total, pcv, g_cur_fiber, g_cur_thr, g_thr.size());
         for (auto& kv : g_thr) { HThread& t=kv.second; printf("[TDUMP]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X ctxpc=%08X ctxsp=%08X ctxr0=%08X\n", kv.first, t.entry, t.alive, t.ready, t.waiting, t.wait_obj, t.wait_bits, t.wait_mode, t.ctx.r[15], t.ctx.r[13], t.ctx.r[0]); }
@@ -901,6 +904,12 @@ static uint64_t hle_tick_us() {
   uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
   return now - t0 + 0x100000ull;
 }
+static void canhle_check(uint32_t dst, uint32_t n, const char* k) {
+  if (!n || n > 0x1000000u) return;
+  for (auto& kv : g_canmap) { if (kv.first >= dst && kv.first < dst + n) {
+      static int _n = 0; if (_n++ < 300) { printf("[CANWHLE] %s dst=%08X n=%u slot=%08X blk=%08X lr=%08X\n", k, dst, n, kv.first, g_cur_block, g_cur_hle_ret_lr); fflush(stdout); }
+      break; } }
+}
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   hw_check(stub_va);
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
@@ -939,6 +948,20 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     }
   }
   if (stub_va == 0x812B2810u) {   // __stack_chk_fail: REPAIR the canary slot and RETRY the compare block
+    { static int _rf = -1; if (_rf < 0) { const char* _e = getenv("P5D_RECFATAL"); _rf = (_e && atoi(_e)) ? 1 : 0; }
+      if (_rf) {
+        uint32_t sp = s->r[13];
+        uint32_t cval=0, cglob=0, cand=0; { uint8_t* q=GP(0x812B414Cu); if(q) std::memcpy(&cglob,q,4); }
+        { uint8_t* q=GP(0x812B4150u); if(q) std::memcpy(&cand,q,4); }
+        { uint8_t* q=GP(sp+4u); if(q) std::memcpy(&cval,q,4); }
+        printf("[RECFATAL] __stack_chk_fail blk=%08X lr=%08X sp=%08X canary_global=%08X canary_ptr=%08X slab=%08X fib=%08X thr=%08X\n", g_cur_block, s->r[14], sp, cglob, cand, cval, g_cur_fiber, g_cur_thr);
+        printf("[RECFATAL] regs:"); for (int _i=0;_i<13;++_i) printf(" r%d=%08X", _i, s->r[_i]); printf("\n");
+        printf("[RECFATAL] stack(sp-0x20..sp+0x80):");
+        for (int _i=-8;_i<32;++_i) { uint32_t _w=0; uint8_t* q=GP(sp+(uint32_t)(_i*4)); if(q) std::memcpy(&_w,q,4); printf(" %08X", _w); if((_i&7)==7) printf("\n"); }
+        printf("[RECFATAL] last64:"); for (int _k=0;_k<64;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 64u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout);
+        exit(0);
+      } }
+
     {
       uint32_t sp = s->r[13];
       uint32_t fb = sp + 0xCu;
@@ -994,11 +1017,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2270u: {                                                // memcpy(dst,src,n) -> dst
       uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
       uint8_t* d = GP(dst); uint8_t* sp = GP(src);
+      canhle_check(dst, n, "memcpy");
       if (d && sp && n < 0x1000000u) std::memcpy(d, sp, n);
       r0 = dst; break; }
     case 0x812B2260u: {                                                // memset(dst,c,n) -> dst
       uint32_t dst = s->r[0], c = s->r[1], n = s->r[2];
       uint8_t* d = GP(dst);
+      canhle_check(dst, n, "memset");
       if (d && n < 0x1000000u) std::memset(d, (int)(c & 0xFF), n);
       r0 = dst; break; }
     case 0x812B22E0u: {                                                // strlen(s)
@@ -1022,11 +1047,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2350u: {                                               // memmove(dst,src,n) [NID AF5C218D]
       uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
       uint8_t* d = GP(dst); uint8_t* q = GP(src);
+      canhle_check(dst, n, "memmove");
       if (d && q && n < 0x1000000u) std::memmove(d, q, n);
       r0 = dst; break; }
     case 0x812B2310u: {                                               // strncpy(dst,src,n) [NID 9F87712D]
       uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
       uint8_t* d = GP(dst); uint8_t* q = GP(src);
+      canhle_check(dst, n, "strncpy");
       if (d && q && n < 0x1000000u) { uint32_t i = 0; for (; i < n && q[i]; ++i) d[i] = q[i]; for (; i < n; ++i) d[i] = 0; }
       r0 = dst; break; }
     case 0x812B23B0u: {                                               // strncmp(a,b,n) [NID E4299DCB]
@@ -2750,7 +2777,6 @@ static void build_all_blocks() {
 }
 // M785c: manual blocks for functions missed by IDA function bounds (only reachable via function pointers)
 static std::map<uint32_t, BlockFn> g_manual_blocks;
-static std::map<uint32_t,uint32_t> g_canmap; static int g_canw_n = 0;
 static uint32_t mb_81032CF8(RecState* s) {   // pop {r4, pc}
   uint32_t sp = s->r[13]; uint32_t r4 = 0, nx = 0;
   { uint8_t* q = GP(sp); if (q) std::memcpy(&r4, q, 4); }
@@ -3089,9 +3115,10 @@ extern "C" void wr16_watch(uint32_t a, uint32_t v) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
-  { static uint32_t _c = 0; static bool _ci = false; if (!_ci) { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); _ci = true; }
-    if (v == _c) { g_canmap[a] = v; }
-    else { auto _it = g_canmap.find(a); if (_it != g_canmap.end() && g_canw_n++ < 300) { printf("[CANWCORRUPT] a=%08X v=%08X was=%08X blk=%08X\n", a, v, _it->second, g_cur_block); fflush(stdout); } } }
+  { uint32_t _c = 0; { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); }
+    if (_c && v == _c) { g_canmap[a] = v; }
+    if (g_trap_can && a == g_trap_can && v != 0x812B4150u) { if (g_trapcan_n++ < 200) { printf("[TRAPCAN] a=%08X v=%08X blk=%08X lr=%08X\n", a, v, g_cur_block, g_cur_hle_ret_lr); fflush(stdout); } }
+    else { auto _it = g_canmap.find(a); if (_it != g_canmap.end() && a >= 0x9F000000u && g_canw_n++ < 4000) { printf("[CANWCORRUPT2] a=%08X v=%08X was=%08X blk=%08X\n", a, v, _it->second, g_cur_block); fflush(stdout); } } }
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW32] a=%08X off=%03X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _lw=0; if ((a == 0x816CDB8Cu || a == 0x816CDB88u || a == 0x816CDB90u) && _lw++ < 40) { printf("[REGWR] a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   { static int _ew=0; if (a >= 0x84D19A00u && a < 0x84D19C00u && _ew++ < 60) { printf("[ENTWR] a=%08X off=%03X v=%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D19A60u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
