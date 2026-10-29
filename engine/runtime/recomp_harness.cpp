@@ -450,6 +450,10 @@ static int g_path_n = 0;
 static int g_finit_n = 0;
 static int g_f2_n = 0;
 static std::vector<uint32_t> g_fiber_list;
+// M807: game-provided fiber context/stack buffers from _sceFiberInitializeImpl stack args
+static std::map<uint32_t,std::pair<uint32_t,uint32_t>> g_fib_stack;
+static int g_fibstack_n = 0, g_spown_n = 0, g_spown_ok_n = 0;
+
 static int g_run_alt = 0;
 static int g_sw_alt = 0;
 static int g_sw_alt2 = 0;
@@ -1329,6 +1333,14 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         uint32_t f84 = 0, f88 = 0; uint32_t off0 = s->r[0] - IMG_VA_BASE;
         if (off0 + 0x90 <= IMG_SIZE) { std::memcpy(&f84, gp_img+off0+0x84, 4); std::memcpy(&f88, gp_img+off0+0x88, 4); }
         printf("[FINIT] fiber=%08X name=%08X entry=%08X arg=%08X [f84]=%08X [f88]=%08X\n", s->r[0], s->r[1], s->r[2], s->r[3], f84, f88);
+        printf("[FINIT-STK] r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X sp=%08X\n", s->r[0], s->r[1], s->r[2], s->r[3], s->r[4], s->r[5], s->r[6], s->r[7], s->r[13]);
+        { uint32_t _sa[6] = {0,0,0,0,0,0}; for (int _i = 0; _i < 6; ++_i) { uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_sa[_i], _q, 4); }
+          printf("[FINIT-STK] stackargs: %08X %08X %08X %08X %08X %08X\n", _sa[0], _sa[1], _sa[2], _sa[3], _sa[4], _sa[5]);
+          // M807: args 4/5 (addrContext, sizeContext) arrive on the guest stack for this >4-arg ABI call
+          if (_sa[1] >= 0x1000u && _sa[1] <= 0x400000u && _sa[0] >= 0x80600000u && _sa[0] < 0xA2000000u) {
+            g_fib_stack[s->r[0]] = std::make_pair(_sa[0], _sa[1]);
+            if (g_fibstack_n++ < 10) { printf("[FINIT-CTX] fiber=%08X ctx_base=%08X ctx_size=%08X -> stack top=%08X\n", s->r[0], _sa[0], _sa[1], (_sa[0] + _sa[1] - 0x10u) & ~0xFu); fflush(stdout); }
+          } }
       }
       uint32_t fb0_return = s->r[0];
       { uint32_t fb0 = s->r[0]; bool found = false; for (uint32_t x : g_fiber_list) if (x == fb0) found = true;
@@ -1880,7 +1892,11 @@ static FinderFn ALL_FINDERS[27] = {
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
-  if (g_cur_fiber) { g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr; if (g_cur_fiber == 0x848468E0u) fw742_note("SAVE", g_cur_fiber, c.r[15], c.r[13], c.r[14], c.r[4]);
+  if (g_cur_fiber) {
+    { auto _fs = g_fib_stack.find(g_cur_fiber);
+      if (_fs != g_fib_stack.end()) { uint32_t _lo = _fs->second.first, _hi = _fs->second.first + _fs->second.second; uint32_t _sp = s->r[13];
+        if (_sp >= _lo && _sp < _hi) { if (g_spown_ok_n++ < 6) { printf("[SPOWN-OK] fiber=%08X sp=%08X in [%08X,%08X) pc=%08X\n", g_cur_fiber, _sp, _lo, _hi, s->r[15]); fflush(stdout); } }
+        else if (g_spown_n++ < 40) { printf("[SPOWN-VIOL] fiber=%08X sp=%08X outside [%08X,%08X) pc=%08X lr=%08X blk=%08X\n", g_cur_fiber, _sp, _lo, _hi, s->r[15], s->r[14], g_cur_block); fflush(stdout); } } } g_f2_seen = g_cur_fiber; FCtx& c = g_fctx[g_cur_fiber]; std::memcpy(c.r, s->r, sizeof(c.r)); c.apsr = s->apsr; if (g_cur_fiber == 0x848468E0u) fw742_note("SAVE", g_cur_fiber, c.r[15], c.r[13], c.r[14], c.r[4]);
     if (((c.r[15] & ~1u) >= 0x8127C0C0u && (c.r[15] & ~1u) <= 0x8127C100u) && g_dly_save_n++ < 20) {
       uint32_t _w0=0,_w1=0; uint8_t* _q=GP(c.r[13]); if(_q) std::memcpy(&_w0,_q,4); _q=GP(c.r[13]+4u); if(_q) std::memcpy(&_w1,_q,4);
       if ((c.r[15] & ~1u) != g_dly_last_pc || c.r[13] != g_dly_last_sp || _w0 != g_dly_last_w0 || _w1 != g_dly_last_w1) {
@@ -1916,7 +1932,12 @@ static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg
     else if (arg >= 0x82E00000u && arg < 0x83000000u) f13 = arg;
     else { static uint32_t s_next_stack = 0x82EBF000u; f13 = s_next_stack; s_next_stack -= 0x40000u; }
     uint32_t idx0 = 0; for (size_t k = 0; k < g_fiber_list.size(); ++k) if (g_fiber_list[k] == fiber) { idx0 = (uint32_t)k; break; }
-    f13 = 0xA0E00000u - idx0 * 0x800000u;   // 8MB stack per fiber in region B (mapped to image +0x1000000)
+    { auto _fs = g_fib_stack.find(fiber);
+      if (_fs != g_fib_stack.end()) { uint32_t _b = _fs->second.first, _sz = _fs->second.second;
+        if (_sz >= 0x1000u) f13 = (_b + _sz - 0x10u) & ~0xFu;   // M807: game-provided context buffer doubles as the fiber's private stack top
+        else f13 = 0xA0E00000u - idx0 * 0x800000u;
+        if (g_fibstack_n++ < 12) { printf("[FLOAD-STK] fiber=%08X base=%08X size=%08X sp=%08X\n", fiber, _b, _sz, f13); fflush(stdout); } }
+      else { f13 = 0xA0E00000u - idx0 * 0x800000u; } }   // fallback: fabricated 8MB stack per fiber
     FCtx c; std::memset(&c, 0, sizeof(c));
     c.r[0] = fiber;   // 18.3890: the fiber START STUB expects r0 = fiber object (r4=r0; reads [r4+0x84]/[r4+0x88]);
                       // the old code used r0=arg (e.g. 2) when f84==0, so the stub dereferenced [2+0x88] -> BADMEM 0x8A.
@@ -3251,20 +3272,20 @@ static void stkw_note(const char* tag, uint32_t a, uint32_t v, int width) {
   fflush(stdout);
 }
 extern "C" void wr8_watch(uint32_t a, uint32_t v) {
-  if (g_sw8_on && a >= g_stkw_lo && a < g_stkw_hi) stkw_note("w8", a, v, 8);
+  if (g_sw8_on && ((a >= g_stkw_lo && a < g_stkw_hi) || (a >= 0x84856500u && a < 0x848565A0u))) stkw_note("w8", a, v, 8);
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 120) { printf("[OBJW8] a=%08X off=%03X v=%02X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _rg=0; if ((a >= 0x816CDB80u && a < 0x816CDBA0u) && _rg++ < 60) { printf("[REGWR8] a=%08X v=%02X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _all=0; if (a == 0x84D2AAA4u && _all++ < 20) { printf("[STATEW8] v=%02X blk=%08X fib=%08X thr=%08X sp=%08X\n", v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
 }
 extern "C" void wr16_watch(uint32_t a, uint32_t v) {
-  if (g_sw8_on && a >= g_stkw_lo && a < g_stkw_hi) stkw_note("w16", a, v, 16);
+  if (g_sw8_on && ((a >= g_stkw_lo && a < g_stkw_hi) || (a >= 0x84856500u && a < 0x848565A0u))) stkw_note("w16", a, v, 16);
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW16] a=%08X off=%03X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { if (a >= 0x84600000u && a < 0x84600080u) { static int _tw=0; if (_tw++ < 40) { printf("[TLSWR16] a=%08X v=%04X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
-  if (g_sw8_on && a >= g_stkw_lo && a < g_stkw_hi) stkw_note("w32", a, v, 32);
+  if (g_sw8_on && ((a >= g_stkw_lo && a < g_stkw_hi) || (a >= 0x84856500u && a < 0x848565A0u))) stkw_note("w32", a, v, 32);
   if (g_canw_on) { uint32_t _c = 0; { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); }
     if (_c && v == _c) { g_canmap[a] = v; }
     if (g_trap_can && a == g_trap_can && v != 0x812B4150u) { if (g_trapcan_n++ < 200) { printf("[TRAPCAN] a=%08X v=%08X blk=%08X lr=%08X\n", a, v, g_cur_block, g_cur_hle_ret_lr); fflush(stdout); } }
