@@ -63,7 +63,7 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 
 - **真实 GXM 初始化已跑通**：`[VKMARK] Vulkan` 后端初始化；`sceGxmInitialize / MapMemory / CreateContext / CreateRenderTarget / ColorSurfaceInit / SyncObjectCreate / TextureInitLinear` 等 60 次调用全部 `ret=0`；随后 shader patcher 注册循环出现 2550 次真实 ABI 调用（`ShaderPatcherCreateFragmentProgram`、`ProgramFindParameterByName` 等）。
 - **当前唯一阻塞：guest 虚拟文件系统的资源负载通路**。游戏向自己的 VFS 请求 `GFDPSP2PRESET.GSC`（GFD shader preset 容器）；VFS 自动注册了该名字（`FUN_81181A3C`，条目 `type=0`、`size=-1`，仅名字与哈希），但**没有子系统把它升级为 `type=0xC`（带数据指针 `+0x94` / 尺寸 `+0x88`）**；应消费该记录的 worker `0x811830E2` 从未被调用；于是 GFD 工厂拿到零尺寸流，创建 type-3 零边界对象，`FUN_811DE912` 返回 -1，`byteswap` 尺寸 -1 ⇒ `0x3FFFFFFF` 次迭代卡死。
-- **已精确定位的证据链**：注册插入块 `0x81181BB2`（`wr32_watch` 归因）；auto-register 路径 `0x81182EC6`；worker 语义（从条目 `+0x94/+0x88` 填流对象后置 `state=3`）已反汇编确认；对象 `state=0→3` 的写入绕过了 `wr16/wr32` 监视（正在用字节级 `wr8` 监视收网）。
+- **已精确定位的证据链**：注册插入块 `0x81181BB2`（`wr32_watch` 归因）；auto-register 路径 `0x81182EC6`；worker 语义（从条目 `+0x94/+0x88` 填流对象后置 `state=3`）已反汇编确认。**M783 重要更正**：此前追踪的 `state=0→3` 并非游戏行为，而是我们 harness 里遗留的 `uncond3` 修补（`recomp_harness.cpp` 约 2653/3917 行，宿主侧 `memcpy` 直接写 guest 内存，绕过全部 `wr8/wr16/wr32/wr64` 监视）——真实情况是游戏在等待该虚拟文件记录被消费，而 worker `0x811830E2` 从未被调用（无 BL、无间接调用、无尾跳转）；该修补伪造 `state=3` 后，GFD 工厂拿到零数据流才引出巨型 byteswap。
 - **零崩溃基线保持**：默认配置 30M guest 块 `exit=0, BADMEM=0, GXM=12, FSW=16, FRAMEDUMP=6000`；`kb_audit / verify_doc_integrity / run_all_regressions` 全绿，`release_audit` PASS。
 
 近期里程碑（详细证据与历史纠正在 `docs/P5D_MASTER.md`）：
