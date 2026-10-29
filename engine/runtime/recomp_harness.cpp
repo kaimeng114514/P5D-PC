@@ -396,6 +396,7 @@ static uint32_t g_fh_id = 0x3000u, g_op_id = 0x5000u;
 static std::string g_inject_name;
 static int g_pumping2 = 0, g_pump2_n = 0;
 static int g_pump_disabled_ab = 1;
+static int g_spfix2_n = 0;
 static int g_p2_restarts = 0; static int g_p2skip_n = 0;   // A/B: 1 = pump disabled
 static int g_after_nofn = 0;
 static int g_stub_n = 0;
@@ -2009,6 +2010,14 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
         it = g_fctx.find(t);
         if (it == g_fctx.end()) { printf("[FIBER-SW] unknown target %08X (still after autoload)\n", t); break; }
       }
+      if ((it->second.r[15] & ~1u) == 0x8127C0F8u) {
+        uint32_t _sp = it->second.r[13], _w1 = 0, _w1b = 0;
+        uint8_t* _q1 = GP(_sp + 4u); if (_q1) std::memcpy(&_w1, _q1, 4);
+        uint8_t* _q2 = GP(_sp - 4u); if (_q2) std::memcpy(&_w1b, _q2, 4);
+        bool _o1 = (_w1 >= 0x80600000u && _w1 < 0x8C600000u) || (_w1 >= 0xA0000000u && _w1 < 0xA2000000u);
+        bool _o2 = (_w1b >= 0x80600000u && _w1b < 0x8C600000u) || (_w1b >= 0xA0000000u && _w1b < 0xA2000000u);
+        if (!_o1 && _o2) { it->second.r[13] = _sp - 8u;
+          if (g_spfix2_n++ < 20) { printf("[SPFIX-DLY2] fiber=%08X sp=%08X->%08X ret=%08X pc=%08X\n", t, _sp, _sp - 8u, _w1b, it->second.r[15]); fflush(stdout); } } }
       g_cur_fiber = t; std::memcpy(s->r, it->second.r, sizeof(it->second.r)); s->apsr = it->second.apsr; ctxchk(3, t, s); winchk("LOAD", t, s->r[13], s->r[15]);
       { uint32_t _p = s->r[15] & ~1u; if ((_p >= 0x811E5E80u && _p <= 0x811E5EF2u) && g_rs5ec_n++ < 16) {
           printf("[REST5EC] fiber=%08X restorepc=%08X sp=%08X lr=%08X r4=%08X r5=%08X r7=%08X\n", t, s->r[15], s->r[13], s->r[14], s->r[4], s->r[5], s->r[7]); fflush(stdout); } }
@@ -4824,6 +4833,14 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
           if (_cc.r[15]) { g_fctx[_t] = _cc; _it = g_fctx.find(_t); }
         }
         if (_it != g_fctx.end() && _it->second.r[15] != 0u) {
+          if ((_it->second.r[15] & ~1u) == 0x8127C0F8u) {
+            uint32_t _sp = _it->second.r[13], _w1 = 0, _w1b = 0;
+            uint8_t* _q1 = GP(_sp + 4u); if (_q1) std::memcpy(&_w1, _q1, 4);
+            uint8_t* _q2 = GP(_sp - 4u); if (_q2) std::memcpy(&_w1b, _q2, 4);
+            bool _o1 = (_w1 >= 0x80600000u && _w1 < 0x8C600000u) || (_w1 >= 0xA0000000u && _w1 < 0xA2000000u);
+            bool _o2 = (_w1b >= 0x80600000u && _w1b < 0x8C600000u) || (_w1b >= 0xA0000000u && _w1b < 0xA2000000u);
+            if (!_o1 && _o2) { _it->second.r[13] = _sp - 8u;
+              printf("[SPFIX-DLY] fiber=%08X sp=%08X->%08X ret=%08X pc=%08X\n", _t, _sp, _sp - 8u, _w1b, _it->second.r[15]); fflush(stdout); } }
           std::memcpy(s.r, _it->second.r, sizeof(s.r)); s.apsr = _it->second.apsr; g_cur_fiber = _t; nxt = s.r[15]; ctxchk(2, _t, &s);
           if (g_swch_n++ < 300) { printf("[SWCH-LOAD] t=%08X load_sp=%08X load_pc=%08X\n", _t, s.r[13], s.r[15]); fflush(stdout); }
           if (g_fsw_n++ < 12) { printf("[MSW] sync switch -> %08X pc=%08X r0=%08X\n", _t, s.r[15], s.r[0]); fflush(stdout); }
