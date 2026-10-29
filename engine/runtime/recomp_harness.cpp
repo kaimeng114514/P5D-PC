@@ -805,8 +805,47 @@ static int g_sptrace = 0, g_sptrace_active = 0, g_sptrace_n = 0, g_sptrace_trace
 static uint32_t g_ec6_sp = 0, g_ec6_lr = 0, g_ec6_fib = 0; static int g_ec6_n = 0, g_ec6_chg = 0; static int g_wlpro_n = 0, g_wlentry_n = 0, g_wlec6_n = 0;
 static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own_sp = 0, g_own_lr = 0; static int g_own_cnt = 0; static int g_wl_frame_guard = 0; static uint32_t g_wl_sp = 0, g_wl_lr = 0, g_wl_prevblk = 0;
 static void hw_check(uint32_t pcv);
+// M801: generic virtual-file request filler (Fios-like provider) - scan pending open requests and fill from CPK
+static std::map<uint32_t,std::string> g_pending_reqs;
+static char g_last_open_name[256] = {0};
+static int g_reqfill_n = 0, g_reqfill_miss_n = 0, g_openret_n = 0;
+static void pending_req_scan() {
+  if (g_pending_reqs.empty()) return;
+  for (auto it = g_pending_reqs.begin(); it != g_pending_reqs.end(); ) {
+    uint32_t req = it->first; uint16_t st = 0; uint32_t ent = 0;
+    uint8_t* q = GP(req + 4u); if (q) std::memcpy(&st, q, 2);
+    q = GP(req); if (q) std::memcpy(&ent, q, 4);
+    if (st == 0 && ent) {
+      uint16_t ty = 0; q = GP(ent + 4u); if (q) std::memcpy(&ty, q, 2);
+      if (ty != 0xCu) {
+        std::vector<std::string> cs; cs.push_back(it->second);
+        std::string lo = it->second; for (char& c : lo) c = (char)tolower((unsigned char)c); if (lo != it->second) cs.push_back(lo);
+        std::vector<uint8_t> data; bool ok = false;
+        for (auto& c : cs) { if (cpk_read_any_impl(c, data) && !data.empty()) { ok = true; break; } }
+        if (ok) {
+          uint32_t buf = hle_malloc((uint32_t)data.size());
+          if (buf) std::memcpy(GP(buf), data.data(), data.size());
+          uint32_t sz = (uint32_t)data.size();
+          { uint8_t* p = GP(req + 0x8cu); if (p) std::memcpy(p, &buf, 4); }
+          { uint8_t* p = GP(req + 0x90u); if (p) std::memcpy(p, &sz, 4); }
+          { uint16_t v = 3; uint8_t* p = GP(req + 4u); if (p) std::memcpy(p, &v, 2); }
+          { uint16_t v = 0xCu; uint8_t* p = GP(ent + 4u); if (p) std::memcpy(p, &v, 2); }
+          { uint8_t* p = GP(ent + 0x88u); if (p) std::memcpy(p, &sz, 4); }
+          { uint8_t* p = GP(ent + 0x94u); if (p) std::memcpy(p, &buf, 4); }
+          { uint8_t z = 0; uint8_t* p = GP(ent + 0xa0u); if (p) *p = z; }
+          if (g_reqfill_n++ < 40) { printf("[REQFILL] req=%08X ent=%08X name=%s size=%u buf=%08X\n", req, ent, it->second.c_str(), sz, buf); fflush(stdout); }
+          it = g_pending_reqs.erase(it); continue;
+        } else if (g_reqfill_miss_n++ < 20) { printf("[REQFILL-MISS] req=%08X ent=%08X name=%s\n", req, ent, it->second.c_str()); fflush(stdout); }
+      }
+    }
+    if (st == 3) { it = g_pending_reqs.erase(it); continue; }
+    ++it;
+  }
+}
+
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { static uint32_t _pr = 0; if ((++_pr & 255u) == 0u) pending_req_scan(); }
   if ((pcv & ~1u) == 0x8123F04Cu) { uint8_t* _q = GP(s->r[13] + 0x100u); (void)_q; g_trap_can = s->r[13] + 0x100u; }
   else if ((pcv & ~1u) == 0x8123F14Au || (pcv & ~1u) == 0x8123F15Au) { g_trap_can = 0; }
   { static uint32_t _lastd=0; if (g_blkcnt_total - _lastd >= 500000u) { _lastd = g_blkcnt_total;
@@ -2831,9 +2870,36 @@ static uint32_t mb_81032CC8(RecState* s) {   // M789: canary-checked epilogue of
   s->r[13] = sp + 4u;
   return nx;
 }
+// M801: serve the game file-table lookup FUN_81181d90 from our CPK (CRILAYLA-decompressed)
+static int g_f2load_n = 0, g_f2load_miss_n = 0;
+static uint32_t mb_81181D90(RecState* s) {
+  uint32_t namep = s->r[0], outp = s->r[1];
+  char nm[256]; std::memset(nm, 0, sizeof(nm));
+  uint8_t* q = GP(namep);
+  if (q) { for (int i = 0; i < 255; ++i) { nm[i] = (char)q[i]; if (!q[i]) break; } }
+  fios_ensure_cpk();
+  std::vector<uint8_t> data; bool ok = false;
+  if (nm[0]) { std::vector<std::string> cs; std::string _s(nm); cs.push_back(_s);
+    std::string _lo=_s; for (char& _c:_lo) _c=(char)tolower((unsigned char)_c); if (_lo!=_s) cs.push_back(_lo);
+    for (auto& c : cs) { if (cpk_read_any_impl(c, data) && !data.empty()) { ok = true; break; } } }
+  if (ok) {
+    uint32_t buf = hle_malloc((uint32_t)data.size());
+    if (buf) std::memcpy(GP(buf), data.data(), data.size());
+    uint32_t sz = (uint32_t)data.size();
+    if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &sz, 4); }
+    s->r[0] = buf;
+    if (g_f2load_n++ < 40) { printf("[F2LOAD] name=%s size=%u buf=%08X\n", nm, sz, buf); fflush(stdout); }
+  } else {
+    uint32_t z = 0; if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &z, 4); }
+    s->r[0] = 0;
+    if (g_f2load_miss_n++ < 30) { printf("[F2LOAD-MISS] name=%s\n", nm); fflush(stdout); }
+  }
+  return s->r[14];
+}
 static void init_manual_blocks(void) {
   g_manual_blocks[0x81032CF8u] = (BlockFn)mb_81032CF8;
   g_manual_blocks[0x81032CC8u] = (BlockFn)mb_81032CC8;
+  g_manual_blocks[0x81181D90u] = (BlockFn)mb_81181D90;
   g_manual_blocks[0x81032CEAu] = (BlockFn)mb_81032CEA;
 }
 static BlockFn gbn(uint32_t pc) {
@@ -3916,6 +3982,16 @@ int main(int argc, char** argv) {
       _q=GP(_ent+0x94u); if(_q) std::memcpy(&_e94,_q,4);
       _q=GP(_r6+0x8cu); if(_q) std::memcpy(&_o8c,_q,4); _q=GP(_r6+0x90u); if(_q) std::memcpy(&_o90,_q,4);
       printf("[WKBR] pc=%08X r6=%08X ent=%08X e4=%08X e88=%08X e94=%08X o8c=%08X o90=%08X r7=%08X lr=%08X sp=%08X fib=%08X\n", pc, _r6, _ent, _e4, _e88, _e94, _o8c, _o90, s.r[7], s.r[14], s.r[13], g_cur_fiber); fflush(stdout); }
+    if ((pc & ~1u) == 0x81182C56u) {
+      uint8_t* _np = GP(s.r[0]); std::memset(g_last_open_name, 0, sizeof(g_last_open_name));
+      if (_np) { for (int _i = 0; _i < 255; ++_i) { g_last_open_name[_i] = (char)_np[_i]; if (!_np[_i]) break; } } }
+    if ((pc & ~1u) == 0x811E5C74u && g_openret_n++ < 40) {
+      uint32_t _r0 = s.r[0], _e0 = 0; uint16_t _st4 = 0;
+      uint8_t* _q = GP(_r0); if (_q) std::memcpy(&_e0, _q, 4);
+      _q = GP(_r0 + 4u); if (_q) std::memcpy(&_st4, _q, 2);
+      printf("[OPENRET] r0=%08X [r0]=%08X state4=%u name=%s\n", _r0, _e0, (unsigned)_st4, g_last_open_name); fflush(stdout);
+      if (_r0 >= 0x80000000u && _e0) g_pending_reqs[_r0] = g_last_open_name;
+    }
     if ((pc & ~1u) == 0x81182C56u && g_open_n++ < 10) {
       char _nm[48]={0}; uint8_t* _p=GP(s.r[0]); if(_p){ for(int _k=0;_k<44;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
       printf("[OPENCB] name=%s r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X ring:", _nm, s.r[1], s.r[2], s.r[3], s.r[14], s.r[13], g_cur_fiber);
