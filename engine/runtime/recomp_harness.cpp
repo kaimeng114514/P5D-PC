@@ -154,7 +154,7 @@ static int g_pump_brk_n = 0;
 static int g_yield_to_main = 0;
 static uint32_t g_yield_main_tick = 0;
 static int g_ytest_n = 0;
-static int g_uncond3_n = 0;
+static int g_uncond3_n = 0; static int g_uncond3_env = 0; static int g_tdump_n = 0;
 static int g_always3 = 0;
 static int g_force3_done = 0;
 static uint32_t g_force3_obj = 0;
@@ -794,6 +794,12 @@ static int g_own_valid = 0, g_ownmix_n = 0; static uint32_t g_own_fib = 0, g_own
 static void hw_check(uint32_t pcv);
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { static uint32_t _lastd=0; if (g_blkcnt_total - _lastd >= 500000u) { _lastd = g_blkcnt_total;
+      if (g_tdump_n++ < 16) { printf("[TDUMP] n=%u pcv=%08X fib=%08X thr=%08X threads=%zu\n", g_blkcnt_total, pcv, g_cur_fiber, g_cur_thr, g_thr.size());
+        for (auto& kv : g_thr) { HThread& t=kv.second; printf("[TDUMP]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X ctxpc=%08X ctxsp=%08X ctxr0=%08X\n", kv.first, t.entry, t.alive, t.ready, t.waiting, t.wait_obj, t.wait_bits, t.wait_mode, t.ctx.r[15], t.ctx.r[13], t.ctx.r[0]); }
+        { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[TDUMP]  eflags:"); for (auto& ek : g_eflag) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%08X", ek.first, ek.second); if (_o>440) break; } printf("%s\n",_b); }
+        { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[TDUMP]  semas:"); for (auto& sk : g_sema) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%u", sk.first, sk.second); if (_o>440) break; } printf("%s\n",_b); }
+        fflush(stdout); } } }
   if ((pcv == 0x81181C2Au || pcv == 0x81181C3Eu || pcv == 0x81181A3Cu || pcv == 0x81182EEAu || pcv == 0x81181B60u || pcv == 0x81181BB2u) && g_reg_n++ < 40) {
     char _nm[64]={0}; uint32_t _pa=s->r[0]; if (pcv==0x81181B60u || pcv==0x81181BB2u) { uint8_t* _pq=GP(s->r[13]+0x504u); if(_pq) std::memcpy(&_pa,_pq,4); }
     uint8_t* _p=GP(_pa); if(_p){ for(int _k=0;_k<60;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
@@ -2650,7 +2656,7 @@ BlockFn fn = gbn(pc);
       printf("[D683C] r0=%08X r5=%08X r13=%08X r14=%08X r15=%08X prev=%08X cur=%08X\n",
              s->r[0], s->r[5], s->r[13], s->r[14], s->r[15], g_prev_block, g_cur_fiber); }
     g_prev_block = pc;
-    if ((pc & ~1u) == 0x811830CCu && s->r[4] >= 0x80000000u) {   // uncond3: always satisfy the wait state
+    if (g_uncond3_env && (pc & ~1u) == 0x811830CCu && s->r[4] >= 0x80000000u) {   // uncond3: always satisfy the wait state
       uint8_t* _f3 = GP(s->r[4] + 4u);
       if (_f3) { uint16_t _c = 0; std::memcpy(&_c, _f3, 2);
         if (_c != 3) { uint16_t _t = 3; std::memcpy(_f3, &_t, 2); if (g_uncond3_n++ < 8) { printf("[UNCOND3] object=%08X state %u -> 3\n", s->r[4], (unsigned)_c); fflush(stdout); } } }
@@ -2860,6 +2866,12 @@ extern "C" uint32_t p5d_abi_untranslate(const void* hp) {
 }
 
 static void hw_check(uint32_t pcv) {
+  { static uint32_t _lastd=0, _hc=0; _hc++; if ((_hc % 100000u) == 0u) { _lastd = _hc;
+      if (g_tdump_n++ < 16) { printf("[TDUMP] n=%u pcv=%08X fib=%08X thr=%08X threads=%zu\n", g_blkcnt_total, pcv, g_cur_fiber, g_cur_thr, g_thr.size());
+        for (auto& kv : g_thr) { HThread& t=kv.second; printf("[TDUMP]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X ctxpc=%08X ctxsp=%08X ctxr0=%08X\n", kv.first, t.entry, t.alive, t.ready, t.waiting, t.wait_obj, t.wait_bits, t.wait_mode, t.ctx.r[15], t.ctx.r[13], t.ctx.r[0]); }
+        { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[TDUMP]  eflags:"); for (auto& ek : g_eflag) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%08X", ek.first, ek.second); if (_o>440) break; } printf("%s\n",_b); }
+        { char _b[512]; int _o=0; _o+=snprintf(_b+_o,sizeof(_b)-_o,"[TDUMP]  semas:"); for (auto& sk : g_sema) { _o+=snprintf(_b+_o,sizeof(_b)-_o," %08X=%u", sk.first, sk.second); if (_o>440) break; } printf("%s\n",_b); }
+        fflush(stdout); } } }
   if (!g_hw_handle) return;
   uint32_t _st=0,_p=0,_sz=0; uint8_t* _q;
   _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st,_q,4); _q=GP(g_hw_handle+0x8cu); if(_q) std::memcpy(&_p,_q,4); _q=GP(g_hw_handle+0x90u); if(_q) std::memcpy(&_sz,_q,4);
@@ -3320,6 +3332,7 @@ int main(int argc, char** argv) {
   { const char* _sr = getenv("P5D_SCHEDRESUME"); g_schedresume = (_sr && atoi(_sr) != 0) ? 1 : 0; }
   { const char* _fg1 = getenv("P5D_F1GUARD"); g_f1guard = (_fg1 && atoi(_fg1) != 0) ? 1 : 0; }
   { const char* _ga = getenv("P5D_GXMABI"); g_gxmabi = (_ga && atoi(_ga) != 0) ? 1 : 0; }
+  { const char* _u3 = getenv("P5D_UNCOND3"); g_uncond3_env = (_u3 && atoi(_u3) != 0) ? 1 : 0; }
   { const char* _fp = getenv("P5D_F1PCFIX"); g_f1pcfix = (_fp && atoi(_fp) != 0) ? 1 : 0; }
   { const char* _fn = getenv("P5D_FIBER_NESTED"); g_fiber_nested = (_fn && atoi(_fn) != 0) ? 1 : 0; }
   { const char* _nu = getenv("P5D_NESTED_UNTIL"); g_nested_until = _nu ? (uint32_t)strtoul(_nu, 0, 0) : 0u; }
@@ -3914,7 +3927,7 @@ if ((pc & ~1u) == 0x811830C8u && g_w8c8_watch == 0 && s.r[0] >= 0x80000000u) {
   uint8_t* _wq = GP(g_watch_addr); if (_wq) std::memcpy(&g_watch_val, _wq, 4);
   printf("[DWATCH] object=%08X state=%08X initial=%08X\n", s.r[0], g_watch_addr, g_watch_val); fflush(stdout);
 }
-if ((pc & ~1u) == 0x811830CCu && s.r[4] >= 0x80000000u) {   // uncond3-main
+if (g_uncond3_env && (pc & ~1u) == 0x811830CCu && s.r[4] >= 0x80000000u) {   // uncond3-main
   uint8_t* _f3m = GP(s.r[4] + 4u);
   if (_f3m) { uint16_t _cm = 0; std::memcpy(&_cm, _f3m, 2);
     if (_cm != 3) { uint16_t _tm = 3; std::memcpy(_f3m, &_tm, 2); if (g_uncond3_n++ < 8) { printf("[UNCOND3] MAIN object=%08X state %u -> 3\n", s.r[4], (unsigned)_cm); fflush(stdout); } } }
