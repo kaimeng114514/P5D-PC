@@ -207,6 +207,8 @@ static int g_cbtr_n = 0;
 static int g_lktr_n = 0;
 static int g_acc_n = 0, g_lkin_n = 0, g_lkout_n = 0;
 extern "C" int g_watch_on = 1;
+static int g_sw8_on = 0, g_sw8_n = 0, g_sw8_special = 0;
+static uint32_t g_stkw_lo = 0xA05FFC10u, g_stkw_hi = 0xA05FFC30u;
 static std::map<uint32_t,uint32_t> g_canmap; static uint32_t g_trap_can = 0; static int g_trapcan_n = 0; static int g_canw_n = 0; static int g_canw_on = 0; static uint32_t g_canary_sp = 0; static uint32_t g_cur_hle_ret_lr = 0;
 static int g_trc_n = 0;
 static int g_pumpst_n = 0;
@@ -1078,12 +1080,14 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
       uint8_t* d = GP(dst); uint8_t* sp = GP(src);
       canhle_check(dst, n, "memcpy");
+      if (g_sw8_on && dst < g_stkw_hi && (uint64_t)dst + n > g_stkw_lo) printf("[STKW-HLE] memcpy dst=%08X n=%u blk=%08X fib=%08X sp=%08X lr=%08X\n", dst, n, g_cur_block, g_cur_fiber, s->r[13], s->r[14]);
       if (d && sp && n < 0x1000000u) std::memcpy(d, sp, n);
       r0 = dst; break; }
     case 0x812B2260u: {                                                // memset(dst,c,n) -> dst
       uint32_t dst = s->r[0], c = s->r[1], n = s->r[2];
       uint8_t* d = GP(dst);
       canhle_check(dst, n, "memset");
+      if (g_sw8_on && dst < g_stkw_hi && (uint64_t)dst + n > g_stkw_lo) printf("[STKW-HLE] memset dst=%08X c=%02X n=%u blk=%08X fib=%08X sp=%08X lr=%08X\n", dst, (unsigned)(c & 0xFF), n, g_cur_block, g_cur_fiber, s->r[13], s->r[14]);
       if (d && n < 0x1000000u) std::memset(d, (int)(c & 0xFF), n);
       r0 = dst; break; }
     case 0x812B22E0u: {                                                // strlen(s)
@@ -3237,18 +3241,30 @@ extern "C" void wr64_watch(uint32_t a, uint64_t v) {
   { static int _lw=0; if ((a == 0x816CDB8Cu || a == 0x816CDB88u || a == 0x816CDB90u) && _lw++ < 40) { printf("[REGWR64] a=%08X v=%08X%08X blk=%08X fib=%08X thr=%08X\n", a, (uint32_t)(v>>32), (uint32_t)v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW64] a=%08X off=%03X v=%08X%08X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, (uint32_t)(v>>32), (uint32_t)v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
 }
+// M806: stack write watch for the pc=0x1F1 corruption
+static void stkw_note(const char* tag, uint32_t a, uint32_t v, int width) {
+  bool suspicious = (v == 0x1F1u || v == 0x1FCu || v == 0x1F9u || v == 0x1E5u);
+  if (!suspicious && g_sw8_n >= 400) return;
+  int idx = suspicious ? (g_sw8_special++) : (g_sw8_n++);
+  if (!suspicious && idx >= 400) return;
+  printf("[STKW%d] %s a=%08X v=%08X blk=%08X fib=%08X sp=%08X lr=%08X%s\n", width, tag, a, v, g_cur_block, g_cur_fiber, g_snap_r[13], g_snap_r[14], suspicious ? " <<<" : "");
+  fflush(stdout);
+}
 extern "C" void wr8_watch(uint32_t a, uint32_t v) {
+  if (g_sw8_on && a >= g_stkw_lo && a < g_stkw_hi) stkw_note("w8", a, v, 8);
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 120) { printf("[OBJW8] a=%08X off=%03X v=%02X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _rg=0; if ((a >= 0x816CDB80u && a < 0x816CDBA0u) && _rg++ < 60) { printf("[REGWR8] a=%08X v=%02X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { static int _all=0; if (a == 0x84D2AAA4u && _all++ < 20) { printf("[STATEW8] v=%02X blk=%08X fib=%08X thr=%08X sp=%08X\n", v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
 }
 extern "C" void wr16_watch(uint32_t a, uint32_t v) {
+  if (g_sw8_on && a >= g_stkw_lo && a < g_stkw_hi) stkw_note("w16", a, v, 16);
   { static int _ow=0; if (a >= 0x84D2AA90u && a < 0x84D2AB40u && _ow++ < 200) { printf("[OBJW16] a=%08X off=%03X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a-0x84D2AAA0u, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { if (a >= 0x84600000u && a < 0x84600080u) { static int _tw=0; if (_tw++ < 40) { printf("[TLSWR16] a=%08X v=%04X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
   { if (g_watch_task && a >= g_watch_task && a < g_watch_task + 0x40u) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  if (g_sw8_on && a >= g_stkw_lo && a < g_stkw_hi) stkw_note("w32", a, v, 32);
   if (g_canw_on) { uint32_t _c = 0; { uint8_t* _q = GP(0x812B414Cu); if (_q) std::memcpy(&_c, _q, 4); }
     if (_c && v == _c) { g_canmap[a] = v; }
     if (g_trap_can && a == g_trap_can && v != 0x812B4150u) { if (g_trapcan_n++ < 200) { printf("[TRAPCAN] a=%08X v=%08X blk=%08X lr=%08X\n", a, v, g_cur_block, g_cur_hle_ret_lr); fflush(stdout); } }
@@ -3546,6 +3562,7 @@ int main(int argc, char** argv) {
   { const char* _df = getenv("P5D_DEFERFSW"); g_deferfsw = (_df && atoi(_df) != 0) ? 1 : 0; }
   { const char* _sl = getenv("P5D_SWLOG"); g_swlog = (_sl && atoi(_sl) != 0) ? 1 : 0; }
   { const char* _cw = getenv("P5D_CANW"); g_canw_on = (_cw && atoi(_cw) != 0) ? 1 : 0; }
+  { const char* _kw = getenv("P5D_STKW"); g_sw8_on = (_kw && atoi(_kw) != 0) ? 1 : 0; }
   { const char* _ns = getenv("P5D_NOSCHEDRUN"); g_noschedrun = (_ns && atoi(_ns) != 0) ? 1 : 0; }
   { const char* _ss = getenv("P5D_SCHEDRUNSMART"); g_schrunsmart = (_ss && atoi(_ss) != 0) ? 1 : 0; }
   { const char* _si = getenv("P5D_SCHEDIDX"); if (_si) g_schedidx = atoi(_si); }
