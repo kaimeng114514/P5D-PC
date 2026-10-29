@@ -483329,3 +483329,27 @@ NEXT:
 ANTI-FORGETTING ENTRY. Keywords: M828 [EXEC2] 6 runner+6 exec sequential sp=848568F8/84856900 -> six process updates via scheduler tasks; [RECUR] appMessage 0x8102A500 entry sp 848568F0 then fiber0 loop+switch 812B1BA0 then re-entry sp-0x20 lr=8116F758 => fiber-switch-interleaved retry; watchdog hle_ring repeats memset 812B2260@8116E332 + fiber0 loop + 812B1BA0 + 8116F758 livelock cycle; FUN_811DB4AE = task-pool flush `while (DAT_816cd9d0) FUN_811db020(0)` callers 81199002/81199ED4, scheduler callers frame 81199336 + flush 811DB5D6; fix manual blocks mb_811DB4AE (skip nested flush, [FLUSHGUARD]) + mb_811DB5E0 (exit depth--); [FLUSH] probe; default 30M green; validation out150m_m836.txt.
 
 LOOKUP: 0x811DB4AE, 0x811DB020, 0x8116F748, 0x8102A500 -> §18.4372 [relevant: appMessage update + guard], §18.4371 [relevant: [STEP]/[RECUR]], §18.4370 [relevant: frame loop disasm]
+
+
+M828 VALIDATION RESULT (`out150m_m836.txt`): **the flush hypothesis is disproved** - `[FLUSH]=0` and `[FLUSHGUARD]=0` for the whole run
+(`FUN_811DB4AE` is never called on this path). The real end-state cycle is now visible from the watchdog and `[FSW]` logs:
+```
+[FSW] r0=848468E0 lr=8120682A fib=84836840  ring: 811E5CE8 811E5928 81207344 812B2830 81207350 811E5962 811E5B9A 81207352
+                                                     812B28A0 8120735C 811E5BA0 811E5BAC 811E5CEA 81198BEE 812B2AC0 81198BF2
+                                                     812067A0 812B1B70 812067B6 ...
+final [WD] pcring: 81198BF6 81198BEA 811E5CDA 812B1BA0 8116F758 811E5CDA 811E5CEA 81198BEE 812B2AC0 81198BF2 812067A0 812B1B70
+                  812067B6 8120680E 8120681C 81206820 81206822 812B1BA0 8116F758
+final [WD] hle_ring: 812B2260@8116E332 (memset, appProcess) repeated
+```
+=> the frame-loop fiber (`848468E0`) is in a **wait/yield loop**: CRI fiber0 does `LockLwMutex 812B2830` -> `UnlockLwMutex 812B28A0` -> fiber switch
+(`812B1BA0`, called from manager `812067B6`/lr `8120682A`) -> frame fiber resumes at `0x8116F758` (appProcess exec return) -> appProcess code runs
+`memset 812B2260 @0x8116E332` -> blocks/yields again -> switch back to fiber0. The appMessage update is re-entered each cycle (sp -0x20), so the
+appProcess message/exec call never completes. The livelock is therefore a **blocking-wait/yield loop** inside the appProcess message path after the
+exec return `0x8116F758`, not the task-pool flush and not pure recursion.
+
+NEXT:
+1. instrument the blocking HLE waits along the frame-fiber path after `0x8116F758` (SEMW/EFWAIT/WAIT/DELAY with owner + pcring) to find the wait that never
+   completes each cycle (the last HLE call before each `sceFiberSwitch` back);
+2. identify the expected producer (which thread/sema/event should signal it) and satisfy it in HLE (or fix the fiber blocking-wait resume semantics so the
+   update continues instead of being re-entered);
+3. then the frame tick should repeat -> `0x8119934A` frame update -> `0x811CBE9A` scene driver -> `BeginScene`.
