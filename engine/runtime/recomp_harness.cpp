@@ -453,6 +453,11 @@ static std::vector<uint32_t> g_fiber_list;
 // M807: game-provided fiber context/stack buffers from _sceFiberInitializeImpl stack args
 static std::map<uint32_t,std::pair<uint32_t,uint32_t>> g_fib_stack;
 static int g_fibstack_n = 0, g_spown_n = 0, g_spown_ok_n = 0;
+// M808: per-fiber suspend/resume pairing counters
+static std::map<uint32_t,int> g_fib_saves, g_fib_resumes;
+static std::map<uint32_t,std::pair<uint32_t,uint32_t>> g_fib_last_save, g_fib_last_resume;
+static int g_fibreent_n = 0;
+static int g_fibxfer_n = 0;
 
 static int g_run_alt = 0;
 static int g_sw_alt = 0;
@@ -1893,6 +1898,9 @@ struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
   if (g_cur_fiber) {
+    { ++g_fib_saves[g_cur_fiber]; g_fib_last_save[g_cur_fiber] = std::make_pair(s->r[15], s->r[13]);
+      int _sv = g_fib_saves[g_cur_fiber], _rs = g_fib_resumes[g_cur_fiber];
+      if (_rs > _sv + 1 && g_fibreent_n++ < 40) { printf("[FIB-UNBAL] fiber=%08X saves=%d resumes=%d pc=%08X sp=%08X\n", g_cur_fiber, _sv, _rs, s->r[15], s->r[13]); fflush(stdout); } }
     { auto _fs = g_fib_stack.find(g_cur_fiber);
       if (_fs != g_fib_stack.end()) { uint32_t _lo = _fs->second.first, _hi = _fs->second.first + _fs->second.second; uint32_t _sp = s->r[13];
         if (_sp >= _lo && _sp < _hi) { if (g_spown_ok_n++ < 6) { printf("[SPOWN-OK] fiber=%08X sp=%08X in [%08X,%08X) pc=%08X\n", g_cur_fiber, _sp, _lo, _hi, s->r[15]); fflush(stdout); } }
@@ -2013,6 +2021,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
                itd != g_fctx.end() ? itd->second.r[13] : 0u);
       }
       if (g_fiber_switches < 30) printf("[FEVT] switch cur=%08X to=%08X runs=%d\n", g_cur_fiber, t, g_fiber_runs);
+      if (g_fibxfer_n++ < 300) { uint32_t _tpc = 0, _tsp = 0; auto _ti = g_fctx.find(t); if (_ti != g_fctx.end()) { _tpc = _ti->second.r[15]; _tsp = _ti->second.r[13]; } printf("[FIB-XFER-FEX] cur=%08X pc=%08X sp=%08X -> to=%08X tgtpc=%08X tgtsp=%08X saves=%d resumes=%d\n", g_cur_fiber, s->r[15], s->r[13], t, _tpc, _tsp, g_fib_saves[g_cur_fiber], g_fib_resumes[t]); fflush(stdout); }
       fiber_save(s); winchk("SAVE", g_cur_fiber, s->r[13], s->r[15]); auto it = g_fctx.find(t);
       // 18.3730: if the target fiber already finished (pc==0), restart it from its user entry so the
       // game can schedule its task again (the scheduler re-switches to it every round).
@@ -2043,6 +2052,9 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
         bool _o2 = (_w1b >= 0x80600000u && _w1b < 0x8C600000u) || (_w1b >= 0xA0000000u && _w1b < 0xA2000000u);
         if (!_o1 && _o2) { it->second.r[13] = _sp - 8u;
           if (g_spfix2_n++ < 20) { printf("[SPFIX-DLY2] fiber=%08X sp=%08X->%08X ret=%08X pc=%08X\n", t, _sp, _sp - 8u, _w1b, it->second.r[15]); fflush(stdout); } } }
+      { ++g_fib_resumes[t]; g_fib_last_resume[t] = std::make_pair(it->second.r[15], it->second.r[13]);
+        int _sv = g_fib_saves[t], _rs = g_fib_resumes[t];
+        if (_rs > _sv + 1 && g_fibreent_n++ < 40) { printf("[FIB-UNBAL-FEX] fiber=%08X saves=%d resumes=%d pc=%08X sp=%08X blk=%08X\n", t, _sv, _rs, it->second.r[15], it->second.r[13], g_cur_block); fflush(stdout); } }
       g_cur_fiber = t; std::memcpy(s->r, it->second.r, sizeof(it->second.r)); s->apsr = it->second.apsr; ctxchk(3, t, s); winchk("LOAD", t, s->r[13], s->r[15]);
       { uint32_t _p = s->r[15] & ~1u; if ((_p >= 0x811E5E80u && _p <= 0x811E5EF2u) && g_rs5ec_n++ < 16) {
           printf("[REST5EC] fiber=%08X restorepc=%08X sp=%08X lr=%08X r4=%08X r5=%08X r7=%08X\n", t, s->r[15], s->r[13], s->r[14], s->r[4], s->r[5], s->r[7]); fflush(stdout); } }
@@ -4861,7 +4873,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_switch_pending = 0; g_fiber_switch_to = 0;
       if (_t && _t != g_cur_fiber) {
         if (g_swch_n++ < 300) { printf("[SWCH] cur=%08X t=%08X save_sp=%08X save_pc=%08X nxt=%08X g_in_fex=%d inexec=%d\n", g_cur_fiber, _t, s.r[13], s.r[15], nxt, g_in_fex, g_in_fiber_exec); fflush(stdout); }
-        if (g_cur_fiber) { FCtx& _c = g_fctx[g_cur_fiber]; std::memcpy(_c.r, s.r, sizeof(s.r)); _c.apsr = s.apsr; _c.r[15] = nxt; if (g_cur_fiber == 0x848468E0u) fw742_note("SW-SAVE", g_cur_fiber, _c.r[15], _c.r[13], _c.r[14], _c.r[4]); }
+        if (g_cur_fiber) { FCtx& _c = g_fctx[g_cur_fiber]; std::memcpy(_c.r, s.r, sizeof(s.r)); _c.apsr = s.apsr; _c.r[15] = nxt;
+          { ++g_fib_saves[g_cur_fiber]; g_fib_last_save[g_cur_fiber] = std::make_pair(nxt, s.r[13]);
+            if (g_fibxfer_n++ < 300) { auto _ti2 = g_fctx.find(_t); uint32_t _tp2 = _ti2 != g_fctx.end() ? _ti2->second.r[15] : 0u, _ts2 = _ti2 != g_fctx.end() ? _ti2->second.r[13] : 0u; printf("[FIB-XFER] from=%08X save_pc=%08X save_sp=%08X -> to=%08X tgtpc=%08X tgtsp=%08X saves=%d resumes=%d\n", g_cur_fiber, nxt, s.r[13], _t, _tp2, _ts2, g_fib_saves[g_cur_fiber], g_fib_resumes[_t]); fflush(stdout); } } if (g_cur_fiber == 0x848468E0u) fw742_note("SW-SAVE", g_cur_fiber, _c.r[15], _c.r[13], _c.r[14], _c.r[4]); }
         auto _it = g_fctx.find(_t);
         if (_it == g_fctx.end() || _it->second.r[15] == 0u) {
           uint32_t _off = _t - IMG_VA_BASE, _ent = 0, _arg = 0;
@@ -4879,6 +4893,12 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
             bool _o2 = (_w1b >= 0x80600000u && _w1b < 0x8C600000u) || (_w1b >= 0xA0000000u && _w1b < 0xA2000000u);
             if (!_o1 && _o2) { _it->second.r[13] = _sp - 8u;
               printf("[SPFIX-DLY] fiber=%08X sp=%08X->%08X ret=%08X pc=%08X\n", _t, _sp, _sp - 8u, _w1b, _it->second.r[15]); fflush(stdout); } }
+          { ++g_fib_resumes[_t]; g_fib_last_resume[_t] = std::make_pair(_it->second.r[15], _it->second.r[13]);
+            int _sv = g_fib_saves[_t], _rs = g_fib_resumes[_t];
+            if (_rs > _sv + 1 && g_fibreent_n++ < 40) { printf("[FIB-UNBAL-LOAD] fiber=%08X saves=%d resumes=%d pc=%08X sp=%08X blk=%08X\n", _t, _sv, _rs, _it->second.r[15], _it->second.r[13], g_cur_block); fflush(stdout); }
+            auto _ls = g_fib_last_save.find(_t);
+            if (_ls != g_fib_last_save.end() && (_it->second.r[15] != _ls->second.first || _it->second.r[13] != _ls->second.second) && g_fibreent_n++ < 40) {
+              printf("[FIB-STALELOAD] fiber=%08X ctxpc=%08X ctxsp=%08X last_save_pc=%08X last_save_sp=%08X saves=%d resumes=%d\n", _t, _it->second.r[15], _it->second.r[13], _ls->second.first, _ls->second.second, _sv, _rs); fflush(stdout); } }
           std::memcpy(s.r, _it->second.r, sizeof(s.r)); s.apsr = _it->second.apsr; g_cur_fiber = _t; nxt = s.r[15]; ctxchk(2, _t, &s);
           if (g_swch_n++ < 300) { printf("[SWCH-LOAD] t=%08X load_sp=%08X load_pc=%08X\n", _t, s.r[13], s.r[15]); fflush(stdout); }
           if (g_fsw_n++ < 12) { printf("[MSW] sync switch -> %08X pc=%08X r0=%08X\n", _t, s.r[15], s.r[0]); fflush(stdout); }
