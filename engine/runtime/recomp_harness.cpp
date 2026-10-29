@@ -46,6 +46,7 @@ static int g_thrpump_env = 0;
 static int g_thrpump3 = 0;   // M817: pump guest threads only at main-fiber idle points
 static int g_pump_force = 0; // M819: allow thread pump inside fiber exec during main-thread blocking waits
 static int g_timer_n = 0;    // M822: SceKernelTimer debug
+static int g_gfd3_n = 0;     // M825: GFD task-pool / frame-loop event trace
 static int g_tidp_n = 0;   // 18.4228c
 static int g_current_loop_pc = 0;   // 18.4226 watchdog: current dispatch pc
 #include <chrono>
@@ -875,6 +876,8 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
+  { uint32_t _a = pcv & ~1u;
+    if (_a==0x811DB020u || _a==0x811DB1F0u || _a==0x811DB244u || _a==0x811DB25Au || _a==0x811DB26Eu || _a==0x81198C8Eu || _a==0x81198D0Cu || _a==0x81198D10u || _a==0x81198D16u || _a==0x81198CD8u || _a==0x81199336u || _a==0x8119934Au || _a==0x812071F8u || _a==0x8119934Au || _a==0x811DB3F2u) { if (g_gfd3_n++ < 300) { printf("[GFD3] #%d pc=%08X n=%u fib=%08X sp=%08X r0=%08X r4=%08X lr=%08X\n", g_gfd3_n, _a, g_blkcnt_total, g_cur_fiber, s->r[13], s->r[0], s->r[4], s->r[14]); fflush(stdout); } } }
   { static std::map<uint32_t,int> _fp; uint32_t _a = pcv & ~1u;
     if (_a==0x81198C8Eu || _a==0x8119934Au || _a==0x811857C2u || _a==0x8118586Eu || _a==0x811DB1F0u || _a==0x811CBE9Au || _a==0x8115FA98u || _a==0x8115FA3Eu || _a==0x8116E522u || _a==0x8116E49Eu || _a==0x8116FA5Cu || _a==0x8116F748u) { int _c = ++_fp[_a]; if (_c <= 4) { printf("[FL3] pc=%08X n=%u fib=%08X thr=%08X sp=%08X cnt=%d\n", _a, g_blkcnt_total, g_cur_fiber, g_cur_thr, s->r[13], _c); fflush(stdout); } } }
   { static std::map<uint32_t,int> _ai; uint32_t _a = pcv & ~1u;
