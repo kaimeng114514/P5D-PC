@@ -372,6 +372,8 @@ static uint32_t g_drg_pc[20] = {0}, g_drg_r0[20] = {0}, g_drg_sp[20] = {0}, g_dr
 static uint32_t g_dr_n = 0;
 static uint32_t g_blkcnt_total = 1;
 static uint64_t g_vtime_extra = 0;   // M815: virtual time advanced by guest sleeps (deterministic)
+static std::map<uint32_t,uint32_t> g_sema_owner;      // M820: who currently holds a sema token
+static std::map<uint32_t,uint32_t> g_sema_owner_lr;   // M820: LR at acquisition
 static int g_mainthrd_n = 0;
 static std::chrono::steady_clock::time_point g_run_t0 = std::chrono::steady_clock::now();
 static int g_dec_calls = 0; static uint32_t g_dec_lastpct = 0;
@@ -1709,10 +1711,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t obj = s->r[0], need = s->r[1] ? s->r[1] : 1u;
       auto it = g_sema.find(obj);
       uint32_t have = (it == g_sema.end()) ? 0u : it->second;
+      if (obj == 0x50018000u) { static int _gfs=0; if (_gfs++ < 100) { printf("[GFS] wait tid=%08X have=%u lr=%08X fib=%08X blk=%08X n=%u\n", g_cur_thr, have, s->r[14], g_cur_fiber, g_cur_block, g_blkcnt_total); fflush(stdout); } }
       if (g_thr_log_n++ < 80) printf("[SEM] wait obj=%08X need=%u have=%u cur_thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]);
       if (tl_ht_tid) { for (;;) { if (g_shutdown) break; uint32_t _h = (g_sema.count(obj) ? g_sema[obj] : 0u); if (_h >= need) { g_sema[obj] = _h - need; break; } std::this_thread::sleep_for(std::chrono::microseconds(200)); } r0 = 0; break; }
       if (g_sem2_n++ < 60) { printf("[SEM2] wait obj=%08X need=%u have=%u thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]); fflush(stdout); }
-      if (have >= need) { if (it != g_sema.end()) it->second = have - need; r0 = 0; }
+      if (have >= need) { if (it != g_sema.end()) it->second = have - need; { uint32_t _tok = g_cur_thr ? g_cur_thr : (0xF0000000u | (g_cur_fiber & 0xFFFFFFu)); g_sema_owner[obj] = _tok; g_sema_owner_lr[obj] = s->r[14]; } r0 = 0; }
       else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = 0; r0 = 0; }
       else {   // main-block-pump: main thread must BLOCK by running workers until sema satisfied
         int _spins = 0;
@@ -1725,13 +1728,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         uint32_t _c2 = (g_sema.count(obj) ? g_sema[obj] : 0u);
         if (_c2 >= need) g_sema[obj] = _c2 - need;
         if (g_thr_log_n++ < 80) printf("[SEM] main-block obj=%08X need=%u got=%u spins=%d\n", obj, need, _c2, _spins);
-        { static int _smw=0; if ((obj==0x50018000u || _c2<need) && _smw++ < 60) { printf("[SEMW] main obj=%08X need=%u got=%u spins=%d lr=%08X blk=%08X n=%u\n", obj, need, _c2, _spins, s->r[14], g_cur_block, g_blkcnt_total); fflush(stdout); } }
+        { static int _smw=0; if ((obj==0x50018000u || _c2<need) && _smw++ < 60) { uint32_t _ow = g_sema_owner.count(obj)?g_sema_owner[obj]:0u; uint32_t _olr = g_sema_owner_lr.count(obj)?g_sema_owner_lr[obj]:0u; printf("[SEMW] main obj=%08X need=%u got=%u spins=%d lr=%08X blk=%08X n=%u owner=%08X owner_lr=%08X\n", obj, need, _c2, _spins, s->r[14], g_cur_block, g_blkcnt_total, _ow, _olr); fflush(stdout); } }
         r0 = 0;
       }
       break; }
     case 0x812B2AD0u: {                                               // sceKernelSignalSema
       uint32_t obj = s->r[0];
+      if (obj == 0x50018000u) { static int _gfs2=0; if (_gfs2++ < 100) { printf("[GFS] signal thr=%08X lr=%08X fib=%08X blk=%08X n=%u count=%u\n", g_cur_thr, s->r[14], g_cur_fiber, g_cur_block, g_blkcnt_total, (g_sema.count(obj)?g_sema[obj]:0u)); fflush(stdout); } }
       g_sema[obj] += 1;
+      { uint32_t _tok = g_cur_thr ? g_cur_thr : (0xF0000000u | (g_cur_fiber & 0xFFFFFFu)); g_sema_owner[obj] = _tok; g_sema_owner_lr[obj] = s->r[14]; }
       if (g_thr_log_n++ < 80) printf("[SEM] signal obj=%08X count=%u cur_thr=%08X lr=%08X\n", obj, g_sema[obj], g_cur_thr, s->r[14]);
       if (g_sig2_n++ < 60) { printf("[SIG2] obj=%08X count=%u thr=%08X lr=%08X\n", obj, g_sema[obj], g_cur_thr, s->r[14]); fflush(stdout); }
       for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) { kv.second.waiting = 0; kv.second.ready = 1; }
