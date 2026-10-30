@@ -91,7 +91,7 @@ extern "C" uint32_t (*find_block_000(uint32_t pc))(RecState*);
 #define FB(N) extern "C" uint32_t (*find_block_##N(uint32_t pc))(RecState*);
 FB(000) FB(001) FB(002) FB(003) FB(004) FB(005) FB(006) FB(007) FB(008) FB(009)
 FB(010) FB(011) FB(012) FB(013) FB(014) FB(015) FB(016) FB(017) FB(018) FB(019)
-FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027) FB(028) FB(029) FB(030)
+FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027) FB(028) FB(029) FB(030) FB(031)
 extern "C" const void* get_table_000(unsigned* cnt);
 extern "C" const void* get_table_001(unsigned* cnt);
 extern "C" const void* get_table_002(unsigned* cnt);
@@ -123,6 +123,7 @@ extern "C" const void* get_table_027(unsigned* cnt);
 extern "C" const void* get_table_028(unsigned* cnt);
 extern "C" const void* get_table_029(unsigned* cnt);
 extern "C" const void* get_table_030(unsigned* cnt);
+extern "C" const void* get_table_031(unsigned* cnt);
 static const uint32_t IMG_VA_BASE = 0x80600000;
 static const uint32_t IMG_SIZE = 0x38000000;   // 18.4279: 896MB - extended 224MB tail window for memblock capacity
 static const uint32_t REGIONB_OFF = 0x7000000u;  // region B base -> image+0x7A00000 (VA 0x88000000), no aliasing
@@ -1931,7 +1932,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           t.gctx.r[0] = t.ctx.r[0]; t.gctx.r[1] = t.ctx.r[1]; t.gctx.r[9] = t.ctx.r[9];
           { uint32_t tls = hle_malloc(0x400u); if (tls) { uint8_t* tq = GP(tls); if (tq) std::memset(tq, 0, 0x400); } t.gctx.r[9] = tls; }
           t.exit_flag = 0;
-          if (!t.hth) { t.hth = new std::thread(guest_thread_run, tid); }   // 18.4251: keep joinable for clean shutdown
+          if (!t.hth) { t.hth = new std::thread(guest_thread_run, tid); { static int _ts2=0; if (_ts2++<100){ printf("[TSTART2] tid=%08X entry=%08X hth=%p\n", tid, t.entry, (void*)t.hth); fflush(stdout);} } }   // 18.4251: keep joinable for clean shutdown
           if (g_ht_n++ < 20) { printf("[HT-START] tid=%08X entry=%08X sp=%08X\n", tid, t.ctx.r[15], t.ctx.r[13]); fflush(stdout); }
         }
         if (t.entry != 0x811E68C9u && t.entry != 0x8120767Du) printf("[THR2] start tid=%08X entry=%08X arglen=%u argp=%08X lr=%08X sp=%08X\n", tid, t.entry, arglen, argp, s->r[14], t.stack);
@@ -2163,6 +2164,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       g_vtime_extra += (uint64_t)(s->r[0] ? s->r[0] : 1u);   // M815: deterministic virtual sleep
       r0 = 0;
       if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
+      if (g_cur_thr) { static int _dt=0; if ((g_cur_thr == 0x4001B000u || g_cur_thr == 0x4001C000u) && _dt++<300){ printf("[DELAYTHR] tid=%08X usec=%u lr=%08X sp=%08X pc=%08X\n", g_cur_thr, s->r[0], s->r[14], s->r[13], g_cur_block); fflush(stdout);} break; }
       if (g_in_fex == 1 && ((++g_yield_main_tick & 0x3F) == 0)) { g_yield_to_main = 1;
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from DelayThread fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_delay_n++ < 8) printf("[DELAY] usec=%u lr=%08X fib=%08X\n", s->r[0], s->r[14], g_cur_fiber);
@@ -2184,12 +2186,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   return s->r[14];
 }
 typedef BlockFn (*FinderFn)(uint32_t);
-static FinderFn ALL_FINDERS[31] = {
+static FinderFn ALL_FINDERS[32] = {
   find_block_000, find_block_001, find_block_002, find_block_003, find_block_004, find_block_005,
   find_block_006, find_block_007, find_block_008, find_block_009, find_block_010, find_block_011,
   find_block_012, find_block_013, find_block_014, find_block_015, find_block_016, find_block_017,
   find_block_018, find_block_019, find_block_020, find_block_021, find_block_022, find_block_023,
-  find_block_024, find_block_025, find_block_026, find_block_027, find_block_028, find_block_029, find_block_030 };
+  find_block_024, find_block_025, find_block_026, find_block_027, find_block_028, find_block_029, find_block_030, find_block_031 };
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
@@ -3231,7 +3233,7 @@ static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg) {
   return fiber_exec_to_completion(s);
 }
 static void build_all_blocks() {
-  for (int i = 0; i < 31; ++i) {
+  for (int i = 0; i < 32; ++i) {
     unsigned cnt = 0;
     const GBlk* tab = (const GBlk*)(
         i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
@@ -3242,7 +3244,7 @@ static void build_all_blocks() {
         i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
         i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
         i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
-        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : i == 29 ? get_table_029(&cnt) : get_table_030(&cnt));
+        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : i == 29 ? get_table_029(&cnt) : i == 30 ? get_table_030(&cnt) : get_table_031(&cnt));
     for (unsigned k = 0; k < cnt; ++k) g_all.push_back(tab[k]);
   }
   // M842: duplicate VAs exist because the supplemental batches (027/028) re-translate functions that the main batches
@@ -3252,7 +3254,7 @@ static void build_all_blocks() {
   // batches are the corrected/authoritative translations) and emit a sorted table for the lower_bound lookup.
   {
     std::map<uint32_t, BlockFn> _ded;
-    for (int i = 30; i >= 0; --i) {
+    for (int i = 31; i >= 0; --i) {
       unsigned cnt = 0;
       const GBlk* tab = (const GBlk*)(
           i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
@@ -3263,7 +3265,7 @@ static void build_all_blocks() {
           i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
           i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
           i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
-          i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : i == 29 ? get_table_029(&cnt) : get_table_030(&cnt));
+          i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : i == 29 ? get_table_029(&cnt) : i == 30 ? get_table_030(&cnt) : get_table_031(&cnt));
       for (unsigned k = 0; k < cnt; ++k) _ded.emplace(tab[k].va, tab[k].fn);   // first insert wins = highest batch index
     }
     g_all.clear(); g_all.reserve(_ded.size());
@@ -3523,7 +3525,7 @@ static void guest_thread_run(uint32_t tid) {
   { auto _it = g_thr.find(tid); if (_it == g_thr.end()) return; t = &_it->second; }
   RecState* s = &t->gctx;
   uint32_t pc = s->r[15];
-  if (g_ht_n++ < 40) { printf("[HT-RUN] tid=%08X pc=%08X sp=%08X r0=%08X r1=%08X r4=%08X r5=%08X r9=%08X lr=%08X\n", tid, pc, s->r[13], s->r[0], s->r[1], s->r[4], s->r[5], s->r[9], s->r[14]); fflush(stdout); }
+  { static int _hr=0; if (_hr++<200) { printf("[HT-RUN] tid=%08X pc=%08X sp=%08X r0=%08X r1=%08X r4=%08X r5=%08X r9=%08X lr=%08X\n", tid, pc, s->r[13], s->r[0], s->r[1], s->r[4], s->r[5], s->r[9], s->r[14]); fflush(stdout); } }
   while (!t->exit_flag && !g_shutdown) {
     if ((pc & ~1u) >= 0xFFFFFF00u || pc == 0u) { if (g_ht_bad_n++ < 20) { printf("[HT-SENTINEL] tid=%08X pc=%08X r0=%08X r1=%08X sp=%08X\n", tid, pc, s->r[0], s->r[1], s->r[13]); fflush(stdout); } break; }
     tl_pc_ring[tl_pc_n & 63u] = pc; ++tl_pc_n;
@@ -3537,8 +3539,8 @@ static void guest_thread_run(uint32_t tid) {
     if (nx == 0u || nx == 0xFFFFFFF0u || nx == 0xFFFFFFFEu || nx == 0xFFFFFFFDu) break;
     pc = nx;   // 18.4240: follow the block's returned next-pc (not s->r[15]) - this was the host-thread loop bug
   }
+  { static int _he=0; if (_he++<200) { printf("[HT-EXIT] tid=%08X pc=%08X r0=%08X exit_flag=%d shutdown=%d\n", tid, pc, s->r[0], t->exit_flag, g_shutdown); fflush(stdout); } }
   t->alive = 0; t->ready = 0;
-  if (g_ht_n++ < 60) { printf("[HT-EXIT] tid=%08X\n", tid); fflush(stdout); }
 }
 static uint8_t* gimg_ptr() { return gp_img; }
 static int g_ind_n = 0;
@@ -4050,12 +4052,12 @@ g_loop_site = 1; ++g_loop_cnt[1]; g_current_loop_pc = (int)pc; h7344_probe(s, pc
     fix682a(s, &pc);
 BlockFn fn = gbn(pc);
       if (!fn) { int _back = 0; uint32_t _rp = gbn_back(pc, &_back); if (_rp) { pc = _rp; fn = gbn(pc); } }
-      if (!fn) { if (g_thr_log_n++ < 40) printf("[THR-BAD] tid=%08X pc=%08X\\n", kv.first, pc); t.alive = 0; break; }
+      if (!fn) { { static int _tb=0; if (_tb++<100) { printf("[THREXIT] badblock tid=%08X pc=%08X lr=%08X sp=%08X\n", kv.first, pc, s->r[14], s->r[13]); fflush(stdout);} } t.alive = 0; break; }
     if ((pc == 0x81181C2Au || pc == 0x81181C3Eu || pc == 0x81181A3Cu || pc == 0x81182EEAu || pc == 0x81181B60u || pc == 0x81181BB2u) && g_reg_n++ < 40) {
       uint32_t _pa=s->r[0]; char _nm[64]={0}; uint8_t* _p=GP(_pa); if(_p){ for(int _k=0;_k<60;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
       printf("[REGP] pc=%08X name=%s r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X lr=%08X sp=%08X fib=%08X thr=%08X\n", pc, _nm, s->r[0], s->r[1], s->r[2], s->r[3], s->r[4], s->r[14], s->r[13], g_cur_fiber, g_cur_thr); fflush(stdout); }
       uint32_t np = fn(s);
-      if (np == 0xFFFFFFF0u) { if (g_thr_log_n++ < 40) printf("[THR] exit tid=%08X blocks=%d\\n", kv.first, n); t.alive = 0; t.ready = 0; break; }
+      if (np == 0xFFFFFFF0u) { { static int _te=0; if (_te++<100) { printf("[THREXIT] sentinel tid=%08X blocks=%d pc=%08X lr=%08X sp=%08X r0=%08X\n", kv.first, n, pc, s->r[14], s->r[13], s->r[0]); fflush(stdout);} } t.alive = 0; t.ready = 0; break; }
       pc = np;
     }
     std::memcpy(t.ctx.r, s->r, sizeof(t.ctx.r)); t.ctx.apsr = s->apsr; t.ctx.r[15] = pc;
