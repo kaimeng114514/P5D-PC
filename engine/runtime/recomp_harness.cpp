@@ -936,6 +936,8 @@ static void job_probes(uint32_t pcv, RecState* s) {
     if (_ba == 0x811EA552u) { g_ea552_obj = s->r[0]; static int _ea=0; if (_ea++ < 40) { printf("[EA552v4] #%d r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X blk=%u\n", _ea-1, s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_blkcnt_total); fflush(stdout); } }
     if (_ba >= 0x811EB050u && _ba <= 0x811EB070u) { static int _eb=0; if (_eb++ < 20) { uint32_t _o=s->r[13], _sb=0, _sb4=0; uint8_t* _q=GP(_o+0xbc); if(_q) std::memcpy(&_sb,_q,4); if(_sb){ _q=GP(_sb+4u); if(_q) std::memcpy(&_sb4,_q,4);} printf("[EB06x] pc=%08X sb=%08X [sb+4]=%08X blk=%u fib=%08X\n", _ba, _sb, _sb4, g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
   }
+  { uint32_t _ba2 = pcv & ~1u;
+    if (_ba2 == 0x8128399Eu) { static int _cfp=0; if (_cfp++ < 12) { printf("[CRIFSINIT-CALL] #%d n=%u lr=%08X fib=%08X sp=%08X r0=%08X\n", _cfp-1, g_main_n, s->r[14], g_cur_fiber, s->r[13], s->r[0]); fflush(stdout); } } }
   { uint32_t _b0 = pcv & ~1u;
     if (_b0 == 0x81279486u || _b0 == 0x81279520u) { static int _ac_n = 0; if (_ac_n++ < 60) {
         char _fmt[160] = {0}, _arg[160] = {0}; uint8_t* _q = GP(s->r[1]);
@@ -5704,6 +5706,8 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
             }
             fflush(stdout); }
         } }
+      if (n == 2000000) { uint32_t _bi=0,_bt=0,_bctx=0; { uint8_t* _q=GP(0x8153FEF4u); if(_q) std::memcpy(&_bi,_q,4); } { uint8_t* _q=GP(0x8154013Cu); if(_q) std::memcpy(&_bt,_q,4); } { uint8_t* _q=GP(0x816C5558u); if(_q) std::memcpy(&_bctx,_q,4); }
+        printf("[JOB2M] binit=%08X btab=%08X bctx816C5558=%08X\n", _bi,_bt,_bctx); fflush(stdout); }
       if ((n % 5000000) == 0) { static int _jb_n = 0; ++_jb_n;
         uint32_t _s1=0,_s2=0,_s3=0,_s4=0,_pg=0,_ctr2=0;
         { uint8_t* _q=GP(0x85AB1180u+4u); if(_q) std::memcpy(&_s1,_q,4); }
@@ -5721,9 +5725,11 @@ uint32_t _binit=0,_btab=0;
         { uint8_t* _q=GP(0x8154013Cu); if(_q) std::memcpy(&_btab,_q,4); }
         printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X fiosbusy=%u streamcnt=%u slot=%u binit=%u btab=%u\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg,_a6b4,_a368,_a6b8,_binit,_btab); fflush(stdout); }
       // 18.4419: initialize guest CRI FS (criFs_Initialize(NULL,0,0)) from HLE before the boot page requests resources
-      if (n == 55000000 && getenv("P5D_CRIFSHLE")) { static int _cfh = 0; if (!_cfh) { _cfh = 1;
-        uint32_t _cr = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);
-        printf("[CRIFSHLE] criFs_Initialize(NULL,0,0) -> %08X n=%d\n", _cr, n); fflush(stdout); } }
+      { static long long _cfat = -1; if (_cfat < 0) { const char* _e = getenv("P5D_CRIFSHLE_AT"); _cfat = _e ? atoll(_e) : 55000000; }
+        if ((long long)n == _cfat && getenv("P5D_CRIFSHLE")) { static int _cfh = 0; if (!_cfh) { _cfh = 1;
+          uint32_t _cr = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);
+          uint32_t _bi=0; { uint8_t* _q=GP(0x8153FEF4u); if(_q) std::memcpy(&_bi,_q,4); }
+          printf("[CRIFSHLE] criFs_Initialize(NULL,0,0) -> %08X n=%d binit_after=%08X\n", _cr, n, _bi); fflush(stdout); } } }
       if ((n % 10000000) == 0) { static int _ts_n = 0; ++_ts_n;
         printf("[TS] n=%d thr=%zu fib=%zu\n", n, g_thr.size(), g_fctx.size());
         for (auto& _kv : g_thr) { HThread& _t = _kv.second;
