@@ -1279,6 +1279,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
+  { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; if (_stk) _a3 = _stk[0]; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { g_hle_ring_va[g_hle_ring_n & 127] = stub_va; g_hle_ring_lr[g_hle_ring_n & 127] = s->r[14]; ++g_hle_ring_n; }
   if (g_in_fiber_exec && g_cur_fiber && g_cur_fiber != g_fiber_list.empty() && 0) {}
   if (g_in_fiber_exec && g_cur_fiber && g_fiber_list.size() > 1 && g_cur_fiber == g_fiber_list[1] && g_f2hle_n++ < 90) {
@@ -1926,6 +1927,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B19B0u: fios_ensure_cpk(); r0 = 0; break;                // sceFiosInitialize
     case 0x812B1970u: r0 = 0; break;                                  // sceFiosTerminate
     case 0x812B19F0u: {                                               // sceFiosFHOpen(op, fhPtr, path, params)
+      if (g_main_n >= 59000000u) { static int _fo_n=0; if (_fo_n++ < 120) { const char* _pp=nullptr; uint8_t* _q=GP(s->r[2]); if(_q) _pp=(const char*)_q; printf("[FHOPEN57] path=%s fh=%08X pc=%08X fib=%08X\n", _pp?_pp:"(null)", s->r[1], g_cur_block, g_cur_fiber); fflush(stdout); } }
       fios_ensure_cpk();
       std::string path; { uint8_t* p = GP(s->r[2]); if (p) path = (const char*)p; }
       uint32_t fh = 0xFFFFFFFFu, op = ++g_op_id;
@@ -1943,6 +1945,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       hle_eflag_set(0x60014000u, 1u); hle_eflag_set(0x60015000u, 1u);   // 18.4264: wake guest Fios worker threads (op completion notification)
       r0 = op; break; }
     case 0x812B19D0u: {                                               // sceFiosFHRead(op, fh, dst, ...; size at [sp])
+      if (g_main_n >= 59000000u) { static int _fr_n=0; if (_fr_n++ < 120) { printf("[FHREAD57] fh=%08X dst=%08X size=%08X pc=%08X fib=%08X\n", s->r[1], s->r[2], _stk[0], g_cur_block, g_cur_fiber); fflush(stdout); } }
       ++g_fread_n;
       auto it = g_fios_data.find(s->r[1]);
       uint32_t size = 0; { uint8_t* q = GP(s->r[13]); if (q) std::memcpy(&size, q, 4); }
@@ -2079,6 +2082,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_timer_n++ < 30) { printf("[TIMER] time uid=%08X v=%llu lr=%08X\n", s->r[0], (unsigned long long)v, s->r[14]); fflush(stdout); }
       s->r[1] = (uint32_t)(v >> 32); r0 = (uint32_t)v; break; }
     case 0x812B27A0u: {                                               // sceKernelWaitSema
+      if (g_main_n >= 59000000u) { static int _ws_n=0; if (_ws_n++ < 200) { uint32_t _o=s->r[0],_nd=s->r[1]; uint32_t _h=(g_sema.count(_o)?g_sema[_o]:0u); printf("[WAITSEMA57] obj=%08X need=%08X have=%08X pc=%08X fib=%08X\n", _o,_nd,_h,g_cur_block,g_cur_fiber); fflush(stdout); } }
       uint32_t obj = s->r[0], need = s->r[1] ? s->r[1] : 1u;
       auto it = g_sema.find(obj);
       uint32_t have = (it == g_sema.end()) ? 0u : it->second;
@@ -2150,6 +2154,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         { static int _mf=0; if (_mf++ < 60) { printf("[EFWAIT] main obj=%08X bits=%08X mode=%X cur=%08X lr=%08X blk=%08X n=%u\n", obj, bits, mode, cur, s->r[14], g_cur_block, g_blkcnt_total); fflush(stdout); } } r0 = 0; }
       break; }
     case 0x812B2AE0u: {                                               // sceKernelSetEventFlag
+      if (g_main_n >= 59000000u) { static int _se_n=0; if (_se_n++ < 200) { printf("[SETEF57] obj=%08X bits=%08X pc=%08X fib=%08X\n", s->r[0], s->r[1], g_cur_block, g_cur_fiber); fflush(stdout); } }
       uint32_t obj = s->r[0], bits = s->r[1];
       g_eflag[obj] |= bits;
       if (g_thr_log_n++ < 80) printf("[EVT] set obj=%08X bits=%08X cur_thr=%08X lr=%08X\n", obj, bits, g_cur_thr, s->r[14]);
