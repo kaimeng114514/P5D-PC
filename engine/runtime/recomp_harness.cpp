@@ -363,6 +363,15 @@ static int g_e6a_n = 0;
 static int g_gs_dbg_n = 0;
 static int g_gxm_ctx_n = 0, g_gxm_begin_n = 0, g_gxm_end_n = 0, g_gxm_present_n = 0, g_gxm_fin_n = 0, g_gfx_rep_n = 0;
 static uint32_t g_display_cb = 0, g_display_cbds = 0, g_display_maxpend = 0, g_disp_pending = 0, g_disp_pending_cbd = 0;
+// M849: boot dummy-USM movie fast-finish. FUN_8115922C plays movie/p4d_dummy.usm and stores the movie object in
+// DAT_813AF6B4; the completion callback is FUN_81159276(state, movie). We schedule the callback with state=1 once
+// shortly after PLAY MOVIE executes, so the boot state machine advances past the movie (our HLE video decoder never
+// produces frames). call_guest_cb sets r1=0, so a 2-arg variant call_guest_cb2 is used.
+static int      g_movie_played = 0;
+static int      g_movie_wait_n = 0;
+static uint32_t g_moviecb_pending = 0, g_moviecb_a0 = 0, g_moviecb_a1 = 0;
+static int g_movie_probe_n = 0, g_movie_done = 0;
+static uint32_t call_guest_cb2(RecState* s, uint32_t entry, uint32_t a0, uint32_t a1, int maxblocks);
 // M844: GXM-ABI bridge hooks (called from gxm_abi.cpp): the backend sceGxmDisplayQueueAddEntry is a stub, so we capture the
 // guest displayQueueCallback from SceGxmInitializeParams and run it from the main dispatch loop after each AddEntry.
 extern "C" void p5d_hle_set_display_cb(uint32_t cb, uint32_t cbds) {
@@ -914,6 +923,19 @@ static void pending_req_scan() {
 }
 
 static void job_probes(uint32_t pcv, RecState* s) {
+  if ((pcv & ~1u) == 0x8115922Cu && !g_movie_played) {
+    g_movie_played = 1; g_movie_probe_n = 0;
+    static int _msp = 0; if (_msp++ < 6) { printf("[MOVIEPLAY] FUN_8115922C PLAY MOVIE seen (blk=%08X fib=%08X) - will fake completion after movie object exists\n", g_cur_block, g_cur_fiber); fflush(stdout); }
+  }
+  if (g_movie_played && !g_movie_done && ++g_movie_probe_n > 20000) {
+    uint32_t _mv = 0; uint8_t* _mq = GP(0x813AF6B4u); if (_mq) std::memcpy(&_mv, _mq, 4);
+    if (_mv) {
+      g_movie_done = 1;
+      printf("[MOVIEFIN] invoke FUN_81159276(state=1, movie=%08X) blk=%u fib=%08X\n", _mv, g_blkcnt_total, g_cur_fiber); fflush(stdout);
+      uint32_t _r = call_guest_cb2(s, 0x81159276u, 1u, _mv, 300000);
+      printf("[MOVIEFIN] completion cb returned r0=%08X\n", _r); fflush(stdout);
+    } else { g_movie_probe_n = 15000; }
+  }
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
     if (_a == 0x81196F3Cu || _a == 0x81196F4Eu || _a == 0x81197408u || _a == 0x81197444u) { static int _ms_n = 0;
@@ -2314,6 +2336,20 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       call_guest_cb(s, _dcb, _dcd, 400000);
       --g_disp_depth; pc = s->r[15];
     }
+    if (g_movie_played && g_movie_wait_n > 0) {
+      if (--g_movie_wait_n == 0) {
+        uint32_t _mv = 0; uint8_t* _mq = GP(0x813AF6B4u); if (_mq) std::memcpy(&_mv, _mq, 4);
+        if (_mv) { g_moviecb_pending = 1; g_moviecb_a0 = 1; g_moviecb_a1 = _mv; }
+        else { g_movie_wait_n = 4000; }
+      }
+    }
+    if (g_moviecb_pending && g_disp_depth == 0 && !g_cur_thr) {
+      uint32_t _e = 0x81159276u, _x0 = g_moviecb_a0, _x1 = g_moviecb_a1;
+      g_moviecb_pending = 0; ++g_disp_depth;
+      printf("[MOVIEFIN] invoke completion cb=%08X state=%u movie=%08X blk=%u\n", _e, _x0, _x1, g_blkcnt_total); fflush(stdout);
+      call_guest_cb2(s, _e, _x0, _x1, 400000);
+      --g_disp_depth; pc = s->r[15];
+    }
     { uint32_t _fp = pc & ~1u;
       if (_fp == 0x811E5928u || _fp == 0x811E5A9Au || _fp == 0x811E5AECu || _fp == 0x811E5B9Au) {
         static int _sm2 = 0, _sm2b = 0;
@@ -3308,6 +3344,7 @@ static BlockFn gbn_raw(uint32_t pc) {
   if (it != g_all.end() && it->va == pc) return it->fn;
   return nullptr;
 }
+static uint32_t call_guest_cb2(RecState* s, uint32_t entry, uint32_t a0, uint32_t a1, int maxblocks);   // M849 fwd
 static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int maxblocks) {
   if (!entry) return 0;
   uint32_t save[16]; std::memcpy(save, s->r, sizeof(save)); uint32_t savea = s->apsr;
@@ -3330,6 +3367,34 @@ static uint32_t call_guest_cb(RecState* s, uint32_t entry, uint32_t arg, int max
   }
   uint32_t _ret = s->r[0];
   if (g_disp_n++ < 12) { printf("[DISPCALL] cb=%08X data=%08X blocks=%d ret=%08X\n", entry, arg, n, _ret); fflush(stdout); }
+  if ((g_cb5ec2||g_cb5ec6||g_cb5ef0) && g_cb5ec_n++ < 20) { printf("[CB5EC] entry=%08X blocks=%d pro=%d loop=%d epi=%d\n", entry, n, g_cb5ec2, g_cb5ec6, g_cb5ef0); fflush(stdout); g_cb5ec2=0; g_cb5ec6=0; g_cb5ef0=0; }
+  { RecState _chk = *s; std::memcpy(_chk.r, save, sizeof(save)); ctxchk(5, 0u, &_chk); }
+  std::memcpy(s->r, save, sizeof(save)); s->apsr = savea;
+  return _ret;
+}
+
+static uint32_t call_guest_cb2(RecState* s, uint32_t entry, uint32_t a0, uint32_t a1, int maxblocks) {
+  if (!entry) return 0;
+  uint32_t save[16]; std::memcpy(save, s->r, sizeof(save)); uint32_t savea = s->apsr;
+  s->r[0] = a0; s->r[1] = a1; s->r[14] = 0xFFFFFFFEu; s->r[15] = entry & ~1u;
+  uint32_t pc = s->r[15]; int n = 0;
+  while (n++ < maxblocks) {
+    hw_check(pc);
+    if ((pc == 0x81181C2Au || pc == 0x81181C3Eu || pc == 0x81181A3Cu || pc == 0x81182EEAu || pc == 0x81181B60u || pc == 0x81181BB2u) && g_reg_n++ < 40) {
+      uint32_t _pa=s->r[0]; char _nm[64]={0}; uint8_t* _p=GP(_pa); if(_p){ for(int _k=0;_k<60;++_k){ char _c=(char)_p[_k]; _nm[_k]=(_c>=32&&_c<127)?_c:0x2E; if(!_c) break; } }
+      printf("[REGCB] pc=%08X name=%s r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X thr=%08X\n", pc, _nm, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14], s->r[13], g_cur_fiber, g_cur_thr); fflush(stdout); }
+    uint32_t q = pc & ~1u;
+    if (q == 0x811E5EC2u) ++g_cb5ec2; else if (q == 0x811E5EC6u) ++g_cb5ec6; else if (q == 0x811E5EF0u) ++g_cb5ef0;
+    if (q >= 0xFFFFFF00u || pc == 0u) break;
+    BlockFn fn = gbn(pc);
+    if (!fn) { if (g_disp_n++ < 8) { printf("[DISPCALL-NOBLK] pc=%08X lr=%08X\n", pc, s->r[14]); fflush(stdout); } break; }
+    g_cur_block = pc;
+    uint32_t nx = fn(s);
+    if (nx == 0u || nx == 0xFFFFFFF0u || nx == 0xFFFFFFFEu || nx == 0xFFFFFFFDu) break;
+    pc = nx;
+  }
+  uint32_t _ret = s->r[0];
+  if (g_disp_n++ < 12) { printf("[DISPCALL2] cb=%08X a0=%08X a1=%08X blocks=%d ret=%08X\n", entry, a0, a1, n, _ret); fflush(stdout); }
   if ((g_cb5ec2||g_cb5ec6||g_cb5ef0) && g_cb5ec_n++ < 20) { printf("[CB5EC] entry=%08X blocks=%d pro=%d loop=%d epi=%d\n", entry, n, g_cb5ec2, g_cb5ec6, g_cb5ef0); fflush(stdout); g_cb5ec2=0; g_cb5ec6=0; g_cb5ef0=0; }
   { RecState _chk = *s; std::memcpy(_chk.r, save, sizeof(save)); ctxchk(5, 0u, &_chk); }
   std::memcpy(s->r, save, sizeof(save)); s->apsr = savea;
