@@ -938,6 +938,32 @@ static void job_probes(uint32_t pcv, RecState* s) {
   }
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
+      static int _gc_n = 0;
+      if (_gc_n++ < 120) { int _id = 0;
+        if (_a == 0x811849A4u) _id = 0; else if (_a == 0x811849ACu) _id = 1; else if (_a == 0x811849B4u) _id = 2; else if (_a == 0x811849BCu) _id = 3;
+        else if (_a == 0x811849C4u) _id = 4; else if (_a == 0x811849CCu) _id = 5; else if (_a == 0x811849D4u) _id = 6; else _id = 7;
+        printf("[GDCHK] id=%d at=%08X ret=%08X blk=%u fib=%08X\n", _id, _a, s->r[0], g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+    if (_a == 0x81185036u || _a == 0x811850BAu || _a == 0x81184FFEu) { static int _idr_n = 0;
+      if (_idr_n++ < 60) { uint32_t _c = s->r[5]; uint32_t _st = 0, _ix = 0, _hd = 0;
+        if (_c) { { uint8_t* _q = GP(_c); if (_q) std::memcpy(&_st, _q, 4); } { uint8_t* _q = GP(_c+4); if (_q) std::memcpy(&_ix, _q, 4); } { uint8_t* _q = GP(_c+8); if (_q) std::memcpy(&_hd, _q, 4); } }
+        printf("[IDR] at=%08X ctrl=%08X state=%d idx=%d handle=%08X r0=%08X blk=%u\n", _a, _c, (int)_st, (int)_ix, _hd, s->r[0], g_blkcnt_total); fflush(stdout); } }
+    if (_a == 0x81185616u) { static int _sr_n = 0;
+      if (_sr_n++ < 30) { uint32_t _h = 0, _t = 0; { uint8_t* _q = GP(0x813B01A8u); if (_q) std::memcpy(&_h, _q, 4); }
+        { uint8_t* _q = GP(0x813B01ACu); if (_q) std::memcpy(&_t, _q, 4); }
+        printf("[SEQREQ] #%d page(r0)=%08X a1=%08X a2=%08X a3=%08X ctrl=%08X table=%08X blk=%u fib=%08X\n", _sr_n, s->r[0], s->r[1], s->r[2], s->r[3], _h, _t, g_blkcnt_total, g_cur_fiber);
+        if (_h) { uint32_t _cur = 0, _fl = 0, _dl = 0; { uint8_t* _q = GP(_h); if (_q) std::memcpy(&_fl, _q, 4); } { uint8_t* _q = GP(_h+4); if (_q) std::memcpy(&_cur, _q, 4); } { uint8_t* _q = GP(_h+0xC); if (_q) std::memcpy(&_dl, _q, 4); }
+          printf("[SEQREQ]   ctrl flag=%08X cur=%d delay=%u\n", _fl, (int)_cur, _dl); }
+        if (_t) { for (int _p = 0; _p < 6; ++_p) { uint32_t _st = 0, _up = 0, _en = 0; uint32_t _b = _t + (uint32_t)_p * 0x50u;
+            { uint8_t* _q = GP(_b + 0x44); if (_q) std::memcpy(&_st, _q, 4); } { uint8_t* _q = GP(_b + 0x48); if (_q) std::memcpy(&_up, _q, 4); } { uint8_t* _q = GP(_b + 0x4C); if (_q) std::memcpy(&_en, _q, 4); }
+            if (_st || _up || _en) printf("[SEQREQ]   page%d start=%08X update=%08X end=%08X\n", _p, _st, _up, _en); } }
+        fflush(stdout); } }
+    if (_a == 0x811857C2u) { static int _so_n = 0; ++_so_n;
+      if (_so_n < 20 || (_so_n % 2000) == 0) { uint32_t _h = 0; { uint8_t* _q = GP(0x813B01A8u); if (_q) std::memcpy(&_h, _q, 4); }
+        uint32_t _fl = 0, _cur = 0, _dl = 0, _buf = 0;
+        if (_h) { { uint8_t* _q = GP(_h); if (_q) std::memcpy(&_fl, _q, 4); } { uint8_t* _q = GP(_h+4); if (_q) std::memcpy(&_cur, _q, 4); }
+          { uint8_t* _q = GP(_h+0xC); if (_q) std::memcpy(&_dl, _q, 4); } { uint8_t* _q = GP(_h+0x14); if (_q) std::memcpy(&_buf, _q, 4); } }
+        printf("[SEQOBS] #%d ctrl=%08X flag=%08X cur=%d delay=%u buf=%08X blk=%u\n", _so_n, _h, _fl, (int)_cur, _dl, _buf, g_blkcnt_total); fflush(stdout); } }
     if (_a == 0x8116F7CAu) { static int _pr_n = 0;
       if (_pr_n++ < 30) { char _nm[64] = {0}; uint8_t* _q = GP(s->r[1]); if (_q) { for (int _i = 0; _i < 60; ++_i) { char _c = (char)_q[_i]; if (!_c) break; _nm[_i] = (_c >= 32 && _c < 127) ? _c : '.'; } }
         printf("[PROCREG] #%d name='%s' arg=%08X cb0=%08X cb1=%08X obj=%08X blk=%08X fib=%08X\n", _pr_n, _nm, s->r[0], s->r[4], s->r[5], s->r[6], g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
@@ -3435,6 +3461,8 @@ static uint8_t* gimg_ptr() { return gp_img; }
 static int g_ind_n = 0;
 extern "C" uint32_t id_reg(int idx, RecState* s) {
   uint32_t t = s->r[idx & 15] & ~1u;
+  if ((g_cur_block >= 0x81185600u && g_cur_block <= 0x81185900u) || (g_cur_block >= 0x81184F00u && g_cur_block <= 0x81185100u)) { static int _sc_n = 0; if (_sc_n++ < 300) { printf("[SEQCB] blk=%08X target=%08X ring:", g_cur_block, t);
+      for (int _k = 0; _k < 10; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 10u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
   if (t == 0x8102A500u || t == 0x8116F748u || t == 0x8116FA5Cu) { static int _ir[3] = {0,0,0}; int _k = (t == 0x8102A500u) ? 0 : (t == 0x8116F748u ? 1 : 2);
     if (_ir[_k]++ < 40) { printf("[IDREG] #%d target=%08X from_blk=%08X lr=%08X sp=%08X fib=%08X thr=%08X reg0=%08X ring:", _ir[_k], t, g_cur_block, s->r[14], s->r[13], g_cur_fiber, g_cur_thr, s->r[0]);
       for (int _c = 0; _c < 12; ++_c) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_c) & 63u]); printf("\n"); fflush(stdout); } }
