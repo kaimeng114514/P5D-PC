@@ -923,6 +923,19 @@ static void pending_req_scan() {
 }
 
 static void job_probes(uint32_t pcv, RecState* s) {
+  { static int _pbshot = 0;
+    if (!_pbshot && g_blkcnt_total > 2000000u) {
+      _pbshot = 1;
+      printf("[PBSHOT] blk=%u curfib=%08X curthr=%08X pcv=%08X thrblocked=%d thrwait=%08X/%08X/%X\n",
+             g_blkcnt_total, g_cur_fiber, g_cur_thr, pcv, g_thr_blocked, g_thr_wait_obj, g_thr_wait_bits, g_thr_wait_mode);
+      for (auto& _kv : g_fctx) printf("[PBSHOT] fib=%08X pc=%08X sp=%08X lr=%08X r0=%08X r5=%08X r7=%08X\n",
+             _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[14], _kv.second.r[0], _kv.second.r[5], _kv.second.r[7]);
+      for (auto& _kv : g_thr) { HThread& _t = _kv.second;
+        printf("[PBSHOT] thr=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X ctxpc=%08X ctxsp=%08X ctxlr=%08X ctxr0=%08X\n",
+               _kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.wait_mode, _t.ctx.r[15], _t.ctx.r[13], _t.ctx.r[14], _t.ctx.r[0]); }
+      printf("[PBSHOT] pcring:"); for (int _k = 0; _k < 24; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n");
+      fflush(stdout);
+    } }
   if ((pcv & ~1u) == 0x8115922Cu && !g_movie_played) {
     g_movie_played = 1; g_movie_probe_n = 0;
     static int _msp = 0; if (_msp++ < 6) { printf("[MOVIEPLAY] FUN_8115922C PLAY MOVIE seen (blk=%08X fib=%08X) - will fake completion after movie object exists\n", g_cur_block, g_cur_fiber); fflush(stdout); }
@@ -3490,6 +3503,8 @@ static uint8_t* gimg_ptr() { return gp_img; }
 static int g_ind_n = 0;
 extern "C" uint32_t id_reg(int idx, RecState* s) {
   uint32_t t = s->r[idx & 15] & ~1u;
+  if (t == 0x81198C0Au) { static int _c993 = 0; if (_c993++ < 20) { printf("[CALLER993] blk=%08X fib=%08X thr=%08X lr=%08X ring:", g_cur_block, g_cur_fiber, g_cur_thr, s->r[14]);
+      for (int _k = 0; _k < 12; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
   if ((g_cur_block >= 0x81185600u && g_cur_block <= 0x81185900u) || (g_cur_block >= 0x81184F00u && g_cur_block <= 0x81185100u)) { static int _sc_n = 0; if (_sc_n++ < 300) { printf("[SEQCB] blk=%08X target=%08X ring:", g_cur_block, t);
       for (int _k = 0; _k < 10; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 10u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
   if (t == 0x8102A500u || t == 0x8116F748u || t == 0x8116FA5Cu) { static int _ir[3] = {0,0,0}; int _k = (t == 0x8102A500u) ? 0 : (t == 0x8116F748u ? 1 : 2);
@@ -5424,6 +5439,19 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     if (g_thrpump3 && ((n & 0x3F) == 0) && !g_thr.empty() && ((nxt & ~1u) == 0x8120682Au || (nxt & ~1u) == 0x812067A0u)) {
       hle_thr_pump(&s, 80); }
     if ((n % 5000) == 0) {
+      { static int _pbshot2 = 0;
+        if (!_pbshot2 && n > 2000000) {
+          _pbshot2 = 1;
+          printf("[PBSHOT] n=%d curfib=%08X curthr=%08X s.pc=%08X s.sp=%08X thrblocked=%d thrwait=%08X/%08X/%X\n",
+                 n, g_cur_fiber, g_cur_thr, s.r[15], s.r[13], g_thr_blocked, g_thr_wait_obj, g_thr_wait_bits, g_thr_wait_mode);
+          for (auto& _kv : g_fctx) printf("[PBSHOT] fib=%08X pc=%08X sp=%08X lr=%08X r0=%08X r5=%08X r7=%08X\n",
+                 _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[14], _kv.second.r[0], _kv.second.r[5], _kv.second.r[7]);
+          for (auto& _kv : g_thr) { HThread& _t = _kv.second;
+            printf("[PBSHOT] thr=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X ctxpc=%08X ctxsp=%08X ctxlr=%08X ctxr0=%08X\n",
+                   _kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.wait_mode, _t.ctx.r[15], _t.ctx.r[13], _t.ctx.r[14], _t.ctx.r[0]); }
+          printf("[PBSHOT] pcring:"); for (int _k = 0; _k < 24; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n");
+          fflush(stdout);
+        } }
       { uint32_t _fw[4] = {0,0,0,0}; uint8_t* _fq0 = GP(0x816CC630u); if (_fq0) std::memcpy(_fw, _fq0, 16);
   printf("[FRAMEDUMP] n=%d flags=%08X t4=%u t8=%u ctr=%u pc=%08X blk=%08X sp=%08X fib=%08X gxm(b/e/p)=%d/%d/%d\n", n, _fw[0], _fw[1], _fw[2], _fw[3], nxt, g_cur_block, s.r[13], g_cur_fiber, g_gxm_begin_n, g_gxm_end_n, g_gxm_present_n); }
 if (0) { uint32_t _fc = 0; uint8_t* _fq = GP(0x816CC63Cu); if (_fq) std::memcpy(&_fc, _fq, 4);
