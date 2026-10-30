@@ -5507,6 +5507,12 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
+    if (getenv("P5D_PROBE1") && (g_cur_block == 0x8121CE34u || (g_cur_block >= 0x8121C000u && g_cur_block < 0x8121D000u))) { static int _p1 = 0; if (_p1++ < 16) {
+        uint32_t _st = s.r[0]; uint8_t* _q = GP(_st);
+        printf("[P1] #%d blk=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X lr=%08X sp=%08X fib=%08X", _p1-1, g_cur_block, s.r[0], s.r[1], s.r[2], s.r[3], s.r[4], s.r[5], s.r[14], s.r[13], g_cur_fiber);
+        if (_q) { printf(" st: "); for (int _k = 0; _k < 10; ++_k) { uint32_t _v=0; std::memcpy(&_v, _q + _k*4, 4); printf(" +%X=%08X", _k*4, _v); } }
+        printf("\n"); fflush(stdout);
+        printf("[P1] ring:"); for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (getenv("P5D_PCTRACE") && ((n <= 2000) || (n < 2000000 && ((uint32_t)n % 100u) == 0u))) { printf("[PCTRACE] n=%u blk=%u pc=%08X fib=%08X thr=%08X\n", (unsigned)n, g_blkcnt_total, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); }
     if (g_watch_addr != 0) {   // 18.4173: GP-based watch (heap addresses are not at va-IMG_VA_BASE)
       uint8_t* _wp = GP(g_watch_addr);
