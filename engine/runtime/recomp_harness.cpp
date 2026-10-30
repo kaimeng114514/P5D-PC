@@ -1020,7 +1020,7 @@ static void job_probes(uint32_t pcv, RecState* s) {
     if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
       static int _gc_n = 0; static int _gc_late = 0; ++_gc_n;
       int _late = (g_main_n > 10000000u && !_gc_late); if (_late) _gc_late = 1;
-      if (_gc_n < 120 || _late) { int _id = 0;
+      if (_gc_n < 120 || (_gc_n % 10000) == 0 || _late) { int _id = 0;
         if (_a == 0x811849A4u) _id = 0; else if (_a == 0x811849ACu) _id = 1; else if (_a == 0x811849B4u) _id = 2; else if (_a == 0x811849BCu) _id = 3;
         else if (_a == 0x811849C4u) _id = 4; else if (_a == 0x811849CCu) _id = 5; else if (_a == 0x811849D4u) _id = 6; else _id = 7;
         printf("[GDCHK] id=%d at=%08X ret=%08X n=%u late=%d fib=%08X\n", _id, _a, s->r[0], g_main_n, _late, g_cur_fiber); fflush(stdout); } }
@@ -5514,6 +5514,15 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
             }
             fflush(stdout); }
         } }
+      if ((n % 5000000) == 0) { static int _jb_n = 0; ++_jb_n;
+        uint32_t _s1=0,_s2=0,_s3=0,_s4=0,_pg=0,_ctr2=0;
+        { uint8_t* _q=GP(0x85AB1180u+4u); if(_q) std::memcpy(&_s1,_q,4); }
+        { uint8_t* _q=GP(0x85AB0D90u+4u); if(_q) std::memcpy(&_s2,_q,4); }
+        { uint8_t* _q=GP(0x85A7FBC0u+4u); if(_q) std::memcpy(&_s3,_q,4); }
+        { uint8_t* _q=GP(0x85A8B980u+4u); if(_q) std::memcpy(&_s4,_q,4); }
+        { uint8_t* _q=GP(0x816CC63Cu); if(_q) std::memcpy(&_ctr2,_q,4); }
+        { uint8_t* _q=GP(0x813B01A8u); if(_q) std::memcpy(&_pg,_q,4); }
+        printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg); fflush(stdout); }
       if ((n % 10000000) == 0) { static int _ts_n = 0; ++_ts_n;
         printf("[TS] n=%d thr=%zu fib=%zu\n", n, g_thr.size(), g_fctx.size());
         for (auto& _kv : g_thr) { HThread& _t = _kv.second;
