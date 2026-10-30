@@ -1528,6 +1528,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       fflush(stdout);
       r0 = 0; break; }
     case 0x812B1B80u: {                                               // sceFiberRun(fiber, ...): start/resume the fiber
+      { static int _frn = 0; if (_frn++ < 24) { uint32_t _fb = s->r[0] & ~1u; auto _fi = g_fctx.find(_fb);
+          printf("[FIBRUN] #%d lr=%08X arg=%08X fb=%08X curfib=%08X hasctx=%d fpc=%08X fentry=%08X farg=%08X\n", _frn-1, s->r[14], s->r[1], _fb, g_cur_fiber, (int)(_fi!=g_fctx.end()), _fi!=g_fctx.end()?_fi->second.r[15]:0u, _fi!=g_fctx.end()?_fi->second.r[14]:0u, _fi!=g_fctx.end()?_fi->second.r[0]:0u); fflush(stdout); } }
       if (g_blkcnt_total > 1400000u) { static int _frl=0; if (_frl++ < 40) { printf("[FRUN2] n=%u r0=%08X cur=%08X fex=%d inexec=%d lr=%08X sp=%08X ring:", g_blkcnt_total, s->r[0], g_cur_fiber, g_in_fex, g_in_fiber_exec, s->r[14], s->r[13]);
         for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       uint32_t fb = s->r[0] & ~1u;
@@ -1570,6 +1572,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       break; }
     case 0x812B1BA0u: {                                               // sceFiberSwitch(fiber, ...): start/resume target
+      { static int _fsn = 0; if (_fsn++ < 24) { uint32_t _fb = s->r[0] & ~1u; auto _fi = g_fctx.find(_fb);
+          printf("[FIBSW] #%d lr=%08X arg=%08X fb=%08X curfib=%08X hasctx=%d fpc=%08X flr=%08X fr0=%08X\n", _fsn-1, s->r[14], s->r[1], _fb, g_cur_fiber, (int)(_fi!=g_fctx.end()), _fi!=g_fctx.end()?_fi->second.r[15]:0u, _fi!=g_fctx.end()?_fi->second.r[14]:0u, _fi!=g_fctx.end()?_fi->second.r[0]:0u); fflush(stdout); } }
       if (g_blkcnt_total > 1400000u) { static int _fsl=0; if (_fsl++ < 40) { printf("[FSW2] n=%u r0=%08X cur=%08X fex=%d inexec=%d lr=%08X sp=%08X ring:", g_blkcnt_total, s->r[0], g_cur_fiber, g_in_fex, g_in_fiber_exec, s->r[14], s->r[13]);
         for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       if (g_blkcnt_total > 1400000u && (s->r[0] & ~1u) == g_cur_fiber) {
@@ -5507,6 +5511,10 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
+    if (n == 3000 || n == 12000 || n == 50000) { printf("[TSD n=%d] thr=%zu fib=%zu curfib=%08X curthr=%08X\n", n, g_thr.size(), g_fctx.size(), g_cur_fiber, g_cur_thr);
+      for (auto& _kv : g_thr) printf("[TSD]  tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X pc=%08X sp=%08X lr=%08X r0=%08X\n", _kv.first, _kv.second.entry, _kv.second.alive, _kv.second.ready, _kv.second.waiting, _kv.second.wait_obj, _kv.second.wait_bits, _kv.second.ctx.r[15], _kv.second.ctx.r[13], _kv.second.ctx.r[14], _kv.second.ctx.r[0]);
+      for (auto& _kv : g_fctx) printf("[TSD]  fib=%08X pc=%08X sp=%08X lr=%08X r0=%08X\n", _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[14], _kv.second.r[0]);
+      fflush(stdout); }
     if (getenv("P5D_PROBE1") && (g_cur_block == 0x8121CE34u || (g_cur_block >= 0x8121C000u && g_cur_block < 0x8121D000u))) { static int _p1 = 0; if (_p1++ < 16) {
         uint32_t _st = s.r[0]; uint8_t* _q = GP(_st);
         printf("[P1] #%d blk=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X lr=%08X sp=%08X fib=%08X", _p1-1, g_cur_block, s.r[0], s.r[1], s.r[2], s.r[3], s.r[4], s.r[5], s.r[14], s.r[13], g_cur_fiber);
