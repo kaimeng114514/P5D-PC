@@ -926,6 +926,13 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x81278F96u || _a0 == 0x81279176u || _a0 == 0x81279486u || _a0 == 0x81279520u) {
+      static int _lg_n = 0;
+      if ((_a0 == 0x81278F96u || _a0 == 0x81279176u || _a0 == 0x81279486u || _a0 == 0x81279520u) && _lg_n++ < 200) {
+        uint32_t _fp = (_a0 == 0x81278F96u) ? s->r[1] : s->r[1]; char _msg[200] = {0};
+        { uint8_t* _q = GP(_fp); if (_q) { for (int _k = 0; _k < 190; ++_k) { char _c = (char)_q[_k]; if (!_c) break; _msg[_k] = (_c >= 32 && _c < 127) ? _c : 0x2E; } } }
+        printf("[CRILOG] at=%08X n=%u r0=%08X r1=%08X r2=%08X r3=%08X msg=%s\n", _a0, g_main_n, s->r[0], s->r[1], s->r[2], s->r[3], _msg); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
     if (_a0 == 0x81285E86u || _a0 == 0x81286336u || _a0 == 0x81286368u || _a0 == 0x812864B4u || _a0 == 0x8128665Au || _a0 == 0x8128E394u) {
       static int _bd_n = 0; static int _bd_late = 0; ++_bd_n;
       int _late = (g_main_n > 10000000u && !_bd_late); if (_late) _bd_late = 1;
@@ -1414,7 +1421,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2380u: r0 = 0; break;                                  // clock
     case 0x812B2390u: { if (s->r[0]) { uint8_t* q = GP(s->r[0]); if (q) { uint32_t z = 0; std::memcpy(q, &z, 4); } } r0 = 0; break; }  // time
     case 0x812B2400u: r0 = 0; break;                                  // localtime
-    case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr (18.4272: reverted - old-runtime work+4/+8 writes reproduce the documented M684 BADMEM va=8 negative result)
+    case 0x812B2910u: {                                               // 18.4415: sceKernelCreateLwMutex(work,name,attr,count,opt) -> 0 on success; ZERO the SceKernelLwMutexWork (0x20 B) at r0
+      uint32_t _w = s->r[0]; if (_w) { uint8_t* _p = GP(_w); if (_p) std::memset(_p, 0, 0x20); }
+      r0 = 0; break; }
     case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread)
       if (g_hostthreads) { uint32_t me = tl_ht_tid ? tl_ht_tid : 0x40010000u; uint32_t w = s->r[0]; auto& e = g_lwm_real[w];
         for (;;) { if (e.first == 0u || e.first == me || g_shutdown) break; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(200)); }
