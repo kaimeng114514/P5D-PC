@@ -1279,7 +1279,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
-  { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; if (_stk) _a3 = _stk[0]; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   { g_hle_ring_va[g_hle_ring_n & 127] = stub_va; g_hle_ring_lr[g_hle_ring_n & 127] = s->r[14]; ++g_hle_ring_n; }
   if (g_in_fiber_exec && g_cur_fiber && g_cur_fiber != g_fiber_list.empty() && 0) {}
   if (g_in_fiber_exec && g_cur_fiber && g_fiber_list.size() > 1 && g_cur_fiber == g_fiber_list[1] && g_f2hle_n++ < 90) {
@@ -1945,7 +1945,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       hle_eflag_set(0x60014000u, 1u); hle_eflag_set(0x60015000u, 1u);   // 18.4264: wake guest Fios worker threads (op completion notification)
       r0 = op; break; }
     case 0x812B19D0u: {                                               // sceFiosFHRead(op, fh, dst, ...; size at [sp])
-      if (g_main_n >= 59000000u) { static int _fr_n=0; if (_fr_n++ < 120) { printf("[FHREAD57] fh=%08X dst=%08X size=%08X pc=%08X fib=%08X\n", s->r[1], s->r[2], _stk[0], g_cur_block, g_cur_fiber); fflush(stdout); } }
+      if (g_main_n >= 59000000u) { static int _fr_n=0; if (_fr_n++ < 120) { printf("[FHREAD57] fh=%08X dst=%08X size=%08X pc=%08X fib=%08X\n", s->r[1], s->r[2], 0u, g_cur_block, g_cur_fiber); fflush(stdout); } }
       ++g_fread_n;
       auto it = g_fios_data.find(s->r[1]);
       uint32_t size = 0; { uint8_t* q = GP(s->r[13]); if (q) std::memcpy(&size, q, 4); }
