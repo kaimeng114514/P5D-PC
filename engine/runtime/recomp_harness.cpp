@@ -5575,6 +5575,21 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
+    { static int _lf=-1; if (_lf<0) { const char* _e=getenv("P5D_LISTPROBE"); _lf=(_e&&atoi(_e))?1:0; }
+      if (_lf) {
+        auto _w=[&](uint32_t va)->uint32_t { uint8_t* q=GP(va); uint32_t v=0; if(q) std::memcpy(&v,q,4); return v; };
+        if (g_cur_block == 0x812068D2u || g_cur_block == 0x812068C4u || g_cur_block == 0x812068BCu) { static int _c=0; if (_c++ < 30) {
+            printf("[LIST] blk=%u cur=%08X pc=%08X headA18=%08X tailA1C=%08X A80=%08X A94=%08X A98=%08X B80=%08X B94=%08X B98=%08X\n",
+              g_blkcnt_total, g_cur_fiber, g_cur_block, _w(0x816CC624u), _w(0x816CC620u),
+              _w(0x84836300u+0x80u), _w(0x84836300u+0x94u), _w(0x84836300u+0x98u),
+              _w(0x848463A0u+0x80u), _w(0x848463A0u+0x94u), _w(0x848463A0u+0x98u)); fflush(stdout); } }
+        if (n == 3000000) { printf("[LIST@3M] head=%08X tail=%08X A80=%08X A94=%08X A98=%08X B80=%08X B94=%08X B98=%08X cur=%08X pc=%08X\n",
+              _w(0x816CC624u), _w(0x816CC620u), _w(0x84836300u+0x80u), _w(0x84836300u+0x94u), _w(0x84836300u+0x98u),
+              _w(0x848463A0u+0x80u), _w(0x848463A0u+0x94u), _w(0x848463A0u+0x98u), g_cur_fiber, g_cur_block);
+          printf("[RAW] 0x816CBC08+0xA00:"); for (int _i=0;_i<16;++_i) printf(" %08X", _w(0x816CC608u+_i*4u)); printf("\n");
+          printf("[RAW] 0x816CC5E0:"); for (int _i=0;_i<32;++_i) printf(" %08X", _w(0x816CC5E0u+_i*4u));
+          printf("\n[DUMPSELF] "); { uint8_t* q=GP(0x85119330u); if(q){ for(int _i=0;_i<8;++_i){uint32_t v=0; std::memcpy(&v,q+_i*4,4); printf(" %08X",v);} } } printf("\n"); fflush(stdout); }
+      } }
     if (g_cur_block == 0x8120683Cu) { static int _s68=0; if (_s68++ < 12) { printf("[S683C] #%d n=%u r0=%08X r1=%08X lr=%08X sp=%08X fib=%08X\n", _s68-1, g_main_n, s.r[0], s.r[1], s.r[14], s.r[13], g_cur_fiber); fflush(stdout); } }
     if (g_cur_block == 0x81206BDCu || g_cur_block == 0x81206BDEu) { static int _s6bd=0; if (_s6bd++ < 12) { printf("[S6BD] #%d n=%u r0=%08X r1=%08X lr=%08X sp=%08X fib=%08X\n", _s6bd-1, g_main_n, s.r[0], s.r[1], s.r[14], s.r[13], g_cur_fiber); fflush(stdout); } }
     if (g_cur_block == 0x81159DC2u || g_cur_block == 0x81159DC0u || g_cur_block == 0x81159DBEu || g_cur_block == 0x81198C0Bu) { static int _cs=0; if (_cs++ < 6) { printf("[CALLSITE] blk=%08X n=%u curfib=%08X sp=%08X lr=%08X r0=%08X\n", g_cur_block, g_main_n, g_cur_fiber, s.r[13], s.r[14], s.r[0]); fflush(stdout); } }
