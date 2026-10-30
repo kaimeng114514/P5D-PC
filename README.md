@@ -11,40 +11,45 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 
 ---
 
-## 当前状态（2026-10-29，持续更新；整体约 35–40%）
+## 当前状态（2026-10-30，持续更新；整体约 50–55%）
 
 | 模块 | 完成度 | 当前状态 |
 |---|---|---|
-| ARM/Thumb → x86-64 **AOT 静态重编译** | 85–90% | 主函数表 12,921 个 + Ghidra 补充 1,907 个（共 **14,828 函数 / 229,744 基本块**）已翻译并原生运行；`[NOFN]=0`（翻译覆盖缺口全部消除） |
-| 原版 eboot/SELF **原样加载** | 85–90% | ELF 段映射、导入表、NID 解析可用；默认 30M guest 块稳定 `exit=0` |
-| **HLE 系统 API 接管** | 55–60% | 内存/线程/fiber/文件/GXM 骨架工作；**游戏自己的文件打开路径已能从我们的 CPK 供给数据**（两个 GFD 全部 `state=3` 加载完成，字体 3 个全部加载） |
-| **GXM → Vulkan** | 30–35% | Vuekan 后端初始化成功；`CreateContext` / `CreateRenderTarget` 已成功；**59 个 ShaderPatcher 创建** + Vertex/FragmentProgram 创建 + 24 次 precomputed-draw 调用；**BeginScene/EndScene/Present 仍为 0** |
-| 资源 / 文件系统 | 60–65% | `GFDPSP2PRESET.GSC`(62,100) 与 `GFDPSP2.GSC`(4,094,756) 经游戏自身 Fios 打开路径加载；`c_font_p5.fnt`(1,167,652)、`font_staff.fnt`(28,176)、`font.ctbl`(22,024) 全部加载 |
-| 线程 / fiber | 60–65% | 游戏已进入自己的每帧调度循环（`0x812067A0` 管理器循环 + `0x811E5CDA` 帧槽）；阻塞：fiber 与 main 线程**共用同一栈区**导致挂起帧被解码器覆盖（见下） |
-| 音频（SceNgs）/ 输入（SceCtrl、SceTouch）/ 视频解码 | 3–5% / ~10% / 0% | 桩或未开始 |
-| 场景链 S0→S4→RESULT | 0/7 | 尚未到达第一个 BeginScene |
-| 单 exe 打包 / 移动端 | ~40% / 0% | 仓库/许可/审计/CI 在，未产出单文件成品；移动端未开始 |
+| ARM/Thumb → x86-64 **AOT 静态重编译** | 90–95% | 共 **229,791 个基本块 / 32 个宿主批次**已翻译并原生运行；`[NOFN]=0`。M864 通过 `batch_031`（补充 `extra6_funcs.json`：`{va:0x8118285A,size:0x174}`）修复了 IDA 函数边界截断造成的缺失块 `0x811829CC`（直接导致游戏自己的虚拟文件 worker 线程死亡） |
+| 原版 eboot/SELF **原样加载** | 85–90% | ELF 段映射、导入表、NID 解析可用；默认 30M guest 块稳定 `exit=0`；**完整 boot 链已打通**：S0_LOGO → 启动影片（约 100 秒虚拟时间）→ 应用世界在 n≈61M 处恢复运行 |
+| **HLE 系统 API 接管** | 65–70% | 内存/线程/fiber/信号量/事件标志/消息/文件/GXM 骨架工作；M868 修复 `sceKernelCreateLwMutex` 语义（原实现返回堆指针而非错误码 0，导致 CRI 初始化静默失败）；新增 `[CRILOG]` 探针接管 CRI 日志函数，可直接看到游戏内部初始化错误 |
+| **GXM → Vulkan** | 40–50% | Vulkan 后端初始化成功；`CreateContext` / `CreateRenderTarget` / ShaderPatcher / 程序创建已通；**BeginScene/EndScene/Present 仍为 0**（尚未产生可见帧） |
+| 资源 / 文件系统 | 60–65% | 已挂载 `data.cpk`（10,555 文件）+ `vita.cpk`（531 文件）；25 个 title/staff/sound 资源名已解析；两个 GLOBAL_RESOURCE 加载器对象已到达 state `0xC`；但 appResourceList 的 stream 对象因 binder 未初始化停在 state `0x13` |
+| 线程 / fiber / 调度 | 75–80% | 游戏已进入自己的每帧调度循环（GFD 主循环 + appProcess 调度器 + app 帧更新）；帧计数 ctr 已推进到 681+；虚拟文件 worker 线程（`4001B000`）已修复存活，`FUN_81182742` 虚拟文件处理器累计运行 **729 万次以上** |
+| 音频（SceNgs / CRI Atom） | 5–10% | CRI Atom 初始化已真正进入；当前因 **ACF 配置文件缺失 + 工作缓冲不足** 中止（见下方阻塞） |
+| 输入（SceCtrl / SceTouch） | ~10% | Pad 骨架可用，游戏 side 尚未接入完整输入流 |
+| 视频解码 | 5–10% | 启动 USM 影片的 guest 解码循环已跑通（Huffman 解码器 `FUN_811DF91A`，约 5,000 万块 ≈ 100 秒虚拟时间），真实解码调用 12 次 |
+| 场景链 S0→S4→RESULT | S0 ✅ / S1 加载中 / S2–S4 0/7 | S0_LOGO 完整通过；S1_TITLE 资源加载被上方 binder 卡点阻塞；S2_MENU / S3_SELECT / S4_GAME / RESULT 尚未到达 |
+| 单 exe 打包 / 移动端 | ~40% / 0% | 仓库/许可证/审计/CI 在跑，尚未产出单文件成品；移动端未开始 |
 
-### 最近里程碑（M797–M806）
+### 最近关键里程碑（M844–M868）
 
-- **M797**：`rea` 在 Windows 上可分析原版 ARM eboot（本地补丁 rea 的 Windows-P0 策略 + Ghidra 12.1.3 + JDK-21）
-- **M798**：Ghidra 工程导出 16,484 函数，对比主表后补充 **1,907 个翻译函数 / 8,828 块**，`[NOFN]` 全部消除
-- **M799**：`rea decompile` 确认 GFD 循环 `FUN_811df91a` 是 Huffman 解码器（合法长解码，非死循环）
-- **M800**：canary 监视改为 env 门控（5× 提速）；pump2 对已完成 fiber 不再无限重跑
-- **M801**：手工块 `mb_81181D90` 让**游戏自己的文件打开路径**从 CPK 供给数据（`[OPENRET] state4=3`）
-- **M802**：`mb_8118310A` 安全 worker 块消除 BADMEM abort → **第二个虚拟文件 `GFDPSP2.GSC`(4MB) 完整加载**
-- **M803**：全部资源（2 GFD + 3 字体）经游戏自身路径加载完毕，游戏进入**自己的帧循环**
-- **M804**：GXM 空句柄合成（`0x85410000+`）→ 游戏开始真正构建渲染管线（Context/RenderTarget/59 ShaderPatcher/PrecomputedDraw）
-- **M805/M806**：定位 `pc=0x1F1` 根因 —— GFD 解码器（`FUN_811df91a`，栈帧约 0x7420 字节）在**共享栈**上覆盖了 fiber1 的挂起 delay 帧（`A05FFC10` 附近），fiber 恢复时弹出解码树节点值 `0x1F1`
+- **M844–M847**：显示回调桥接（`p5d_hle_set_display_cb` / display queue）；`mb_811EB930` 显示提交空指针守卫（手工块）
+- **M848–M850**：启动影片快速结束（`call_guest_cb2` + 影片完成回调），boot 不再卡在影片播放
+- **M852–M859**：修正探针判定错误（嵌套 fiber 执行中 `g_blkcnt_total` 冻结 → 全部迟采样改用 `g_main_n`）；**关键突破**：之前"boot 后就停住"其实是启动 dummy-USM 影片造成的约 100 秒虚拟时间挂起，应用世界在 **n≈60,916,231** 正式恢复运行
+- **M860–M866**：恢复后一切都在运行（GFD 主循环、app 帧循环、sequence 观察者、appResourceList 泵、initDataRead 步骤），唯一卡点是**异步文件读取不完成**；随后完整解码了虚拟文件层：处理器 `FUN_81182742`（24 项状态跳转表 `0x81182764`）、读取器 `FUN_811823FE`（stream 字段 `+0x88 大小/+0x94 缓冲/+0x9C binder 句柄/+0xA0 完成标志`，状态 `0x10→0x11→0x13/0xC`）
+- **M863**：根因定位——游戏自己的虚拟文件 worker 线程 `4001B000` 在第一次循环后死亡；`[THREXIT] badblock tid=4001B000 pc=811829CC` 指出缺失的基本块
+- **M864**：用补充批次 `batch_031` 补上 `0x811829CC`（处理器函数尾部，IDA 边界 `FUN_81182742 size=280` 截断）→ **worker 存活，虚拟文件处理器运行 729 万次以上，stream 状态开始推进（0→0x10）**
+- **M867**：确认 binder 模块从未初始化（`DAT_8153FEF4=0` 全程；初始化点 `FUN_81284960` @0x81284CDC，唯一调用者链 `FUN_8128399E = criFs_Initialize`）
+- **M868**：**修复重大 HLE 语义 bug**：`sceKernelCreateLwMutex` 原返回 `hle_malloc(64)` 指针，而 API 返回错误码（0=成功）→ CRI 初始化报 `E10062288:sceKernelCreateLwMutex function has failed.` 并中止；修复后 CRI Atom/FS 初始化真正向前推进，`[CRILOG]` 探针暴露出下一批精确阻塞
 
-### 当前阻塞
+### 当前阻塞（明确、可执行）
 
-fiber1 与 main/嵌套解码执行**共用同一个 `A05Fxxxx` 栈区**：解码器在 fiber1 挂起后继续使用该栈，覆盖了 fiber1 保存的返回帧，
-导致恢复时 `pc=0x1F1`（NOFN 6 次后恢复）。真实硬件上每个 fiber 由 `sceFiberInitialize` 分配**私有栈**。
-下一步：记录游戏传入的 `addrContext/sizeContext` 参数，为每个 fiber 分配私有栈并在调度器中强制 sp 归属不变量；
-修好后即可让帧回调路径继续走向 `BeginScene → EndScene → DisplayQueue → 第一帧 Present`。
+- **CRI Atom 初始化失败**（`E2009072703:Insufficient buffer size.` 来自 `FUN_81224160 = criAtom_Initialize`；`E2010052671:Can not open ACF file.`）
+- → `criFs_Initialize`（`FUN_8128399E`）未被调用 → **CRI FS binder 模块未初始化**（`DAT_8153FEF4=0`）
+- → 资源文件大小查询被拒绝（`W2008121610:The binder module is not initialized.`）→ 虚拟文件 stream 停在错误态 `0x13`
+- → `global_resource_810995D4()` 忙位不清 → `init gamedata` 不结束 → **boot page1 不结束 → 标题页不出现**
 
-> 详细证据、里程碑与历史纠正在 [docs/P5D_MASTER.md](docs/P5D_MASTER.md)（当前约 34 MB，含 M1–M806 全部记录）。
+下一步任务顺序：
+1. 定位 ACF 文件（`*.acf`）在 CPK 中的名字，让文件 HLE 返回 guest 期望的路径；修复 criAtom "工作缓冲不足"（调用方传入大小 vs 需求）
+2. criAtom 初始化完成 → `criFs_Initialize` 执行 → binder 初始化 → 文件大小可查
+3. stream 状态进入 `0x11` → 异步读完成回调 `LAB_811829E2` → `0xC` → 资源节点完成 → `init gamedata` → **boot page1 结束**
+4. 之后进入标题页 → 下一个大关是 **GXM 真实渲染管线**（BeginScene / EndScene / Present / 绘制调用）
 
 ## 仓库结构
 
