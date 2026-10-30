@@ -2613,10 +2613,14 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       if (g_cur_fiber) { FCtx& _c = g_fctx[g_cur_fiber]; _c.r[15] = 0u; }
       // 18.3766: when a fiber finishes (pc=0), publish the completion bit [fiber+0x80] |= 2 so the game's
       // main loop (0x812067A0/0x8120683C) observes it and can continue the init sequence.
-      if (pc == 0u && g_cur_fiber) {
-        uint8_t* q = GP(g_cur_fiber + 0x80u);
-        if (q) { uint32_t v; std::memcpy(&v, q, 4); v |= 2u; std::memcpy(q, &v, 4);
-          if (g_finbit_n++ < 10) printf("[FINBIT] fiber=%08X [fiber+0x80]|=2 (now %08X)\n", g_cur_fiber, v); }
+      if (pc == 0u) {
+        // 18.4428: publish the completion bit on the fiber that was ACTUALLY launched (exec_origin_fiber),
+        // not only on g_cur_fiber (which may already be the next fiber after an in-fiber sceFiberSwitch).
+        uint32_t _fins[2] = { g_cur_fiber, exec_origin_fiber }; int _fin_n = (exec_origin_fiber && exec_origin_fiber != g_cur_fiber) ? 2 : 1;
+        for (int _fk = 0; _fk < _fin_n; ++_fk) { uint32_t _fb = _fins[_fk]; if (!_fb) continue;
+          uint8_t* q = GP(_fb + 0x80u);
+          if (q) { uint32_t v; std::memcpy(&v, q, 4); v |= 2u; std::memcpy(q, &v, 4);
+            if (g_finbit_n++ < 16) printf("[FINBIT] fiber=%08X [fiber+0x80]|=2 (now %08X)\n", _fb, v); } }
       }
       // 18.3819: if we were executing a SWITCHED-TO fiber and it just finished, restore the ORIGINAL fiber and
       // continue its loop instead of abandoning it (this was why fiber1 never returned to the loader slot).
@@ -5520,6 +5524,8 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
+    if (g_cur_block == 0x8120683Cu) { static int _s68=0; if (_s68++ < 12) { printf("[S683C] #%d n=%u r0=%08X r1=%08X lr=%08X sp=%08X fib=%08X\n", _s68-1, g_main_n, s.r[0], s.r[1], s.r[14], s.r[13], g_cur_fiber); fflush(stdout); } }
+    if (g_cur_block == 0x81206BDCu || g_cur_block == 0x81206BDEu) { static int _s6bd=0; if (_s6bd++ < 12) { printf("[S6BD] #%d n=%u r0=%08X r1=%08X lr=%08X sp=%08X fib=%08X\n", _s6bd-1, g_main_n, s.r[0], s.r[1], s.r[14], s.r[13], g_cur_fiber); fflush(stdout); } }
     if (g_cur_block == 0x81159DC2u || g_cur_block == 0x81159DC0u || g_cur_block == 0x81159DBEu || g_cur_block == 0x81198C0Bu) { static int _cs=0; if (_cs++ < 6) { printf("[CALLSITE] blk=%08X n=%u curfib=%08X sp=%08X lr=%08X r0=%08X\n", g_cur_block, g_main_n, g_cur_fiber, s.r[13], s.r[14], s.r[0]); fflush(stdout); } }
     if (n == 3000000 && getenv("P5D_STACKSCAN")) { printf("[STK] n=%d pc=%08X sp=%08X fib=%08X thr=%08X\n", n, s.r[15], s.r[13], g_cur_fiber, g_cur_thr); fflush(stdout);
       uint8_t* _q = GP(s.r[13]); if (_q) { for (int _k = 0; _k < 96; ++_k) { uint32_t _v=0; std::memcpy(&_v, _q + _k*4, 4); if (_v >= 0x80600000u && _v < 0x84A00000u) printf("[STK]  [sp+%03X]=%08X\n", _k*4, _v); } } fflush(stdout); }
