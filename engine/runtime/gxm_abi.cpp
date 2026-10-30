@@ -29,6 +29,13 @@
 #include <cstdint>
 #include <cstring>
 
+// M844: bridge for the guest displayQueueCallback (registered in SceGxmInitializeParams[+8], data size at +0xC).
+// The backend sceGxmDisplayQueueAddEntry is a pure STUB, so without this bridge the guest callback never runs and
+// the app frame pacing (display queue sync) stalls.
+extern "C" void p5d_hle_set_display_cb(uint32_t cb, uint32_t cbds);
+extern "C" void p5d_hle_display_queue(uint32_t cb, uint32_t data);
+static uint32_t g_p5d_display_cb = 0;
+
 #ifndef GXM_ABI_CALL_STUB_IMPLS
 #define GXM_ABI_CALL_STUB_IMPLS 0
 #endif
@@ -224,10 +231,11 @@ extern "C" uint32_t gxm_abi_call_05032658(uint32_t* regs, uint32_t* stack_args) 
     void* p0 = gxm_abi_xlate(a0);   // const SceGxmShaderPatcherParams *
     void* out1 = nullptr;   // host-side out handle, converted back below
     int32_t rv = sceGxmShaderPatcherCreate(p0, &out1);
-    if (out1) {
+    {
         void* slot = gxm_abi_xlate(a1);
         if (slot) {
-            uint32_t guest_handle = gxm_abi_untranslate_ptr(out1);
+            static uint32_t _fh = 0x85410000u;   // M804: synthesize a valid opaque guest handle when backend leaves out null
+            uint32_t guest_handle = out1 ? gxm_abi_untranslate_ptr(out1) : (_fh += 0x40u);
             std::memcpy(slot, &guest_handle, sizeof(guest_handle));
         }
     }
@@ -377,10 +385,11 @@ extern "C" uint32_t gxm_abi_call_207AF96B(uint32_t* regs, uint32_t* stack_args) 
     void* p0 = gxm_abi_xlate(a0);   // const SceGxmRenderTargetParams *
     void* out1 = nullptr;   // host-side out handle, converted back below
     int32_t rv = sceGxmCreateRenderTarget(p0, &out1);
-    if (out1) {
+    {
         void* slot = gxm_abi_xlate(a1);
         if (slot) {
-            uint32_t guest_handle = gxm_abi_untranslate_ptr(out1);
+            static uint32_t _fh = 0x85410000u;   // M804: synthesize a valid opaque guest handle when backend leaves out null
+            uint32_t guest_handle = out1 ? gxm_abi_untranslate_ptr(out1) : (_fh += 0x40u);
             std::memcpy(slot, &guest_handle, sizeof(guest_handle));
         }
     }
@@ -647,10 +656,11 @@ extern "C" uint32_t gxm_abi_call_6A6013E1(uint32_t* regs, uint32_t* stack_args) 
     const uint32_t a0 = regs ? regs[0u] : 0u;   // SceGxmSyncObject **
     void* out0 = nullptr;   // host-side out handle, converted back below
     int32_t rv = sceGxmSyncObjectCreate(&out0);
-    if (out0) {
+    {
         void* slot = gxm_abi_xlate(a0);
         if (slot) {
-            uint32_t guest_handle = gxm_abi_untranslate_ptr(out0);
+            static uint32_t _fh0 = 0x85420000u;
+            uint32_t guest_handle = out0 ? gxm_abi_untranslate_ptr(out0) : (_fh0 += 0x40u);
             std::memcpy(slot, &guest_handle, sizeof(guest_handle));
         }
     }
@@ -985,19 +995,23 @@ extern "C" uint32_t gxm_abi_call_B0F1E4EC(uint32_t* regs, uint32_t* stack_args) 
     const uint32_t a0 = regs ? regs[0u] : 0u;   // const SceGxmInitializeParams *
     void* p0 = gxm_abi_xlate(a0);   // const SceGxmInitializeParams *
     int32_t rv = sceGxmInitialize(p0);
+    if (p0) { const uint8_t* _q = (const uint8_t*)p0; uint32_t _cb = 0, _cbd = 0; std::memcpy(&_cb, _q + 8, 4); std::memcpy(&_cbd, _q + 0xC, 4);
+      if (_cb) { g_p5d_display_cb = _cb; p5d_hle_set_display_cb(_cb, _cbd); } }
     return (uint32_t)rv;
 }
 
 extern "C" uint32_t gxm_abi_call_B291C959(uint32_t* regs, uint32_t* stack_args) {
     // guest ABI:   int sceGxmGetRenderTargetMemSize(const SceGxmRenderTargetParams * params, unsigned int * driverMemSize)
     // backend ABI: SceInt32 sceGxmGetRenderTargetMemSize(void)   [runtime has a `(void)` placeholder / STUB_LOG only]
-    (void)regs;
+    // 18.4449 M904: the runtime stub never fills the out param; the guest then used uninitialised stack garbage
+    // as the size for sceKernelAllocMemBlock (0x846001FC = 2.2GB -> OOM). Fill it with the empirical ARCH_10 value
+    // used by the harness HLE case 0x812B1580 (0x33D000).
     (void)stack_args;
-#if GXM_ABI_CALL_STUB_IMPLS
-    return (uint32_t)sceGxmGetRenderTargetMemSize();   // logs [STUB] via STUB_LOG
-#else
-    return 0u;   // same observable value as the current stub
-#endif
+    const uint32_t a1 = regs ? regs[1u] : 0u;
+    void* p1 = gxm_abi_xlate(a1);
+    uint32_t sz = 0x33D000u;
+    if (p1) std::memcpy(p1, &sz, 4);
+    return (uint32_t)sz;
 }
 
 extern "C" uint32_t gxm_abi_call_B627DE66(uint32_t* regs, uint32_t* stack_args) {
@@ -1290,10 +1304,11 @@ extern "C" uint32_t gxm_abi_call_E84CE5B4(uint32_t* regs, uint32_t* stack_args) 
     void* p0 = gxm_abi_xlate(a0);   // const SceGxmContextParams *
     void* out1 = nullptr;   // host-side out handle, converted back below
     int32_t rv = sceGxmCreateContext(p0, &out1);
-    if (out1) {
+    {
         void* slot = gxm_abi_xlate(a1);
         if (slot) {
-            uint32_t guest_handle = gxm_abi_untranslate_ptr(out1);
+            static uint32_t _fh = 0x85410000u;   // M804: synthesize a valid opaque guest handle when backend leaves out null
+            uint32_t guest_handle = out1 ? gxm_abi_untranslate_ptr(out1) : (_fh += 0x40u);
             std::memcpy(slot, &guest_handle, sizeof(guest_handle));
         }
     }
@@ -1337,6 +1352,7 @@ extern "C" uint32_t gxm_abi_call_EC5C26B5(uint32_t* regs, uint32_t* stack_args) 
     void* p1 = gxm_abi_xlate(a1);   // SceGxmSyncObject *
     void* p2 = gxm_abi_xlate(a2);   // const void *
     int32_t rv = sceGxmDisplayQueueAddEntry(p0, p1, p2);
+    if (g_p5d_display_cb) p5d_hle_display_queue(g_p5d_display_cb, a2);   // M844: run the guest displayQueueCallback
     return (uint32_t)rv;
 }
 
