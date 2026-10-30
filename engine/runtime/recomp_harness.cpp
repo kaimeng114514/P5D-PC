@@ -1668,7 +1668,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       rc_restore(s);
       g_in_fiber_exec = 0;
       break; }
-    case 0x812B1B60u: { static int _frt = 0; if (_frt++ < 60) { printf("[FIBRT] #%d n=%u curfib=%08X lr=%08X fpc=%08X sp=%08X r0=%08X\n", _frt-1, g_main_n, g_cur_fiber, s->r[14], g_cur_fiber?(g_fctx.count(g_cur_fiber)?g_fctx[g_cur_fiber].r[15]:0u):0u, s->r[13], s->r[0]); fflush(stdout); } }
+    case 0x812B1B60u: { static int _frt = 0; if (_frt++ < 60) { auto _ff=[&](uint32_t fb)->uint32_t { uint8_t* q=GP(fb+0x80u); uint32_t v=0; if(q) std::memcpy(&v,q,4); return v; };
+        printf("[FIBRT] #%d n=%u curfib=%08X lr=%08X fpc=%08X sp=%08X r0=%08X flagsA=%08X flagsB=%08X\n", _frt-1, g_main_n, g_cur_fiber, s->r[14], g_cur_fiber?(g_fctx.count(g_cur_fiber)?g_fctx[g_cur_fiber].r[15]:0u):0u, s->r[13], s->r[0], _ff(0x84836300u), _ff(0x848463A0u)); fflush(stdout); } }
       r0 = 0; g_fiber_flag_return = 1; break;         // sceFiberReturnToThread
     case 0x812B1BB0u: {                                               // _sceFiberInitializeImpl(fiber, name, entry, arg, ...)
       if (g_finit_n++ < 10) {
@@ -2345,6 +2346,9 @@ static uint32_t canary_retry_pc(RecState* s) {
   return lr;
 }
 static void fiber_load(RecState* s, uint32_t fiber, uint32_t entry, uint32_t arg) {
+  // 18.4430: mark the guest fiber object RUNNING (bit0) - the guest completion handler FUN_812067A0 only sets
+  // the finished bit (bit2) when bit0 is set, otherwise fiber A never reports completion to FUN_8120683C.
+  if (fiber) { uint8_t* _q = GP(fiber + 0x80u); if (_q) { uint32_t _v=0; std::memcpy(&_v,_q,4); _v |= 1u; std::memcpy(_q,&_v,4); } }
   { auto _mi = g_fctx.find(fiber); if (_mi != g_fctx.end() && ((_mi->second.r[15] & ~1u) >= 0x8127C0C0u && (_mi->second.r[15] & ~1u) <= 0x8127C100u)) {
       if (g_dly_n++ < 20) { printf("[LOAD-DLY] fiber=%08X savedpc=%08X sp=%08X lr=%08X\n", fiber, _mi->second.r[15], _mi->second.r[13], _mi->second.r[14]); fflush(stdout); } } }
   if (fiber == 0x848468E0u) { auto _mi = g_fctx.find(fiber); if (_mi != g_fctx.end()) mainctx_note("LOAD", _mi->second.r[13]); }
@@ -3533,6 +3537,12 @@ static void init_manual_blocks(void) {
   g_manual_blocks[0x811EB930u] = (BlockFn)mb_811EB930;   // M845: null display-buffer guard (skip submit instead of abort)
 }
 static BlockFn gbn(uint32_t pc) {
+  { static int _mg_env=-1; if (_mg_env<0) { const char* _e=getenv("P5D_MGRPROBE"); _mg_env=(_e&&atoi(_e)!=0)?1:0; }
+    if (_mg_env) {
+      auto _ff=[&](uint32_t fb)->uint32_t { uint8_t* q=GP(fb+0x80u); uint32_t v=0; if(q) std::memcpy(&v,q,4); return v; };
+      if ((pc & ~1u) == 0x812067A0u) { static int _mg=0; if (_mg++ < 40) { printf("[MGRENT] #%d blk=%u fib=%08X flagsA=%08X flagsB=%08X pc=%08X\n", _mg-1, g_blkcnt_total, g_cur_fiber, _ff(0x84836300u), _ff(0x848463A0u), pc); fflush(stdout); } }
+      if ((g_blkcnt_total % 500000u) == 0u) { static int _mf=0; if (_mf++ < 40) { printf("[FLAGS] blk=%u fib=%08X flagsA=%08X flagsB=%08X pc=%08X\n", g_blkcnt_total, g_cur_fiber, _ff(0x84836300u), _ff(0x848463A0u), pc); fflush(stdout); } }
+    } }
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
 
   pc &= ~1u;   // 18.3939: normalize Thumb bit (block table is keyed by even instruction addresses)
