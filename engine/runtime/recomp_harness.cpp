@@ -91,7 +91,7 @@ extern "C" uint32_t (*find_block_000(uint32_t pc))(RecState*);
 #define FB(N) extern "C" uint32_t (*find_block_##N(uint32_t pc))(RecState*);
 FB(000) FB(001) FB(002) FB(003) FB(004) FB(005) FB(006) FB(007) FB(008) FB(009)
 FB(010) FB(011) FB(012) FB(013) FB(014) FB(015) FB(016) FB(017) FB(018) FB(019)
-FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027) FB(028)
+FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027) FB(028) FB(029)
 extern "C" const void* get_table_000(unsigned* cnt);
 extern "C" const void* get_table_001(unsigned* cnt);
 extern "C" const void* get_table_002(unsigned* cnt);
@@ -121,6 +121,7 @@ extern "C" const void* get_table_025(unsigned* cnt);
 extern "C" const void* get_table_026(unsigned* cnt);
 extern "C" const void* get_table_027(unsigned* cnt);
 extern "C" const void* get_table_028(unsigned* cnt);
+extern "C" const void* get_table_029(unsigned* cnt);
 static const uint32_t IMG_VA_BASE = 0x80600000;
 static const uint32_t IMG_SIZE = 0x38000000;   // 18.4279: 896MB - extended 224MB tail window for memblock capacity
 static const uint32_t REGIONB_OFF = 0x7000000u;  // region B base -> image+0x7A00000 (VA 0x88000000), no aliasing
@@ -658,6 +659,17 @@ static void assert_msg_probe(RecState* s, uint32_t pcv) {   // 18.4206: at 0x811
   printf("[ASSERT-MSG] '%s' lr=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X fib=%08X\n", buf, s->r[14], s->r[0], s->r[1], s->r[2], s->r[3], s->r[13], g_cur_fiber); fflush(stdout);
 }
 
+// M842: probe for the post-assert bad pc 0x811853E4 (and neighbours) - where does the dispatcher get it?
+static void badpc_probe(RecState* s, uint32_t pcv, const char* where) {
+  uint32_t a = pcv & ~1u;
+  if (a != 0x811853E4u && a != 0x811853E2u && a != 0x811853F2u && a != 0x811853C2u) return;
+  static int _n = 0; if (_n++ >= 12) return;
+  printf("[BADPC] #%d where=%s pc=%08X lr=%08X sp=%08X fib=%08X r0=%08X r1=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X ring:",
+         _n, where, pcv, s->r[14], s->r[13], g_cur_fiber, s->r[0], s->r[1], s->r[3], s->r[4], s->r[5], s->r[6], s->r[7]);
+  for (int _k = 0; _k < 64; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 64u + (uint32_t)_k) & 63u]);
+  printf("\nstk:"); for (int _k = 0; _k < 40; ++_k) { uint32_t _w = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_k * 4u); if (_q) std::memcpy(&_w, _q, 4); printf(" %08X", _w); }
+  printf("\n"); fflush(stdout);
+}
 static int g_iw_n[8] = {0};
 static void initwatch_probe(RecState* s, uint32_t pcv) {   // 18.4207: count entries of the four app-init functions and log their caller lr
   uint32_t p = pcv & ~1u; const char* nm = 0; int slot = -1;
@@ -2015,12 +2027,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   return s->r[14];
 }
 typedef BlockFn (*FinderFn)(uint32_t);
-static FinderFn ALL_FINDERS[29] = {
+static FinderFn ALL_FINDERS[30] = {
   find_block_000, find_block_001, find_block_002, find_block_003, find_block_004, find_block_005,
   find_block_006, find_block_007, find_block_008, find_block_009, find_block_010, find_block_011,
   find_block_012, find_block_013, find_block_014, find_block_015, find_block_016, find_block_017,
   find_block_018, find_block_019, find_block_020, find_block_021, find_block_022, find_block_023,
-  find_block_024, find_block_025, find_block_026, find_block_027, find_block_028 };
+  find_block_024, find_block_025, find_block_026, find_block_027, find_block_028, find_block_029 };
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
@@ -2253,7 +2265,7 @@ static uint32_t fiber_exec_to_completion(RecState* s) {
       }
       g_switch_budget = 3000;   // 18.3822: time-slice the switched-to fiber so it cannot monopolize the exec
       continue; }
-    uint32_t pc = s->r[15];
+    uint32_t pc = s->r[15]; badpc_probe(s, pc, "fexec-top");
     if (g_test_cb && !g_test_cb_done && g_blkcnt_total >= 100000u) {
       g_test_cb_done = 1; uint32_t _tb0 = g_blkcnt_total;
       static uint32_t _tbuf = 0; if (!_tbuf) { _tbuf = hle_malloc(0x10u); uint8_t* _tp = GP(_tbuf); if (_tp) std::memset(_tp, 0, 0x10); }
@@ -3048,7 +3060,7 @@ static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg) {
   return fiber_exec_to_completion(s);
 }
 static void build_all_blocks() {
-  for (int i = 0; i < 29; ++i) {
+  for (int i = 0; i < 30; ++i) {
     unsigned cnt = 0;
     const GBlk* tab = (const GBlk*)(
         i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
@@ -3059,10 +3071,33 @@ static void build_all_blocks() {
         i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
         i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
         i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
-        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : get_table_028(&cnt));
+        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : get_table_029(&cnt));
     for (unsigned k = 0; k < cnt; ++k) g_all.push_back(tab[k]);
   }
-  std::sort(g_all.begin(), g_all.end(), [](const GBlk&a, const GBlk&b){ return a.va < b.va; });
+  // M842: duplicate VAs exist because the supplemental batches (027/028) re-translate functions that the main batches
+  // decoded WRONG (truncated at a wrong IDA function end: e.g. batch_026 blk_811853E2 = "movs r0,#5" only and returns
+  // 0x811853E4, while the real instruction at 0x811853E4 is `bl 0x8115FAD2`; batch_027 has the correct block).
+  // The old plain sort made the winner implementation-defined. Deduplicate keeping the HIGHEST batch index (supplemental
+  // batches are the corrected/authoritative translations) and emit a sorted table for the lower_bound lookup.
+  {
+    std::map<uint32_t, BlockFn> _ded;
+    for (int i = 29; i >= 0; --i) {
+      unsigned cnt = 0;
+      const GBlk* tab = (const GBlk*)(
+          i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
+          i == 3 ? get_table_003(&cnt) : i == 4 ? get_table_004(&cnt) : i == 5 ? get_table_005(&cnt) :
+          i == 6 ? get_table_006(&cnt) : i == 7 ? get_table_007(&cnt) : i == 8 ? get_table_008(&cnt) :
+          i == 9 ? get_table_009(&cnt) : i == 10 ? get_table_010(&cnt) : i == 11 ? get_table_011(&cnt) :
+          i == 12 ? get_table_012(&cnt) : i == 13 ? get_table_013(&cnt) : i == 14 ? get_table_014(&cnt) :
+          i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
+          i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
+          i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
+          i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : get_table_029(&cnt));
+      for (unsigned k = 0; k < cnt; ++k) _ded.emplace(tab[k].va, tab[k].fn);   // first insert wins = highest batch index
+    }
+    g_all.clear(); g_all.reserve(_ded.size());
+    for (auto& _kv : _ded) g_all.push_back(GBlk{_kv.first, _kv.second});
+  }
   printf("[TABLE] blocks=%zu\n", g_all.size());
 }
 // M785c: manual blocks for functions missed by IDA function bounds (only reachable via function pointers)
@@ -4781,7 +4816,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
             if (std::chrono::duration_cast<std::chrono::milliseconds>(_now - g_pump_t0).count() > 80) { g_pump_timeout_n++; break; }
           }
         }
-        uint32_t nx = f2fn(&s); ++pb;
+        uint32_t nx = f2fn(&s); ++pb; badpc_probe(&s, nx, "p2-next");
         if (g_fiber_switch_to || g_switch_pending || g_fiber_flag_return) {   // 18.4210b / 18.4214 / 18.4217
           if (false && g_fiber_switch_to && g_fiber_switch_to != f2) {   // 18.4215 disabled (18.4216): pure deferral is faster and equally non-progressing switch target is the main fiber (idle in the main loop) -> keep the loader fiber running (no useful state lost)
             static int g_pumpcont_n = 0;
@@ -4819,7 +4854,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       if (_mainctx && g_fctx.count(f1)) { /* leave f1's saved fiber context untouched */ }
       if (g_pump2_n++ < 8) printf("[PMP2] pass #%d blocks=%u\n", g_pump2_n, pb);
       // 18.3988: fix stale fn - re-evaluate pc/fn from the RESTORED fiber1 context (the stale fn made the loop dispatch the pump-trigger block and jump back into the loader chain -> BADMEM 0x94)
-      pc = s.r[15]; fix682a(&s, &pc); h7344_probe(&s, pc); fn = gbn(pc);
+      pc = s.r[15]; badpc_probe(&s, pc, "main-restore"); fix682a(&s, &pc); h7344_probe(&s, pc); fn = gbn(pc);
     }
     pump2_skip: ;
     if (!fn) {
