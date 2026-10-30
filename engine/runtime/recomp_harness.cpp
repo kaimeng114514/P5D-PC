@@ -5450,8 +5450,33 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
             printf("[PBSHOT] thr=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X mode=%X ctxpc=%08X ctxsp=%08X ctxlr=%08X ctxr0=%08X\n",
                    _kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.wait_mode, _t.ctx.r[15], _t.ctx.r[13], _t.ctx.r[14], _t.ctx.r[0]); }
           printf("[PBSHOT] pcring:"); for (int _k = 0; _k < 24; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]); printf("\n");
-          fflush(stdout);
+          { uint32_t _ht = 0, _c8 = 0, _h2 = 0; uint8_t* _q;
+            _q = GP(0x813F4DA0u); if (_q) std::memcpy(&_ht, _q, 4);
+            _q = GP(0x816CC6A8u); if (_q) std::memcpy(&_c8, _q, 4);
+            printf("[PBSHOT] hashtable813F4DA0=%08X list816CC6A8=%08X ht+8:", _ht, _c8);
+            if (_ht) { for (int _k = 0; _k < 6; ++_k) { _q = GP(_ht + (uint32_t)_k * 4); uint32_t _v = 0; if (_q) std::memcpy(&_v, _q, 4); printf(" %08X", _v); } }
+            printf("\n");
+            { auto _nxof = [](uint32_t p) -> uint32_t { uint32_t v = 0; uint8_t* q = GP(p + 0x28); if (q) std::memcpy(&v, q, 4); return v; };
+              uint32_t _slow = _c8, _fast = _c8; int _cyc = 0, _st = 0;
+              while (_st < 2000000) { _slow = _nxof(_slow); _fast = _nxof(_nxof(_fast)); ++_st;
+                if (_slow == 0 || _fast == 0) break;
+                if (_slow == _fast) { _cyc = 1; break; } }
+              uint32_t _n = _c8; int _cnt = 0; uint32_t _last = 0;
+              while (_n && _cnt < 4000000) { _last = _n; _n = _nxof(_n); ++_cnt; }
+              printf("[LLIST] count=%d cycle=%d floyd_steps=%d tail=%08X head=%08X\n", _cnt, _cyc, _st, _last, _c8);
+              uint32_t _p = _c8;
+              for (int _i = 0; _i < 12 && _p; ++_i) { uint32_t _key0 = 0, _key1 = 0; { uint8_t* _qq = GP(_p + 4); if (_qq) std::memcpy(&_key0, _qq, 4); }
+                { uint8_t* _qq = GP(_p + 0x18); if (_qq) std::memcpy(&_key1, _qq, 4); }
+                printf("[LLIST] #%d node=%08X key4=%08X key18=%08X next=%08X\n", _i, _p, _key0, _key1, _nxof(_p)); _p = _nxof(_p); }
+            }
+            fflush(stdout); }
         } }
+      if ((n % 5000000) == 0) { uint32_t _c8c = 0; { uint8_t* _q = GP(0x816CC6A8u); if (_q) std::memcpy(&_c8c, _q, 4); }
+        int _cnt = 0; uint32_t _p = _c8c; while (_p && _cnt < 4000) { uint32_t _nx = 0; uint8_t* _q = GP(_p + 0x28); if (_q) std::memcpy(&_nx, _q, 4); _p = _nx; ++_cnt; }
+        uint32_t _mp = 0, _ms = 0, _ml = 0; { auto _it = g_fctx.find(0x848468E0u); if (_it != g_fctx.end()) { _mp = _it->second.r[15]; _ms = _it->second.r[13]; _ml = _it->second.r[14]; } }
+        uint32_t _ctr = 0; { uint8_t* _qc = GP(0x816CC63Cu); if (_qc) std::memcpy(&_ctr, _qc, 4); }
+        printf("[PROG] n=%d list=%d head=%08X mainfib.pc=%08X sp=%08X lr=%08X cur.pc=%08X cur.blk=%08X ctr=%u\n", n, _cnt, _c8c, _mp, _ms, _ml, nxt, g_cur_block, _ctr);
+        fflush(stdout); }
       { uint32_t _fw[4] = {0,0,0,0}; uint8_t* _fq0 = GP(0x816CC630u); if (_fq0) std::memcpy(_fw, _fq0, 16);
   printf("[FRAMEDUMP] n=%d flags=%08X t4=%u t8=%u ctr=%u pc=%08X blk=%08X sp=%08X fib=%08X gxm(b/e/p)=%d/%d/%d\n", n, _fw[0], _fw[1], _fw[2], _fw[3], nxt, g_cur_block, s.r[13], g_cur_fiber, g_gxm_begin_n, g_gxm_end_n, g_gxm_present_n); }
 if (0) { uint32_t _fc = 0; uint8_t* _fq = GP(0x816CC63Cu); if (_fq) std::memcpy(&_fc, _fq, 4);
