@@ -303,6 +303,8 @@ static int g_evw_n = 0;
 static int g_efc_n = 0, g_sc_n = 0, g_tc_n = 0;
 static uint32_t g_next_tid = 0x40010000u, g_next_sema = 0x50010000u, g_next_eflag = 0x60010000u;
 static uint32_t g_thr_wait_obj = 0, g_thr_wait_bits = 0, g_thr_wait_mode = 0;
+static int g_thryield_env = -1;   // 18.4454 M909
+static std::map<uint32_t,uint64_t> g_thr_wake_vt;
 static void hle_thr_pump(RecState* s, int quantum);
 static uint32_t g_cur_fiber = 0;
 static int g_winchk_n = 0;
@@ -2295,7 +2297,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       g_vtime_extra += (uint64_t)(s->r[0] ? s->r[0] : 1u);   // M815: deterministic virtual sleep
       r0 = 0;
       if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
-      if (g_cur_thr) { static int _dt=0; if ((g_cur_thr == 0x4001B000u || g_cur_thr == 0x4001C000u) && _dt++<300){ printf("[DELAYTHR] tid=%08X usec=%u lr=%08X sp=%08X pc=%08X\n", g_cur_thr, s->r[0], s->r[14], s->r[13], g_cur_block); fflush(stdout);} break; }
+      if (g_cur_thr) { static int _dt=0; if ((g_cur_thr == 0x4001B000u || g_cur_thr == 0x4001C000u) && _dt++<300){ printf("[DELAYTHR] tid=%08X usec=%u lr=%08X sp=%08X pc=%08X\n", g_cur_thr, s->r[0], s->r[14], s->r[13], g_cur_block); fflush(stdout);}
+        // 18.4454 M909: cooperative yield - let the scheduler run the other guest threads (loader workers)
+        if (g_thryield_env) { static int _ty=0; if (_ty++ < 8) { printf("[THRYIELD-GT] tid=%08X usec=%u -> yield\n", g_cur_thr, s->r[0]); fflush(stdout); }
+          g_thr_wake_vt[g_cur_thr] = g_vtime_extra + (uint64_t)(s->r[0] ? s->r[0] : 1u);
+          g_thr_blocked = 1; g_thr_wait_obj = 0; g_thr_wait_bits = 0; g_thr_wait_mode = 0; }
+        break; }
       if (g_in_fex == 1 && ((++g_yield_main_tick & 0x3F) == 0)) { g_yield_to_main = 1;
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from DelayThread fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_delay_n++ < 8) printf("[DELAY] usec=%u lr=%08X fib=%08X\n", s->r[0], s->r[14], g_cur_fiber);
@@ -4047,7 +4054,13 @@ extern "C" void wr32_watch(uint32_t a, uint32_t v) {
 
 
 static void hle_thr_pump(RecState* s, int quantum) {
+  if (g_thryield_env < 0) { const char* _e = getenv("P5D_THRYIELD"); g_thryield_env = (_e && atoi(_e)) ? 1 : 0; }
   if (g_cur_thr || g_hostthreads) return;   // 18.4239: in host-thread mode the guest threads run on their own host threads
+  if (g_thryield_env) {   // 18.4454 M909: wake guest threads whose virtual DelayThread deadline has passed
+    for (auto& _kvw : g_thr) { HThread& _tw = _kvw.second;
+      if (_tw.alive && _tw.waiting) { auto _itw = g_thr_wake_vt.find(_kvw.first);
+        if (_itw != g_thr_wake_vt.end() && g_vtime_extra >= _itw->second) { _tw.waiting = 0; _tw.ready = 1; g_thr_wake_vt.erase(_itw); } } }
+  }
   if (g_in_fiber_exec && !g_thrpump_env && !g_thrpump3 && !g_pump_force) return;   // 18.4232: worker-trace mode (P5D_THRPUMP=1) allows pumping from the fiber world
   if (g_thrtrace && g_thrst_n++ < 20) { printf("[THRST] n=%zu:", g_thr.size()); for (auto& _kv : g_thr) { auto& _t=_kv.second; printf(" %08X(a%d,r%d,w%d,obj=%08X,bits=%08X,sp=%08X)", _kv.first, _t.alive?1:0, _t.ready?1:0, _t.waiting?1:0, _t.wait_obj, _t.wait_bits, _t.ctx.r[13]); } printf("\n"); fflush(stdout); }   // 18.4228: allow the pump from the main-loop world (g_cur_fiber is the app fiber there); never nest inside thread execution
   for (auto& kv : g_thr) {
