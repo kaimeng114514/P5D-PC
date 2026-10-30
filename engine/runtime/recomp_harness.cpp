@@ -925,6 +925,18 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x811E5C66u || _a0 == 0x811E5C76u || _a0 == 0x811E5C86u || _a0 == 0x811E5C98u || _a0 == 0x811E5CA8u || _a0 == 0x811E5CB8u) { static int _hp_n = 0; static int _hp_late = 0; ++_hp_n;
+      int _late = (g_main_n > 10000000u && !_hp_late); if (_late) _hp_late = 1;
+      if (_hp_n <= 6 || (_hp_n % 1000) == 0 || _late) { printf("[HPTAB] #%d at=%08X n=%u late=%d r0=%08X r1=%08X fib=%08X\n", _hp_n, _a0, g_main_n, _late, s->r[0], s->r[1], g_cur_fiber); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x81181CE4u || _a0 == 0x81181CBAu || _a0 == 0x811818A0u || _a0 == 0x811830C8u || _a0 == 0x811830E2u) { static int _lj_n = 0; static int _lj_late = 0; ++_lj_n;
+      int _late = (g_main_n > 10000000u && !_lj_late); if (_late) _lj_late = 1;
+      if (_lj_n <= 6 || (_lj_n % 1000) == 0 || _late) { printf("[LOADJ] #%d at=%08X n=%u late=%d r0=%08X r1=%08X r4=%08X fib=%08X\n", _lj_n, _a0, g_main_n, _late, s->r[0], s->r[1], s->r[4], g_cur_fiber); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x811820B6u || _a0 == 0x81286EC4u || _a0 == 0x81287BBAu || _a0 == 0x81286B7Eu) { static int _fx_n = 0; static int _fx_late = 0; ++_fx_n;
+      int _late = (g_main_n > 10000000u && !_fx_late); if (_late) _fx_late = 1;
+      if (_fx_n <= 6 || (_fx_n % 2000) == 0 || _late) { printf("[FIOSX] #%d at=%08X n=%u late=%d r0=%08X r1=%08X r2=%08X r3=%08X fib=%08X\n", _fx_n, _a0, g_main_n, _late, s->r[0], s->r[1], s->r[2], s->r[3], g_cur_fiber); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
     if (_a0 == 0x8119934Au || _a0 == 0x81198D0Cu || _a0 == 0x81198C8Eu || _a0 == 0x81198D9Cu) { static int _gf_n = 0; static int _gf_late = 0; ++_gf_n;
       int _late = (g_main_n > 10000000u && !_gf_late); if (_late) _gf_late = 1;
       uint32_t _fl = 0, _ctr = 0; { uint8_t* _q = GP(0x816CC630u); if (_q) std::memcpy(&_fl, _q, 4); } { uint8_t* _q = GP(0x816CC63Cu); if (_q) std::memcpy(&_ctr, _q, 4); }
@@ -984,7 +996,13 @@ static void job_probes(uint32_t pcv, RecState* s) {
       if (_gp_n <= 3 || (_gp_n % 1000) == 0 || _late) { printf("[GRES] global_resource_810995A0 PUMP #%d blk=%u late=%d\n", _gp_n, g_blkcnt_total, _late); fflush(stdout); } }
     if (_a == 0x8117BA30u) { static int _ba_n = 0; static int _ba_late = 0; ++_ba_n;
       int _late = (g_main_n > 10000000u && !_ba_late); if (_late) _ba_late = 1;
-      if (_ba_n <= 3 || (_ba_n % 1000) == 0 || _late) { printf("[NODE] load-step #%d list=%08X node=%08X blk=%u late=%d\n", _ba_n, s->r[0], s->r[1], g_blkcnt_total, _late); fflush(stdout); } }
+      if (_ba_n <= 3 || (_ba_n % 1000) == 0 || _late) { uint32_t _node = s->r[1];
+        uint32_t _job = 0, _jst = 0, _jfl = 0, _nfl = 0, _sub = 0;
+        { uint8_t* _q = GP(_node + 0x40); if (_q) std::memcpy(&_job, _q, 4); }
+        { uint8_t* _q = GP(_node + 4); if (_q) std::memcpy(&_nfl, _q, 4); }
+        { uint8_t* _q = GP(_node + 0x44); if (_q) std::memcpy(&_sub, _q, 4); }
+        if (_job) { { uint8_t* _q = GP(_job + 4); if (_q) std::memcpy(&_jst, _q, 4); } { uint8_t* _q = GP(_job + 0xA0); if (_q) std::memcpy(&_jfl, _q, 4); } }
+        printf("[NODE] load-step #%d list=%08X node=%08X nfl=%08X job=%08X jstate=%u jflag=%08X sub=%08X n=%u late=%d\n", _ba_n, s->r[0], _node, _nfl, _job, _jst, _jfl, _sub, g_main_n, _late); fflush(stdout); } }
     if (_a == 0x8117BC66u) { static int _br_n = 0; ++_br_n; if (_br_n <= 10 || (_br_n % 2000) == 0) { printf("[NODE] load-step-ret #%d ret=%08X blk=%u\n", _br_n, s->r[0], g_blkcnt_total); fflush(stdout); } }
     if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
       static int _gc_n = 0; static int _gc_late = 0; ++_gc_n;
