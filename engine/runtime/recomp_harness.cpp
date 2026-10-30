@@ -28,6 +28,7 @@ static uint32_t g_fb_pitch = 0;
 static std::mutex g_hle_mtx;
 static uint32_t g_cur_hle_stub = 0;   // 18.4239: guest threads as real host threads (P5D_HOSTTHREADS=1)
 static int g_ht_n = 0;
+static int g_ngs_env = -1;   // 18.4416: opt-in SceNgs HLE emulation (P5D_NGS=1)
 static std::mutex g_lwm_mtx;
 static std::map<uint32_t, std::pair<uint32_t,uint32_t> > g_lwm_real;   // work -> (owner_tid, count)
 static int g_lwm_log_n = 0, g_trophy_log_n = 0, g_fdclass_log_n = 0, g_appmgr_log_n = 0, g_drm_n = 0, g_tick_log_n = 0;
@@ -1496,6 +1497,18 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       r0 = 0; break; }
     case 0x812B2210u: r0 = 0; break;                                   // abort (should not happen)
     case 0x812B1860u: r0 = 0; break;                                   // sceSysmoduleLoadModule -> 0 success
+    case 0x812B1E90u: r0 = (g_ngs_env < 0 ? (g_ngs_env = getenv("P5D_NGS") ? 1 : 0) : g_ngs_env) ? 1 : 0; break;                                   // 18.4416: sceSysmoduleIsLoaded -> 1 (NGS already loaded; keeps CRI NGS init path)
+    case 0x812B20D0u: { if (g_ngs_env < 0) g_ngs_env = getenv("P5D_NGS") ? 1 : 0; if (!g_ngs_env) { r0 = 0; break; }  // 18.4416 opt-in
+      uint32_t _h = 0x85800000u; if (s->r[3]) { uint8_t* _q = GP(s->r[3]); if (_q) std::memcpy(_q, &_h, 4); } r0 = 0; break; }
+    case 0x812B1FD0u: { if (!g_ngs_env) { r0 = 0; break; }
+      uint32_t _sz = 0x4000u; if (s->r[1]) { uint8_t* _q = GP(s->r[1]); if (_q) std::memcpy(_q, &_sz, 4); } r0 = 0; break; }
+    case 0x812B1F60u: { if (!g_ngs_env) { r0 = 0; break; }
+      uint32_t _sz = 0x2000u; if (s->r[2]) { uint8_t* _q = GP(s->r[2]); if (_q) std::memcpy(_q, &_sz, 4); } r0 = 0; break; }
+    case 0x812B20C0u: r0 = g_ngs_env ? 0x10 : 0; break;                               // 18.4416: SceNgs getter -> positive
+    case 0x812B20B0u: r0 = g_ngs_env ? 4 : 0; break;
+    case 0x812B1F30u: r0 = g_ngs_env ? 4 : 0; break;
+    case 0x812B1FE0u: r0 = g_ngs_env ? 2 : 0; break;
+    case 0x812B1F70u: r0 = 0; break;                                  // SceNgs system release -> success (always 0)
     case 0x812B27B0u: {   // 18.4228c: the guest uses GetThreadId result as a POINTER base (BADMEM va = tid+2) -> return a real TLS-like guest object
       static uint32_t g_tid_ptr = 0; if (!g_tid_ptr) g_tid_ptr = hle_malloc(0x80u);
       if (g_tidp_n++ < 6) { printf("[TIDPTR] GetThreadId -> %08X (was 0x100/0x4001)\n", g_tid_ptr); fflush(stdout); }
