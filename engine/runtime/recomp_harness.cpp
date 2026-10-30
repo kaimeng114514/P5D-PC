@@ -91,7 +91,7 @@ extern "C" uint32_t (*find_block_000(uint32_t pc))(RecState*);
 #define FB(N) extern "C" uint32_t (*find_block_##N(uint32_t pc))(RecState*);
 FB(000) FB(001) FB(002) FB(003) FB(004) FB(005) FB(006) FB(007) FB(008) FB(009)
 FB(010) FB(011) FB(012) FB(013) FB(014) FB(015) FB(016) FB(017) FB(018) FB(019)
-FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027) FB(028) FB(029)
+FB(020) FB(021) FB(022) FB(023) FB(024) FB(025) FB(026) FB(027) FB(028) FB(029) FB(030)
 extern "C" const void* get_table_000(unsigned* cnt);
 extern "C" const void* get_table_001(unsigned* cnt);
 extern "C" const void* get_table_002(unsigned* cnt);
@@ -122,6 +122,7 @@ extern "C" const void* get_table_026(unsigned* cnt);
 extern "C" const void* get_table_027(unsigned* cnt);
 extern "C" const void* get_table_028(unsigned* cnt);
 extern "C" const void* get_table_029(unsigned* cnt);
+extern "C" const void* get_table_030(unsigned* cnt);
 static const uint32_t IMG_VA_BASE = 0x80600000;
 static const uint32_t IMG_SIZE = 0x38000000;   // 18.4279: 896MB - extended 224MB tail window for memblock capacity
 static const uint32_t REGIONB_OFF = 0x7000000u;  // region B base -> image+0x7A00000 (VA 0x88000000), no aliasing
@@ -915,6 +916,9 @@ static void pending_req_scan() {
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x81206BDCu || _a == 0x81206BECu || _a == 0x81206C02u) { static int _fb_n = 0;
+      if (_fb_n++ < 40) { printf("[F206] at=%08X r0=%08X r4=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", _a, s->r[0], s->r[4], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
+        for (int _k = 0; _k < 20; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 20u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x81163508u || _a == 0x8115FFCEu) { static int _gx_n = 0;
       if (_gx_n++ < 40) { uint32_t _c = 0, _d = 0, _c64 = 0, _d65 = 0;
         { uint8_t* q = GP(0x8155543Cu); if (q) std::memcpy(&_c, q, 4); }
@@ -2038,12 +2042,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   return s->r[14];
 }
 typedef BlockFn (*FinderFn)(uint32_t);
-static FinderFn ALL_FINDERS[30] = {
+static FinderFn ALL_FINDERS[31] = {
   find_block_000, find_block_001, find_block_002, find_block_003, find_block_004, find_block_005,
   find_block_006, find_block_007, find_block_008, find_block_009, find_block_010, find_block_011,
   find_block_012, find_block_013, find_block_014, find_block_015, find_block_016, find_block_017,
   find_block_018, find_block_019, find_block_020, find_block_021, find_block_022, find_block_023,
-  find_block_024, find_block_025, find_block_026, find_block_027, find_block_028, find_block_029 };
+  find_block_024, find_block_025, find_block_026, find_block_027, find_block_028, find_block_029, find_block_030 };
 struct GBlk { uint32_t va; BlockFn fn; };
 static std::vector<GBlk> g_all;
 static void fiber_save(RecState* s) {
@@ -3071,7 +3075,7 @@ static uint32_t run_guest(RecState* s, uint32_t entry, uint32_t arg) {
   return fiber_exec_to_completion(s);
 }
 static void build_all_blocks() {
-  for (int i = 0; i < 30; ++i) {
+  for (int i = 0; i < 31; ++i) {
     unsigned cnt = 0;
     const GBlk* tab = (const GBlk*)(
         i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
@@ -3082,7 +3086,7 @@ static void build_all_blocks() {
         i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
         i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
         i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
-        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : get_table_029(&cnt));
+        i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : i == 29 ? get_table_029(&cnt) : get_table_030(&cnt));
     for (unsigned k = 0; k < cnt; ++k) g_all.push_back(tab[k]);
   }
   // M842: duplicate VAs exist because the supplemental batches (027/028) re-translate functions that the main batches
@@ -3092,7 +3096,7 @@ static void build_all_blocks() {
   // batches are the corrected/authoritative translations) and emit a sorted table for the lower_bound lookup.
   {
     std::map<uint32_t, BlockFn> _ded;
-    for (int i = 29; i >= 0; --i) {
+    for (int i = 30; i >= 0; --i) {
       unsigned cnt = 0;
       const GBlk* tab = (const GBlk*)(
           i == 0 ? get_table_000(&cnt) : i == 1 ? get_table_001(&cnt) : i == 2 ? get_table_002(&cnt) :
@@ -3103,7 +3107,7 @@ static void build_all_blocks() {
           i == 15 ? get_table_015(&cnt) : i == 16 ? get_table_016(&cnt) : i == 17 ? get_table_017(&cnt) :
           i == 18 ? get_table_018(&cnt) : i == 19 ? get_table_019(&cnt) : i == 20 ? get_table_020(&cnt) :
           i == 21 ? get_table_021(&cnt) : i == 22 ? get_table_022(&cnt) : i == 23 ? get_table_023(&cnt) :
-          i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : get_table_029(&cnt));
+          i == 24 ? get_table_024(&cnt) : i == 25 ? get_table_025(&cnt) : i == 26 ? get_table_026(&cnt) : i == 27 ? get_table_027(&cnt) : i == 28 ? get_table_028(&cnt) : i == 29 ? get_table_029(&cnt) : get_table_030(&cnt));
       for (unsigned k = 0; k < cnt; ++k) _ded.emplace(tab[k].va, tab[k].fn);   // first insert wins = highest batch index
     }
     g_all.clear(); g_all.reserve(_ded.size());
@@ -3260,12 +3264,12 @@ static uint32_t mb_811DB5E0(RecState* s) {   // tail: adds r0,r6,#0; bl 0x812073
 static uint32_t mb_811EB930(RecState* s) {
   uint32_t desc = 0; { uint8_t* q = GP(0x816CBDECu); if (q) std::memcpy(&desc, q, 4); }
   if (desc != 0u) { BlockFn raw = gbn_raw(0x811EB930u); if (raw) return raw(s); }
-  { static int _n = 0; if (_n++ < 12) { printf("[EB930-SKIP] display buffer DAT_816CBDEC=0 -> skip display queue submit (fiber=%08X sp=%08X)\n", g_cur_fiber, s->r[13]); fflush(stdout); } }
-  uint32_t sp = s->r[13], r4 = 0, r5 = 0, pc = 0;
-  { uint8_t* q = GP(sp + 0xC); if (q) std::memcpy(&r4, q, 4); }
-  { uint8_t* q = GP(sp + 0x10); if (q) std::memcpy(&r5, q, 4); }
-  { uint8_t* q = GP(sp + 0x14); if (q) std::memcpy(&pc, q, 4); }
-  s->r[13] = sp + 0x18u; s->r[4] = r4; s->r[5] = r5;
+  { static int _n = 0; if (_n++ < 12) { printf("[EB930-SKIP] display buffer DAT_816CBDEC=0 -> skip display queue submit (fiber=%08X sp=%08X lr=%08X)\n", g_cur_fiber, s->r[13], s->r[14]); fflush(stdout); } }
+  // M846: this manual block REPLACES THE FUNCTION ENTRY, so the original prologue (push {r4,r5,lr}; sub sp,#0xc)
+  // has NOT run. The skip path must therefore return directly to the caller's LR without touching sp/r4/r5
+  // (the old code popped from the caller's stack -> returned garbage pc 0x81206BEC and r4=0 -> null-deref crash
+  // at [0+0x94]; this is what killed m859 at [BADMEM] guest va=0x94 block=0x81206BEC).
+  uint32_t pc = s->r[14];
   { uint32_t v = 0; uint8_t* q = GP(0x816CBC14u); if (q) std::memcpy(&v, q, 4); v = (v + 1u) % 3u; if (q) std::memcpy(q, &v, 4); }
   { uint32_t z = 0; uint8_t* q; q = GP(0x816CBDE8u); if (q) std::memcpy(q, &z, 4); q = GP(0x816CBDECu); if (q) std::memcpy(q, &z, 4); q = GP(0x816CBDF0u); if (q) std::memcpy(q, &z, 4); }
   return pc;
