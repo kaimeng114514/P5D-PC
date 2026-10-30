@@ -938,6 +938,13 @@ static void job_probes(uint32_t pcv, RecState* s) {
   }
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x810995D4u) { static int _gr_n = 0; ++_gr_n;
+      if (_gr_n < 6 || (_gr_n % 5000) == 0) { uint32_t _l = 0; { uint8_t* _q = GP(0x81386CECu); if (_q) std::memcpy(&_l, _q, 4); }
+        printf("[GRES] #%d list=%08X blk=%u words:", _gr_n, _l, g_blkcnt_total);
+        if (_l) { for (int _k = 0; _k < 8; ++_k) { uint32_t _v = 0; uint8_t* _q = GP(_l + (uint32_t)_k * 4); if (_q) std::memcpy(&_v, _q, 4); printf(" %08X", _v); } }
+        printf("\n"); fflush(stdout); } }
+    if (_a == 0x810994B2u) { static int _gi_n = 0; if (_gi_n++ < 6) { printf("[GRES] global_resource_810994B2 INIT called blk=%u fib=%08X\n", g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+    if (_a == 0x810995A0u) { static int _gp_n = 0; ++_gp_n; if (_gp_n < 6 || (_gp_n % 2000) == 0) { printf("[GRES] global_resource_810995A0 PUMP #%d blk=%u\n", _gp_n, g_blkcnt_total); fflush(stdout); } }
     if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
       static int _gc_n = 0;
       if (_gc_n++ < 120) { int _id = 0;
