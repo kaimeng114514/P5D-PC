@@ -932,6 +932,22 @@
 | M914 | §18.4459: **门控修复：THRYIELD/PERIODPUMP 在 n<100000 会破坏 criFs 初始化（binit_after=0），加 `g_main_n >= 100000u` 门控后 binder 恢复正常**。130M 长跑（`out130m_m992wake.txt`，无门控）发现：`[CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000 **binit_after=00000000**`（binder 未建立！），`[JOB]` 从 n=5M 到 30M 全部 `binit=0 btab=0`——与之前 0x816A0BA0 不同。原因：THRYIELD/PERIODPUMP 在 n≈5000 时就会抢占/让出 guest 线程，**打乱了 criFs 初始化内部的线程/时序**，使 init 提前返回且未安装 binder。**修复（18.4459）**：两处均加 `g_main_n >= 100000u` 门控（`if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u)`；DelayThread 的 THRYIELD 分支同样加 `g_main_n >= 100000u`），让 boot/CRI 初始化阶段不受调度实验影响。3M 冒烟（`out3m_m993gate.txt`）：`[CRIFSHLE] ... binit_after=816A0BA0`（**binder 恢复**）、`[PREEMPT]` 10 条（tid=4001A000 CRI worker 等）、exit=0、BADMEM=0。已后台启动 **130M 长跑**（`out130m_m994gate.txt`，门控版）验证 page1 完成 → 标题页。 |
 | M915 | §18.4460: **门控版 130M 长跑：CRI 资源流已开始工作（streamcnt=3），page1 加载持续推进（n 60.4M→62.1M），仍无 GXM 绘制**。130M 门控长跑（`out130m_m994gate.txt`，THRYIELD+PERIODPUMP 且 `n>=100000` 门控）关键数据：`[CRIFSHLE] binit_after=816A0BA0`（binder 恢复）；`[JOB] n=60000000 st_job1180=3318072773 st_job0D90=3318072773 ctr=9 seq=85B843AC **streamcnt=3** binit=2171210656`（**CRI 流加载进行中**，此前 streamcnt=0）；`[SEQST] n=60M h=85B843AC ctrl=85B8436C cur=1 tab=813B01B4 pc=8127B85C`（page1 控制器活跃，pc 在 CRI FS 内）；`[IDR] state=1 idx=1 handle=85B8591C`；n 已从 59.8M 卡点推进到 **62,090,000**（`[FRAMEDUMP] n=62090000 ctr=9 pc=8127B7D8 blk=8127B7C8`），130M 上限仍有空间。`[GXM]` 仍 0、`[TITLEMOV]` 0 —— **page1 资源加载尚未完成，标题渲染未开始**。结论：门控+抢占+唤醒的调度修复组合成功让 page1 真正开始加载资源；下一步等待/推进该加载完成。NEXT: 继续观察 `out130m_m994gate.txt`（后台仍在跑）：`streamcnt` 是否完成/归 0、`[IDR]`/`[SEQST]` 是否推进到下一页、`[GXM]` BeginScene/Draw 是否首次出现（首帧渲染提交）。 |
 | M916 | §18.4461: **page1 期间 HLE 直方图：全是 worker 线程在轮询，主上下文调用被刷屏淹没 → 新增 [H57M] 过滤探针抓主上下文文件 I/O 路径**。130M 门控长跑（`out130m_m994gate.txt`）n 推进到 **63,185,000**（`[FRAMEDUMP] n=63185000 ctr=9 pc=8128EA7E blk=8127C0F8`），`[JOB] n=60M streamcnt=3`（CRI 流仍在加载），`[GXM]`/`[TITLEMOV]` 仍 0。`[H57]`（n≥59M，cap 3000）按线程分组：
+| M917 | §18.4462: **[H57M] 揭示 page1 主上下文只有 libc+DelayThreadCB 睡眠循环（无文件 I/O API 调用）；反汇编确认 FUN_8127C0E8 是"延迟 N ms"包装；新增 [HLEDUMP] 全量直方图枚举 page1 使用的全部 HLE stub**。130M 长跑（`out130m_m996h57m.txt`，带 [H57M]）数据：n=60,355,000（`pc=81283C8A blk=8127B860`），`[SEQST] cur=1`、`[JOB] streamcnt=3`、`[GXM]`/`[TITLEMOV]` 0。**`[H57M]`（2500 条，n≥59.43M，thr=0 主上下文）直方图**：
+| va@lr | 次数 | 名称 |
+|---|---|---|
+| 812B2A80@8127C0F8 | **820** | **sceKernelDelayThreadCB**（CRI FS 睡眠循环）|
+| 812B27B0@81278C66 | 530 | GetThreadId（TLS-like）|
+| 812B2800@81278C78 | 530 | （CRI 内部 stub，未映射）|
+| 812B22E0@8116529E | 131 | strlen |
+| 812B2260@… | 66+50+24+24+14+14+3+2 | memset |
+| 812B22A0@811E6A0E | 73 | malloc |
+| 812B2250 | 50 | free |
+| 812B2270 | 35+24+2+2 | memcpy |
+| 812B2910@81278C00 | 14 | sceKernelCreateLwMutex（CRI 内部）|
+| 812B1840@811E6A96 | 4 | sceCtrlReadBufferPositive |
+| 812B1930@81003DA0 | 4 | sceTouchRead |
+→ **主上下文在 page1 阶段完全没有文件 I/O API 调用**（无 Fios/FHOpen/FHRead/无 kernel file API），只是 `DelayThreadCB` 睡眠等待异步完成；而 Fios worker 线程（40018000/40019000）空闲等待 `eventflag 60014000 bit1`。反汇编 `FUN_8127C0E8`：`if (r0) DelayThreadCB(r0*1000)` —— 纯延迟包装。即 **CRI FS 主循环在等一个"永远不会到来的读完成"**，但读请求提交路径不在已实现的 Fios HLE 用例中（整场 `[FHOPEN]`/`[FHREAD]`=0）。为枚举 page1 期间所有 HLE stub（找出真正提交读的 API），新增 `[HLEDUMP]`：n∈[59M,62M] 累计每个 stub_va 的调用次数，到 n≥62M 一次性打印 top48。已启动 70M 长跑（`out70m_m997hledump.txt`，带 HLEDUMP）。NEXT: 读 `[HLEDUMP]` → 找出 page1 期间被调用的**未知/文件相关 stub** → 补 HLE 读完成投递 → page1 加载完成 → 标题页。 |
+| §18.4462 | [H57M] reveals the page1 main context only has libc + DelayThreadCB sleep loop (no file I/O API calls); disassembly confirms FUN_8127C0E8 is a 'delay N ms' wrapper; added [HLEDUMP] full histogram to enumerate every HLE stub used in page1. 130M run (out130m_m996h57m.txt with [H57M]): n=60,355,000 (pc=81283C8A blk=8127B860), [SEQST] cur=1, [JOB] streamcnt=3, [GXM]/[TITLEMOV] 0. [H57M] (2500 lines, n>=59.43M, thr=0 main context) histogram: 812B2A80@8127C0F8 x820 sceKernelDelayThreadCB (CRI FS sleep loop); 812B27B0@81278C66 x530 GetThreadId (TLS-like); 812B2800@81278C78 x530 (CRI internal stub, unmapped); 812B22E0@8116529E x131 strlen; 812B2260 memset x66+50+24+24+14+14+3+2; 812B22A0 malloc x73; 812B2250 free x50; 812B2270 memcpy x35+24+2+2; 812B2910@81278C00 x14 sceKernelCreateLwMutex (CRI internal); 812B1840 x4 sceCtrlReadBufferPositive; 812B1930 x4 sceTouchRead. So the main context has NO file I/O API calls during page1 (no Fios/FHOpen/FHRead/kernel file API), just DelayThreadCB sleeping waiting for an async completion, while Fios worker threads (40018000/40019000) idle-wait on eventflag 60014000 bit1. Disassembly of FUN_8127C0E8: if (r0) DelayThreadCB(r0*1000) - a pure delay wrapper. So CRI FS main loop waits for a 'read completion that never arrives', but the read-submission path is not among the implemented Fios HLE cases (FHOPEN/FHREAD=0 over the whole run). To enumerate every HLE stub during page1 (to find the real read-submission API), added [HLEDUMP]: accumulate per-stub counts in n in [59M,62M], dump top48 once at n>=62M. A 70M run with HLEDUMP started (out70m_m997hledump.txt). NEXT: read [HLEDUMP] -> find the unknown/file-related stub used during page1 -> add HLE read-completion delivery -> page1 completes -> title page. |
 | thr | 调用 | 说明 |
 |---|---|---|
 | 40018000 | Lock/Unlock LwMutex + **WaitEventFlag(60014000, bit1)** 各 368 | **空闲 Fios worker 1** |
@@ -486896,3 +486912,50 @@ NEXT：读取 `[H57M]` → 确定 CRI FS 使用的 I/O API → 补 HLE（读完�
 ANTI-FORGETTING ENTRY. Keywords: M916 page1 HLE histogram: 130M gated run out130m_m994gate.txt advances n to 63,185,000 ([FRAMEDUMP] n=63185000 ctr=9 pc=8128EA7E blk=8127C0F8), streamcnt=3, no GXM/TITLEMOV; [H57] cap 3000 grouped by thr: 40018000 & 40019000 = Lock/Unlock LwMutex + WaitEventFlag(60014000 bit1) x368 each (idle Fios workers), 4001D000 = SetEventFlag(60016000 bit1) x328 + WaitVblankStart x328 (display thread), 4001B000/4001C000 = WaitSema/SignalSema/DelayThread (CRI async), 40017000 = DelayThread x23 (main), thr=0 = 0 lines (cap exhausted by worker spam); FHOPEN/FHREAD/OPENMISS/READMISS = 0 over whole run -> CRI FS I/O does not use the implemented Fios FH* HLE cases. Added [H57M] filtered probe in hle_call (n>=59M, excludes spam VAs 812B2830/28A0/2880/1810/2AE0/2A50/27A0/2AD0, cap 2500) printing va/pc/lr/a0-a2/fib/thr/n; 130M run with [H57M] started out130m_m996h57m.txt; NEXT: read [H57M] sequence to identify the CRI FS I/O API, add HLE read-completion/sync handling -> page1 completes -> title page.
 
 LOOKUP: 0x60014000, 0x60016000, 0x812B2880, 0x812B2830, 0x812B1810, [H57M], out130m_m996h57m.txt -> §18.4460 [relevant: streamcnt=3], §18.4459 [relevant: gating]
+### 18.4462 PORT M917: [H57M] 主上下文 page1 只有 libc+DelayThreadCB；[HLEDUMP] 枚举全部 HLE stub
+
+1) 运行（`out130m_m996h57m.txt`，130M，带 [H57M]）：
+```
+[FRAMEDUMP] n=60355000 ctr=9 pc=81283C8A blk=8127B860 fib=848463A0 gxm(b/e/p)=0/0/0
+[SEQST] n=60000000 h=85B843AC ctrl=85B8436C cur=1 tab=813B01B4
+[JOB] n=60000000 streamcnt=3 binit=2171210656
+[GXM] 0；[TITLEMOV] 0
+```
+2) `[H57M]`（cap 2500，n≥59,429,033，只剩主上下文/thr=0）直方图：
+```
+812B2A80@8127C0F8  x820   sceKernelDelayThreadCB   <- CRI FS 睡眠循环
+812B27B0@81278C66  x530   GetThreadId (TLS-like)
+812B2800@81278C78  x530   (CRI 内部 stub，未映射)
+812B22E0@8116529E  x131   strlen
+812B2260@...       x~200  memset
+812B22A0@811E6A0E  x73    malloc
+812B2250           x50    free
+812B2270           x~63   memcpy
+812B2910@81278C00  x14    sceKernelCreateLwMutex (CRI 内部)
+812B1840@811E6A96  x4     sceCtrlReadBufferPositive
+812B1930@81003DA0  x4     sceTouchRead
+```
+=> **page1 阶段主上下文没有任何文件 I/O API 调用**；只是 `DelayThreadCB` 睡眠等待异步完成。
+3) 反汇编 `FUN_8127C0E8`（Thumb）：
+```
+8127c0e8 push {r4,lr}
+8127c0ea movs.w r1,#0x3e8
+8127c0ee mul r0,r0,r1
+8127c0f2 cbz r0,#8127c0f8
+8127c0f4 blx 812b2a80          // DelayThreadCB
+8127c0f8 pop {r4,pc}
+```
+= `if (r0) DelayThreadCB(r0*1000)`（纯延迟包装）。
+4) 矛盾点：CRI FS 主循环等"读完成"，但提交读的 API 不在已实现的 Fios HLE 用例（`[FHOPEN]`/`[FHREAD]` 整场=0）。
+5) 新增 `[HLEDUMP]`（n∈[59M,62M] 累计 `std::map<uint32_t,uint32_t>` 每 stub 次数，n≥62M 一次性打印 top48）：
+```cpp
+if (_hd_env) { if (g_main_n >= 59000000u && !_hddone) ++_hd[stub_va];
+  if (g_main_n >= 62000000u && !_hddone) { _hddone=1; ...sort... printf("[HLEDUMP] va=%08X count=%u\n", ...); } }
+```
+已启动 **70M 长跑**：`out70m_m997hledump.txt`（带 `P5D_HLEDUMP=1`）。
+NEXT：读 `[HLEDUMP]` → 找出 page1 期间被调用的未知/文件相关 stub → 补 HLE 读完成投递 → page1 加载完成 → 标题页。
+验证：`out130m_m996h57m.txt`（H57M 直方图）、`FUN_8127C0E8` 反汇编、`out70m_m997hledump.txt`（HLEDUMP 待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M917 [H57M] page1 main-context (thr=0) histogram in out130m_m996h57m.txt: 812B2A80@8127C0F8 x820 sceKernelDelayThreadCB (CRI FS sleep loop), 812B27B0@81278C66 x530 GetThreadId TLS-like, 812B2800@81278C78 x530 unmapped CRI internal stub, 812B22E0@8116529E x131 strlen, 812B2260 memset ~200, 812B22A0 malloc x73, 812B2250 free x50, 812B2270 memcpy ~63, 812B2910@81278C00 x14 CreateLwMutex, 812B1840 x4 CtrlReadBufferPositive, 812B1930 x4 TouchRead => NO file I/O API calls in page1 main context; FUN_8127C0E8 disassembly = push {r4,lr}; movs r1,#0x3e8; mul r0,r0,r1; cbz r0; blx 812B2A80 DelayThreadCB; pop = if(r0) DelayThreadCB(r0*1000); Fios workers 40018000/40019000 idle waiting eventflag 60014000 bit1; FHOPEN/FHREAD=0 whole run -> read submission API unknown; added [HLEDUMP] full per-stub histogram n in [59M,62M] dumped top48 at n>=62M (P5D_HLEDUMP=1); 70M run started out70m_m997hledump.txt; NEXT: read [HLEDUMP] -> find unknown/file-related stub used in page1 -> add HLE read-completion delivery -> page1 completes -> title page.
+
+LOOKUP: 0x8127C0E8, 0x812B2A80, 0x812B2800, 0x812B27B0, 0x60014000, P5D_HLEDUMP, out70m_m997hledump.txt -> §18.4461 [relevant: H57M added], §18.4460 [relevant: streamcnt=3]

@@ -1299,6 +1299,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
   { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _hd_env = -1; if (_hd_env < 0) { const char* _e = getenv("P5D_HLEDUMP"); _hd_env = (_e && atoi(_e)) ? 1 : 0; }
+    if (_hd_env) { static std::map<uint32_t,uint32_t> _hd; static int _hddone = 0;
+      if (g_main_n >= 59000000u && !_hddone) ++_hd[stub_va];
+      if (g_main_n >= 62000000u && !_hddone) { _hddone = 1;
+        std::vector<std::pair<uint32_t,uint32_t>> _v(_hd.begin(), _hd.end());
+        std::sort(_v.begin(), _v.end(), [](const std::pair<uint32_t,uint32_t>&a, const std::pair<uint32_t,uint32_t>&b){ return a.second > b.second; });
+        printf("[HLEDUMP] distinct=%zu total=%zu\n", _v.size(), _hd.size());
+        for (size_t _i=0;_i<_v.size() && _i<48;++_i) printf("[HLEDUMP] va=%08X count=%u\n", _v[_i].first, _v[_i].second);
+        fflush(stdout); } } }
   { static int _h57m = 0;   // 18.4461: filtered trace - main/unknown context only (skip worker spam), captures the file-IO path
     bool _spam = (stub_va == 0x812B2830u || stub_va == 0x812B28A0u || stub_va == 0x812B2880u || stub_va == 0x812B1810u
                || stub_va == 0x812B2AE0u || stub_va == 0x812B2A50u || stub_va == 0x812B27A0u || stub_va == 0x812B2AD0u);
