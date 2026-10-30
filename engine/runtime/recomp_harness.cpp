@@ -1578,7 +1578,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       break; }
     case 0x812B1BA0u: {                                               // sceFiberSwitch(fiber, ...): start/resume target
-      { static int _fsn = 0; static uint32_t _lastpc = 0xFFFFFFFFu; if (_fsn < 600) { uint32_t _fb = s->r[0] & ~1u; auto _fi = g_fctx.find(_fb); uint32_t _pc = _fi!=g_fctx.end()?_fi->second.r[15]:0u;
+      { static int _fsn = 0; static uint32_t _lastpc = 0xFFFFFFFFu; if (_fsn < 4000) { uint32_t _fb = s->r[0] & ~1u; auto _fi = g_fctx.find(_fb); uint32_t _pc = _fi!=g_fctx.end()?_fi->second.r[15]:0u;
           if (_pc != _lastpc) { _lastpc = _pc; ++_fsn; printf("[FIBSW] #%d n=%u lr=%08X fb=%08X fpc=%08X flr=%08X fr0=%08X blk=%u\n", _fsn-1, g_main_n, s->r[14], _fb, _pc, _fi!=g_fctx.end()?_fi->second.r[14]:0u, _fi!=g_fctx.end()?_fi->second.r[0]:0u, g_blkcnt_total); fflush(stdout); }
           static std::map<uint32_t,uint32_t> _freq; static uint32_t _recent[8]; static int _ri = 0; ++_freq[_pc]; _recent[_ri++ & 7] = _pc;
           static uint32_t _last_report = 0;
@@ -1701,8 +1701,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         // Inside fiber_exec return the real fiber object (fiber list mgmt needs non-zero); at thread level return 0
         // so the game's main loop takes its "no current fiber" exit path.
         static uint32_t g_dummy_getself = 0;
+        static int _gs0env = -1; if (_gs0env < 0) { const char* _e = getenv("P5D_GETSELF0"); _gs0env = (_e && atoi(_e)) ? 1 : 0; }
         uint32_t f;
-        if (g_in_fiber_exec) {
+        if (!g_in_fiber_exec && _gs0env) { f = 0u; if (g_dummy_gs_n++ < 5) printf("[GETSELF-ZERO] thread-level -> 0\n"); }
+        else if (g_in_fiber_exec) {
           f = (g_cur_fiber ? g_cur_fiber : (g_last_fiber ? g_last_fiber : (g_fiber_list.empty() ? 0x82F00000u : g_fiber_list[0])));
         } else {
           // 18.3904: returning 0 at thread level made the game dereference NULL (ldr r3,[sp]=0; ldr r2,[r3+0x94]
