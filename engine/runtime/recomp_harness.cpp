@@ -933,7 +933,17 @@ static void pending_req_scan() {
   }
 }
 
+static int g_periodpump_env = -1;
 static void job_probes(uint32_t pcv, RecState* s) {
+  { if (g_periodpump_env < 0) { const char* _e = getenv("P5D_PERIODPUMP"); g_periodpump_env = (_e && atoi(_e)) ? 1 : 0; }
+    static uint32_t _pp_last = 0; static int _dumpdone = 0;
+    if (g_main_n >= 59500000u && !_dumpdone) { _dumpdone = 1;
+      printf("[PDUMP] n=%u blk=%08X cur_thr=%08X cur_fib=%08X curpc=%08X infex=%d inthr=%d\n", g_main_n, g_cur_block, g_cur_thr, g_cur_fiber, pcv, g_in_fex, (int)(g_thr.size()));
+      for (auto& _kv : g_thr) { auto& _t=_kv.second; printf("[PDUMP] tid=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X ctxpc=%08X ctxsp=%08X\n",
+        _kv.first, _t.entry, _t.alive?1:0, _t.ready?1:0, _t.waiting?1:0, _t.wait_obj, _t.wait_bits, _t.ctx.r[15], _t.ctx.r[13]); }
+      for (auto& _kv : g_fctx) printf("[PDUMP] fib=%08X pc=%08X sp=%08X lr=%08X r0=%08X\n", _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[14], _kv.second.r[0]);
+      fflush(stdout); }
+    if (g_periodpump_env && !g_cur_thr && (g_blkcnt_total - _pp_last) >= 65536u) { _pp_last = g_blkcnt_total; g_pump_force = 1; hle_thr_pump(s, 60); g_pump_force = 0; } }
   { uint32_t _ba = pcv & ~1u;
     if (_ba == 0x811EA552u) { g_ea552_obj = s->r[0]; static int _ea=0; if (_ea++ < 40) { printf("[EA552v4] #%d r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X blk=%u\n", _ea-1, s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_blkcnt_total); fflush(stdout); } }
     if (_ba >= 0x811EB050u && _ba <= 0x811EB070u) { static int _eb=0; if (_eb++ < 20) { uint32_t _o=s->r[13], _sb=0, _sb4=0; uint8_t* _q=GP(_o+0xbc); if(_q) std::memcpy(&_sb,_q,4); if(_sb){ _q=GP(_sb+4u); if(_q) std::memcpy(&_sb4,_q,4);} printf("[EB06x] pc=%08X sb=%08X [sb+4]=%08X blk=%u fib=%08X\n", _ba, _sb, _sb4, g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
