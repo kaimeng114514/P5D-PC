@@ -1318,7 +1318,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     if (_ge) {
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
+      auto _t0 = std::chrono::steady_clock::now();
       uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
+      { auto _t1 = std::chrono::steady_clock::now(); long long _us = std::chrono::duration_cast<std::chrono::microseconds>(_t1-_t0).count();
+        static int _slow = 0; if (_us > 3000 && _slow++ < 80) { printf("[GXMSLOW] %s va=%08X took=%lld us blk=%08X n=%u r0=%08X r1=%08X lr=%08X\n", _ge->name, stub_va, _us, g_cur_block, g_main_n, s->r[0], s->r[1], s->r[14]); fflush(stdout); } }
       { static int _gxrv=0; if (_rv != 0u && _gxrv++ < 80) { printf("[GXMRV] blk=%08X va=%08X nid=%08X name=%s rv=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X\n", g_cur_block, stub_va, _ge->nid, _ge->name, _rv, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14]); fflush(stdout); } }
       { int _always = 0;
         if (strstr(_ge->name, "BeginScene") || strstr(_ge->name, "EndScene") || strstr(_ge->name, "DisplayQueueAddEntry") || strstr(_ge->name, "Present")) { if (g_gxmabi_scene_n++ < 800) _always = 1; }
@@ -5590,6 +5593,9 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
+    { static auto _rt0 = std::chrono::steady_clock::now(); static uint32_t _rn0 = 0;
+      if ((uint32_t)n - _rn0 >= 5000000u) { auto _rt1 = std::chrono::steady_clock::now(); long long _ms = std::chrono::duration_cast<std::chrono::milliseconds>(_rt1-_rt0).count();
+        printf("[RATE] n=%u dblk=%u wall_ms=%lld blocks_per_s=%.0f pc=%08X fib=%08X ctr_probe=%u\n", (uint32_t)n, (uint32_t)n-_rn0, _ms, _ms ? ((uint32_t)n-_rn0)*1000.0/_ms : 0.0, g_cur_block, g_cur_fiber, 0u); fflush(stdout); _rt0=_rt1; _rn0=(uint32_t)n; } }
     { static int _lf=-1; if (_lf<0) { const char* _e=getenv("P5D_LISTPROBE"); _lf=(_e&&atoi(_e))?1:0; }
       if (_lf) {
         auto _w=[&](uint32_t va)->uint32_t { uint8_t* q=GP(va); uint32_t v=0; if(q) std::memcpy(&v,q,4); return v; };
