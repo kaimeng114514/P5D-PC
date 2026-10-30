@@ -2401,6 +2401,7 @@ static void fiber_restore_thread(RecState* s) {
 }
 static int g_fiber_runs = 0, g_fiber_switches = 0, g_fiber_returns = 0;
 static uint32_t fiber_exec_to_completion(RecState* s) {
+  { static int _xes=0; if (_xes++ < 20) { printf("[EXECSTART] #%d fib=%08X pc=%08X sp=%08X r0=%08X lr=%08X fexecthread=%d\n", _xes-1, g_cur_fiber, s->r[15], s->r[13], s->r[0], s->r[14], (int)g_cur_thr); fflush(stdout); } }
   ++g_in_fex;
   if (g_in_fex > 1) {
     // 18.3900: nested fiber execution shares the SAME RecState, so the inner exec corrupts the outer
@@ -5401,6 +5402,8 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
     if (g_hw_handle && g_trc_n < 300) { uint32_t _st=0; uint8_t* _q=GP(g_hw_handle+4u); if(_q) std::memcpy(&_st,_q,4);
       if (_st==0) { printf("[TRC] %03d pc=%08X fib=%08X lr=%08X sp=%08X r0=%08X r1=%08X r2=%08X r3=%08X\n", g_trc_n++, pc, g_cur_fiber, s.r[14], s.r[13], s.r[0], s.r[1], s.r[2], s.r[3]); fflush(stdout); } }
     uint32_t rb[13]; for (int i = 0; i < 13; ++i) rb[i] = s.r[i];
+    if (pc == 0x8120683Cu || pc == 0x81198BE8u || (pc & ~1u) == 0x81198BE8u || pc == 0x81198C0Au || (pc & ~1u) == 0x81198C0Au || pc == 0x81206BDCu) {
+      static int _pe = 0; if (_pe++ < 30) { printf("[ENTRYARG] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X sp=%08X fib=%08X\n", pc, s.r[0], s.r[1], s.r[2], s.r[3], s.r[14], s.r[13], g_cur_fiber); fflush(stdout); } }
     uint32_t nxt = fn(&s);
     if (nxt == 1u && g_bad1_n++ < 3) {
       printf("[BAD1] pc=%08X blk=%08X sp=%08X lr=%08X fib=%08X r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X stk:", pc, g_cur_block, s.r[13], s.r[14], g_cur_fiber, s.r[0],s.r[1],s.r[2],s.r[3],s.r[4],s.r[5],s.r[6],s.r[7]);
