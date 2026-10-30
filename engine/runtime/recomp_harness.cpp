@@ -1314,6 +1314,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
       uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
+      { static int _gxrv=0; if (_rv != 0u && _gxrv++ < 80) { printf("[GXMRV] blk=%08X va=%08X nid=%08X name=%s rv=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X\n", g_cur_block, stub_va, _ge->nid, _ge->name, _rv, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14]); fflush(stdout); } }
       { int _always = 0;
         if (strstr(_ge->name, "BeginScene") || strstr(_ge->name, "EndScene") || strstr(_ge->name, "DisplayQueueAddEntry") || strstr(_ge->name, "Present")) { if (g_gxmabi_scene_n++ < 800) _always = 1; }
         else if (strstr(_ge->name, "Draw")) { if (g_gxmabi_draw_n++ < 40) _always = 1; }
@@ -3543,6 +3544,13 @@ static BlockFn gbn(uint32_t pc) {
       if ((pc & ~1u) == 0x812067A0u) { static int _mg=0; if (_mg++ < 40) { printf("[MGRENT] #%d blk=%u fib=%08X flagsA=%08X flagsB=%08X pc=%08X\n", _mg-1, g_blkcnt_total, g_cur_fiber, _ff(0x84836300u), _ff(0x848463A0u), pc); fflush(stdout); } }
       if ((g_blkcnt_total % 500000u) == 0u) { static int _mf=0; if (_mf++ < 40) { printf("[FLAGS] blk=%u fib=%08X flagsA=%08X flagsB=%08X pc=%08X\n", g_blkcnt_total, g_cur_fiber, _ff(0x84836300u), _ff(0x848463A0u), pc); fflush(stdout); } }
     } }
+  { static int _rp=-1; if (_rp<0) { const char* _e=getenv("P5D_RENDERPROBE"); _rp=(_e&&atoi(_e))?1:0; }
+    if (_rp && (pc==0x811EB262u || pc==0x811EB068u || pc==0x811EB43Cu || pc==0x811EB080u || pc==0x811EB060u)) {
+      static int _c=0; if (_c++ < 60) { uint32_t _g1=0,_g2=0,_g3=0; uint8_t* _q;
+        _q=GP(0x816CC66Cu); if(_q) std::memcpy(&_g1,_q,4);
+        _q=GP(0x816CC700u); if(_q) std::memcpy(&_g2,_q,4);
+        _q=GP(0x816CC630u); if(_q) std::memcpy(&_g3,_q,4);
+        printf("[RPROBE] pc=%08X blk=%u fib=%08X thr=%08X g66C=%08X g700=%08X g630=%08X\n", pc, g_blkcnt_total, g_cur_fiber, g_cur_thr, _g1, _g2, _g3); fflush(stdout); } } }
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
 
   pc &= ~1u;   // 18.3939: normalize Thumb bit (block table is keyed by even instruction addresses)
