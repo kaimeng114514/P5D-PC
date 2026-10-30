@@ -925,6 +925,12 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x81181EACu || _a0 == 0x81181F1Au || _a0 == 0x81181F9Cu || _a0 == 0x81182014u || _a0 == 0x811820B6u ||
+        _a0 == 0x811821E2u || _a0 == 0x81182298u || _a0 == 0x811823FEu || _a0 == 0x81182742u || _a0 == 0x81182C56u ||
+        _a0 == 0x81182F6Au || _a0 == 0x811830E2u) { static int _wv_n = 0; static int _wv_late = 0; ++_wv_n;
+      int _late = (g_main_n > 10000000u && !_wv_late); if (_late) _wv_late = 1;
+      if (_wv_n <= 10 || (_wv_n % 2000) == 0 || _late) { printf("[VFW] #%d at=%08X n=%u late=%d r0=%08X r1=%08X r2=%08X fib=%08X\n", _wv_n, _a0, g_main_n, _late, s->r[0], s->r[1], s->r[2], g_cur_fiber); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
     if (_a0 == 0x811E5CCAu || _a0 == 0x811C6B9Eu || _a0 == 0x811C6ACCu || _a0 == 0x811C6D98u) { static int _pk_n = 0; static int _pk_late = 0; ++_pk_n;
       int _late = (g_main_n > 10000000u && !_pk_late); if (_late) _pk_late = 1;
       if (_pk_n <= 6 || (_pk_n % 1000) == 0 || _late) { printf("[PUMPCH] #%d at=%08X n=%u late=%d r0=%08X r1=%08X fib=%08X\n", _pk_n, _a0, g_main_n, _late, s->r[0], s->r[1], g_cur_fiber); fflush(stdout); } } }
@@ -1006,6 +1012,8 @@ static void job_probes(uint32_t pcv, RecState* s) {
         { uint8_t* _q = GP(_node + 4); if (_q) std::memcpy(&_nfl, _q, 4); }
         { uint8_t* _q = GP(_node + 0x44); if (_q) std::memcpy(&_sub, _q, 4); }
         if (_job) { { uint8_t* _q = GP(_job + 4); if (_q) std::memcpy(&_jst, _q, 4); } { uint8_t* _q = GP(_job + 0xA0); if (_q) std::memcpy(&_jfl, _q, 4); } }
+        if (_late && _job && g_watch_addr == 0) { g_watch_addr = _job + 4u; g_watch_val = _jst;
+          printf("[NODE] WATCH armed addr=%08X val=%08X\n", g_watch_addr, g_watch_val); }
         printf("[NODE] load-step #%d list=%08X node=%08X nfl=%08X job=%08X jstate=%u jflag=%08X sub=%08X n=%u late=%d\n", _ba_n, s->r[0], _node, _nfl, _job, _jst, _jfl, _sub, g_main_n, _late); fflush(stdout); } }
     if (_a == 0x8117BC66u) { static int _br_n = 0; ++_br_n; if (_br_n <= 10 || (_br_n % 2000) == 0) { printf("[NODE] load-step-ret #%d ret=%08X blk=%u\n", _br_n, s->r[0], g_blkcnt_total); fflush(stdout); } }
     if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
@@ -5504,6 +5512,15 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
             }
             fflush(stdout); }
         } }
+      if ((n % 10000000) == 0) { static int _ts_n = 0; ++_ts_n;
+        printf("[TS] n=%d thr=%zu fib=%zu\n", n, g_thr.size(), g_fctx.size());
+        for (auto& _kv : g_thr) { HThread& _t = _kv.second;
+          printf("[TS] thr=%08X entry=%08X alive=%d ready=%d wait=%d obj=%08X bits=%08X ctxpc=%08X ctxsp=%08X\n",
+                 _kv.first, _t.entry, _t.alive, _t.ready, _t.waiting, _t.wait_obj, _t.wait_bits, _t.ctx.r[15], _t.ctx.r[13]); }
+        for (auto& _kv : g_fctx) printf("[TS] fib=%08X pc=%08X sp=%08X lr=%08X r0=%08X\n", _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[14], _kv.second.r[0]);
+        uint32_t _lp = 0; { uint8_t* _q = GP(0x813B0184u); if (_q) std::memcpy(&_lp, _q, 4); }
+        printf("[TS] rootlist813B0184=%08X\n", _lp);
+        fflush(stdout); }
       if ((n % 5000000) == 0) {
         { static int _sq_n = 0; ++_sq_n;
           uint32_t _h = 0; { uint8_t* _q = GP(0x813B01A8u); if (_q) std::memcpy(&_h, _q, 4); }
