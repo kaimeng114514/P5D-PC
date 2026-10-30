@@ -3911,6 +3911,7 @@ extern "C" void wr16_watch(uint32_t a, uint32_t v) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { static int _gw=0; if ((a == 0x816CC66Cu || a == 0x816CC700u || a == 0x816CC66Cu+0x10u) && _gw++ < 40) { printf("[GW] a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   if (a == 0x815554C4u || a == 0x815554C8u || a == 0x815554C0u) { static int _pw=0; if (_pw++ < 200) { printf("[PROCWR] a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   if (a == 0x81513DECu) { static int _cw=0; if (_cw++ < 24) { printf("[CBWR] v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   if (g_sw8_on && ((a >= g_stkw_lo && a < g_stkw_hi) || (a >= 0x84856500u && a < 0x848565A0u))) stkw_note("w32", a, v, 32);
