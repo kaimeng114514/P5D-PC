@@ -378,10 +378,12 @@ static uint32_t call_guest_cb2(RecState* s, uint32_t entry, uint32_t a0, uint32_
 // M844: GXM-ABI bridge hooks (called from gxm_abi.cpp): the backend sceGxmDisplayQueueAddEntry is a stub, so we capture the
 // guest displayQueueCallback from SceGxmInitializeParams and run it from the main dispatch loop after each AddEntry.
 extern "C" void p5d_hle_set_display_cb(uint32_t cb, uint32_t cbds) {
+  printf("[DISPCB] set_display_cb cb=%08X cbds=%08X\n", cb, cbds); fflush(stdout);
   g_display_cb = cb; g_display_cbds = cbds;
   static int _n = 0; if (_n++ < 6) { printf("[GXMCB] registered displayQueueCallback=%08X dataSize=%u\n", cb, cbds); fflush(stdout); }
 }
 extern "C" void p5d_hle_display_queue(uint32_t cb, uint32_t data) {
+  { static int _dq=0; if (_dq++ < 12) { printf("[DISPQ] cb=%08X data=%08X\n", cb, data); fflush(stdout); } }
   if (!cb) return;
   g_disp_pending = cb; g_disp_pending_cbd = data;
   static int _n = 0; if (_n++ < 10) { printf("[DISPLAYQ] guest cb=%08X data=%08X (queued)\n", cb, data); fflush(stdout); }
