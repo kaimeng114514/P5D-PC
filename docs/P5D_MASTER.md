@@ -927,6 +927,8 @@
 | M909 | §18.4454: ★★★★★ **VBPUMP 无效的原因找到：page1 帧循环运行在 guest 线程上下文（g_cur_thr=40017000），而 `hle_thr_pump` 在 g_cur_thr 非 0 时直接 return、DelayThread 在 g_cur_thr 非 0 时也直接 break（不让出）→ worker 线程永远没机会跑**。证据：(1) VBPUMP 64M 长跑（`out64m_m981vbump.txt`）仍卡在 **n=59,810,000、ctr=9、pc=81283C84 blk=8128EA74**（与 M908 相同），`[VBPUMP]` 只在 n=2048 打印 6 条（早期 vblank），说明 page1 循环里的 vblank pump 调用并未带来进展；(2) 源码：`hle_thr_pump` 第一行 `if (g_cur_thr || g_hostthreads) return;`；DelayThread case 里 `if (g_cur_thr) { ... break; }` —— **在 guest 线程执行上下文中，pump 和让出都不发生**，主线程自旋、加载 worker 饿死。**修复实验（18.4454，env `P5D_THRYIELD=1`）**：(a) `hle_thr_pump` 入口增加**虚拟唤醒扫描**：对 `waiting` 且 `g_thr_wake_vt[tid] <= g_vtime_extra` 的线程置 ready；(b) DelayThread 在 `g_cur_thr` 非 0 时登记 `g_thr_wake_vt[tid]=g_vtime_extra+usec` 并置 `g_thr_blocked=1`（让线程执行循环保存上下文并退出，使调度器能 pump 其他线程）。2.5M 冒烟测试（`out2m_m984thryield3.txt`）：`[THRYIELD-GT]` 8 条（tid 40017000 usec=5000、4001B000/4001C000 usec=30000 均让出）、exit=0、无 BADMEM。已后台启动 64M 长跑（`out64m_m985thryield.txt`，带 `P5D_THRYIELD=1`）验证 page1 是否完成 → 标题页。 |
 | M910 | §18.4455: **两条负结果 + 新诊断/调度实验**：(1) `P5D_VBPUMP=1` 64M 长跑（`out64m_m981vbump.txt`）仍卡在 **n=59,810,000、ctr=9、pc=81283C84 blk=8128EA74**（与未修复完全相同），`[VBPUMP]` 仅早期 6 条 → vblank pump 对 page1 无效（原因见 M909：g_cur_thr 上下文 pump 直接 return）。(2) `P5D_THRYIELD=1` 64M 长跑（`out64m_m985thryield.txt`）同样卡在 **n=59,955,000、pc=8127BB2E blk=8127BE56、ctr=9**，`[IDR]`/`[SEQREQ]` 到 n=59.61M 后不再推进；THRYIELD 冒烟时确有让出（`[THRYIELD-GT]` 8 条），但不足让 worker 完成加载。→ **pump/让出本身不是唯一缺口**。为下一次实验新增两个工具：(a) `[PDUMP]` —— 当 `g_main_n >= 59,500,000` 时**一次性打印全部 guest 线程状态**（tid/entry/alive/ready/waiting/wait_obj/wait_bits/ctxpc/ctxsp）与全部 fiber 上下文（pc/sp/lr/r0）+ 当前 g_cur_thr/g_cur_fiber/curpc/g_in_fex，用于看 worker 到底卡在哪个 wait 对象、是否 ready；(b) `P5D_PERIODPUMP=1` —— 在 job_probes 里每 65536 块（且 `g_cur_thr==0`）执行一次 `g_pump_force=1; hle_thr_pump(s,60); g_pump_force=0`，模拟**周期抢占**，让 guest 线程在 page1 自旋期间也能得到执行片。已后台启动 64M 长跑（`out64m_m986periodpump.txt`，THRYIELD+PERIODPUMP）验证 page1 是否完成，并在 n≥59.5M 抓 `[PDUMP]` 线程快照。 |
 | M911 | §18.4456: ★★★★★★ **[PDUMP] 线程快照锁定 page1 卡点本质：多个 worker 线程 ready=1 但从未被执行（被 g_cur_thr 上下文屏蔽），且两个 CRI FS worker 在等 eventflag 60018000/6001A000 bit1**。n=59,500,000 时 `[PDUMP]`（`out64m_m986periodpump.txt`）：
+| M912 | §18.4457: ★★★★★ **M911 的周期抢占为什么没触发：判据用了 `g_blkcnt_total`，而它在嵌套执行里冻结——改用 job_probes 调用计数后抢占立即生效，且抢占对象正是那批 READY worker**。修复前 `out64m_m988preempt.txt` 的 `[PREEMPT]` **0 条**（尽管 page1 确实在 thread 上下文自旋）：因为 periodpump 条件 `(g_blkcnt_total - _pp_last) >= 65536` 在嵌套 fiber exec 内**永不成立**（g_blkcnt_total 冻结，这是 M859 起就有的规则）。**修复（18.4457）**：改为 `static uint32_t _pp_cnt; ++_pp_cnt; if (g_periodpump_env && _pp_cnt >= 65536u) { _pp_cnt=0; if (g_cur_thr) g_thr_blocked=1; else { g_pump_force=1; hle_thr_pump(s,60); g_pump_force=0; } }` —— 用 **job_probes 被调用次数** 作节拍（每个执行块一次，嵌套内也递增）。3M 冒烟测试（`out3m_m989preempt2.txt`）：`[PREEMPT]` **4 条**：`tid=40019000 pc=812B28A0`、`tid=4001D000 pc=8127B7C8`、`tid=4001C000 pc=81207442`、`tid=40018000 pc=810160FC` —— 正是 M911 [PDUMP] 里 ready=1 却从未执行的 worker 线程；exit=0、BADMEM=0。已后台启动 64M 长跑（`out64m_m990preempt2.txt`，THRYIELD+PERIODPUMP 计数版）验证 page1 是否完成 → 标题页。 |
+| §18.4457 | Why M911's periodic preemption never fired: the condition used g_blkcnt_total, which freezes inside nested execution - after switching to a job_probes call counter, preemption fires immediately and targets exactly the READY workers. Before the fix, out64m_m988preempt.txt had [PREEMPT] 0 lines (even though page1 really spins in thread context) because the periodpump condition (g_blkcnt_total - _pp_last) >= 65536 never becomes true inside nested fiber exec (g_blkcnt_total frozen, a rule since M859). FIX (18.4457): use a job_probes call counter: static uint32_t _pp_cnt; ++_pp_cnt; if (g_periodpump_env && _pp_cnt >= 65536u) { _pp_cnt=0; if (g_cur_thr) g_thr_blocked=1; else { g_pump_force=1; hle_thr_pump(s,60); g_pump_force=0; } } - the beat is the number of job_probes calls (once per executed block, also increments inside nested exec). 3M smoke test (out3m_m989preempt2.txt): [PREEMPT] 4 lines: tid=40019000 pc=812B28A0, tid=4001D000 pc=8127B7C8, tid=4001C000 pc=81207442, tid=40018000 pc=810160FC - exactly the READY-but-never-executed worker threads from M911's [PDUMP]; exit=0, BADMEM=0. A 64M long run with THRYIELD+PERIODPUMP counter version has been started in the background (out64m_m990preempt2.txt) to verify page1 completion -> title page. |
 ```
 cur_thr=00000000 cur_fib=848463A0 curpc=8115D614 infex=0 inthr=17
 tid=40017000 alive=1 ready=0 wait=1 obj=00000000 ctxpc=81207612      (DelayThread 等待)
@@ -486699,3 +486701,37 @@ NEXT：读取 `out64m_m988preempt.txt`：`[PDUMP]` 中 ready 线程是否被执�
 ANTI-FORGETTING ENTRY. Keywords: M911 [PDUMP] snapshot at n=59,500,000 (out64m_m986periodpump.txt) shows page1 pipeline broken: cur_thr=0 cur_fib=848463A0 curpc=8115D614 inthr=17; tid=40018000 ready=1 ctxpc=81207344, tid=40019000 ready=1 ctxpc=81016110, tid=4001A000 ready=1 obj=60016000 bits=1 ctxpc=8127BC22 (CRI FS worker), tid=4001D000 ready=1 ctxpc=8127B860 (CRI FS code) - READY but never executed; tid=4001E000 wait=1 obj=60018000 bits=1 ctxpc=8127BE1C and tid=4001F000 wait=1 obj=6001A000 bits=1 ctxpc=8127BE1C wait for event flags 60018000/6001A000 bit1 which the READY workers should set; main thread 40017000 waits DelayThread and holds execution context so hle_thr_pump returns early (g_cur_thr nonzero). FIX EXPERIMENT 18.4456: P5D_PERIODPUMP enhanced with periodic preemption: every 65536 blocks if g_cur_thr then g_thr_blocked=1 (current thread execution loop saves context and exits) else g_pump_force=1; hle_thr_pump(s,60); g_pump_force=0; 2.5M smoke out2m_m987preempt.txt exit=0 BADMEM=0; 64M long run started out64m_m988preempt.txt; next: check [PDUMP] whether ready threads execute and 60018000/6001A000 get set, and whether [IDR]/[SEQREQ]/[GXM]/[TITLEMOV]/ctr advance.
 
 LOOKUP: 0x60018000, 0x6001A000, 0x60016000, g_thr_blocked, hle_thr_pump, P5D_PERIODPUMP, [PDUMP], out64m_m988preempt.txt -> §18.4455 [relevant: PDUMP added], §18.4454 [relevant: THRYIELD]
+### 18.4457 PORT M912: 周期抢占判据错误（g_blkcnt_total 冻结）→ 改用调用计数后抢占生效
+
+1) 现象：M911 的周期抢占在 64M 长跑 `out64m_m988preempt.txt` 中 `[PREEMPT]` **0 条**，
+尽管 page1 确实在 guest 线程上下文里自旋（PDUMP 已证实）。
+2) 原因：periodpump 条件写成
+```cpp
+if (g_periodpump_env && (g_blkcnt_total - _pp_last) >= 65536u) { ... }
+```
+而 **`g_blkcnt_total` 在嵌套 fiber 执行期间冻结**（M859 起已知规则：内层 exec 不递增该计数），
+page1 的帧循环正好在嵌套执行里 → 条件永不成立。
+3) 修复（18.4457）：用 **job_probes 调用次数** 作节拍（每个执行块调用一次、嵌套内也递增）：
+```cpp
+{ static uint32_t _pp_cnt = 0; ++_pp_cnt;
+  if (g_periodpump_env && _pp_cnt >= 65536u) { _pp_cnt = 0;
+    if (g_cur_thr) { g_thr_blocked = 1; }                         // 抢占当前线程
+    else { g_pump_force = 1; hle_thr_pump(s, 60); g_pump_force = 0; } } }   // 运行所有 ready 线程
+```
+4) 3M 冒烟测试（`out3m_m989preempt2.txt`）：
+```
+[PREEMPT] tid=40019000 pc=812B28A0 fib=848463A0
+[PREEMPT] tid=4001D000 pc=8127B7C8 fib=848463A0
+[PREEMPT] tid=4001C000 pc=81207442 fib=848463A0
+[PREEMPT] tid=40018000 pc=810160FC fib=848463A0
+done: blocks=3000000 ... exit=0；BADMEM 0
+```
+=> 抢占对象正是 M911 [PDUMP] 中 **ready=1 却从未执行的 worker 线程**（40018000/40019000/4001C000/4001D000）。
+5) 已后台启动 **64M 长跑**：`out64m_m990preempt2.txt`（THRYIELD+PERIODPUMP 计数版）。
+NEXT：读取 `out64m_m990preempt2.txt`：`[PREEMPT]` 是否持续、`[PDUMP]` 中 worker 是否变为已执行
+（ready 变化/ctxpc 前进）、`60018000`/`6001A000` 是否被 set、`[IDR]`/`[SEQREQ]`/`[GXM]`/`[TITLEMOV]`/`ctr` 是否推进。
+验证：`out64m_m988preempt.txt`（修复前 0 条）、`out3m_m989preempt2.txt`（修复后 4 条）、`out64m_m990preempt2.txt`（长跑待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M912 M911 preemption never fired because condition used g_blkcnt_total which freezes inside nested fiber execution (M859 rule); out64m_m988preempt.txt [PREEMPT] 0 lines; FIX 18.4457 switched the periodpump beat to a job_probes call counter: static uint32_t _pp_cnt; ++_pp_cnt; if (g_periodpump_env && _pp_cnt >= 65536u) { _pp_cnt=0; if (g_cur_thr) g_thr_blocked=1; else { g_pump_force=1; hle_thr_pump(s,60); g_pump_force=0; } }; 3M smoke out3m_m989preempt2.txt: [PREEMPT] 4 lines tid=40019000 pc=812B28A0, tid=4001D000 pc=8127B7C8, tid=4001C000 pc=81207442, tid=40018000 pc=810160FC (exactly the ready-but-never-executed workers from M911 PDUMP), exit=0 BADMEM=0; 64M long run started out64m_m990preempt2.txt with THRYIELD+PERIODPUMP counter; next: check [PREEMPT] continuity, whether [PDUMP] workers execute (ctxpc advance), whether eventflags 60018000/6001A000 get set, and whether [IDR]/[SEQREQ]/[GXM]/[TITLEMOV]/ctr advance.
+
+LOOKUP: g_blkcnt_total, job_probes, P5D_PERIODPUMP, g_thr_blocked, hle_thr_pump, 0x60018000, 0x6001A000, out64m_m990preempt2.txt -> §18.4456 [relevant: PDUMP], §18.4455 [relevant: PERIODPUMP intro]
