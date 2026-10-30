@@ -1446,6 +1446,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2390u: { if (s->r[0]) { uint8_t* q = GP(s->r[0]); if (q) { uint32_t z = 0; std::memcpy(q, &z, 4); } } r0 = 0; break; }  // time
     case 0x812B2400u: r0 = 0; break;                                  // localtime
     case 0x812B2910u: {                                               // 18.4415: sceKernelCreateLwMutex(work,name,attr,count,opt) -> 0 on success; ZERO the SceKernelLwMutexWork (0x20 B) at r0
+      static int _lwm_env = -1; if (_lwm_env < 0) { const char* _e = getenv("P5D_LWM"); _lwm_env = (_e && atoi(_e) == 0) ? 0 : 1; }
+      if (!_lwm_env) { r0 = hle_malloc(64); break; }   // 18.4420: P5D_LWM=0 restores the old (wrong) semantics for A/B isolation
       uint32_t _w = s->r[0]; if (_w) { uint8_t* _p = GP(_w); if (_p) std::memset(_p, 0, 0x20); }
       r0 = 0; break; }
     case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread)
@@ -5499,7 +5501,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
-    if (getenv("P5D_PCTRACE") && ((n <= 2000) || (n < 800000 && ((uint32_t)n % 200u) == 0u))) { printf("[PCTRACE] n=%u blk=%u pc=%08X fib=%08X\n", (unsigned)n, g_blkcnt_total, g_cur_block, g_cur_fiber); fflush(stdout); }
+    if (getenv("P5D_PCTRACE") && ((n <= 2000) || (n < 2000000 && ((uint32_t)n % 100u) == 0u))) { printf("[PCTRACE] n=%u blk=%u pc=%08X fib=%08X thr=%08X\n", (unsigned)n, g_blkcnt_total, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); }
     if (g_watch_addr != 0) {   // 18.4173: GP-based watch (heap addresses are not at va-IMG_VA_BASE)
       uint8_t* _wp = GP(g_watch_addr);
       if (_wp) { uint32_t v; std::memcpy(&v, _wp, 4);
