@@ -486,6 +486,7 @@ static void fios_ensure_cpk() {
 static std::map<uint32_t,int> g_hlecnt;
 static std::map<uint32_t,int> g_blkcnt;
 static uint32_t g_watch2 = 0;
+static uint32_t g_ea552_obj = 0;   // 18.4435: FUN_811EA552 param_1 (appCore frame object)
 static uint32_t g_watch2_val = 0;
 static int g_watch2_n = 0;
 static int g_path_n = 0;
@@ -929,6 +930,10 @@ static void pending_req_scan() {
 }
 
 static void job_probes(uint32_t pcv, RecState* s) {
+  { uint32_t _ba = pcv & ~1u;
+    if (_ba == 0x811EA552u) { g_ea552_obj = s->r[0]; static int _ea=0; if (_ea++ < 40) { printf("[EA552v4] #%d r0=%08X r1=%08X r2=%08X lr=%08X sp=%08X fib=%08X blk=%u\n", _ea-1, s->r[0], s->r[1], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_blkcnt_total); fflush(stdout); } }
+    if (_ba >= 0x811EB050u && _ba <= 0x811EB070u) { static int _eb=0; if (_eb++ < 20) { uint32_t _o=s->r[13], _sb=0, _sb4=0; uint8_t* _q=GP(_o+0xbc); if(_q) std::memcpy(&_sb,_q,4); if(_sb){ _q=GP(_sb+4u); if(_q) std::memcpy(&_sb4,_q,4);} printf("[EB06x] pc=%08X sb=%08X [sb+4]=%08X blk=%u fib=%08X\n", _ba, _sb, _sb4, g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+  }
   { uint32_t _b0 = pcv & ~1u;
     if (_b0 == 0x81279486u || _b0 == 0x81279520u) { static int _ac_n = 0; if (_ac_n++ < 60) {
         char _fmt[160] = {0}, _arg[160] = {0}; uint8_t* _q = GP(s->r[1]);
@@ -3940,6 +3945,7 @@ extern "C" void wr16_watch(uint32_t a, uint32_t v) {
       if (g_w16_n++ < 240) { printf("[W16] a=%08X off=%02X v=%04X blk=%08X fib=%08X thr=%08X\n", a, a - g_watch_task, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } } }
 }
 extern "C" void wr32_watch(uint32_t a, uint32_t v) {
+  { static int _ow=0; if (g_ea552_obj && (a == g_ea552_obj || a == g_ea552_obj + 4u || a == 0x816CC66Cu) && _ow++ < 40) { printf("[OBJWR] a=%08X v=%08X off=%X blk=%08X fib=%08X pc=%08X\n", a, v, a-g_ea552_obj, g_blkcnt_total, g_cur_fiber, g_cur_block); fflush(stdout); } }
   { static int _gw=0; if ((a == 0x816CC66Cu || a == 0x816CC700u || a == 0x816CC66Cu+0x10u) && _gw++ < 40) { printf("[GW] a=%08X v=%08X blk=%08X fib=%08X thr=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr); fflush(stdout); } }
   if (a == 0x815554C4u || a == 0x815554C8u || a == 0x815554C0u) { static int _pw=0; if (_pw++ < 200) { printf("[PROCWR] a=%08X v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", a, v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
   if (a == 0x81513DECu) { static int _cw=0; if (_cw++ < 24) { printf("[CBWR] v=%08X blk=%08X fib=%08X thr=%08X sp=%08X\n", v, g_cur_block, g_cur_fiber, g_cur_thr, g_snap_r[13]); fflush(stdout); } }
