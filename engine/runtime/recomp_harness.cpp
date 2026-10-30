@@ -944,8 +944,10 @@ static void job_probes(uint32_t pcv, RecState* s) {
       for (auto& _kv : g_fctx) printf("[PDUMP] fib=%08X pc=%08X sp=%08X lr=%08X r0=%08X\n", _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[14], _kv.second.r[0]);
       fflush(stdout); }
     { static uint32_t _pp_cnt = 0; ++_pp_cnt;
-      if (g_periodpump_env && _pp_cnt >= 65536u) { _pp_cnt = 0;
-        if (g_cur_thr) {   // 18.4456/18.4457: preempt the running guest thread so the scheduler can run ready workers
+      if (g_periodpump_env && _pp_cnt >= 8192u) { _pp_cnt = 0;
+        if (g_cur_thr) {   // 18.4458: preempt the running guest thread AND record a wake deadline so it can run again
+          g_thr_wake_vt[g_cur_thr] = g_vtime_extra + 2000ull;
+          g_thr_wait_obj = 0; g_thr_wait_bits = 0; g_thr_wait_mode = 0;
           g_thr_blocked = 1;
           static int _pp1 = 0; if (_pp1++ < 10) { printf("[PREEMPT] tid=%08X pc=%08X fib=%08X\n", g_cur_thr, pcv, g_cur_fiber); fflush(stdout); }
         } else { g_pump_force = 1; hle_thr_pump(s, 60); g_pump_force = 0; } } } }
@@ -4071,7 +4073,7 @@ extern "C" void wr32_watch(uint32_t a, uint32_t v) {
 static void hle_thr_pump(RecState* s, int quantum) {
   if (g_thryield_env < 0) { const char* _e = getenv("P5D_THRYIELD"); g_thryield_env = (_e && atoi(_e)) ? 1 : 0; }
   if (g_cur_thr || g_hostthreads) return;   // 18.4239: in host-thread mode the guest threads run on their own host threads
-  if (g_thryield_env) {   // 18.4454 M909: wake guest threads whose virtual DelayThread deadline has passed
+  if (g_thryield_env || (g_periodpump_env == 1)) {   // 18.4454 M909 / 18.4458: wake guest threads whose virtual deadline has passed
     for (auto& _kvw : g_thr) { HThread& _tw = _kvw.second;
       if (_tw.alive && _tw.waiting) { auto _itw = g_thr_wake_vt.find(_kvw.first);
         if (_itw != g_thr_wake_vt.end() && g_vtime_extra >= _itw->second) { _tw.waiting = 0; _tw.ready = 1; g_thr_wake_vt.erase(_itw); } } }
