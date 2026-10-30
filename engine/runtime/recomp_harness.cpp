@@ -1703,7 +1703,22 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         static uint32_t g_dummy_getself = 0;
         static int _gs0env = -1; if (_gs0env < 0) { const char* _e = getenv("P5D_GETSELF0"); _gs0env = (_e && atoi(_e)) ? 1 : 0; }
         uint32_t f;
+        static int _gsfix = -1; if (_gsfix < 0) { const char* _e2 = getenv("P5D_GETSELFFIX"); _gsfix = (_e2 && atoi(_e2)) ? 1 : 0; }
         if (!g_in_fiber_exec && _gs0env) { f = 0u; if (g_dummy_gs_n++ < 5) printf("[GETSELF-ZERO] thread-level -> 0\n"); }
+        else if (!g_in_fiber_exec && _gsfix) {
+          // 18.4439: re-arm the thread-level dummy each call (+0x80 running, +0x94 -> an alive fiber)
+          if (!g_dummy_getself) { g_dummy_getself = hle_malloc(0xA0u); }
+          f = g_dummy_getself ? g_dummy_getself : 0x82F00000u;
+          uint32_t _link = 0;
+          { uint8_t* _h = GP(0x816CC624u); if (_h) { std::memcpy(&_link, _h, 4); } }
+          if (!_link) { uint32_t _cand[2] = {0x848463A0u, 0x84836300u};
+            for (int _ci = 0; _ci < 2; ++_ci) { uint8_t* _q = GP(_cand[_ci] + 0x80u); uint32_t _fl = 0; if (_q) std::memcpy(&_fl, _q, 4);
+              if ((_fl & 1u) && !(_fl & 2u)) { _link = _cand[_ci]; break; } } }
+          { uint8_t* _q = GP(f + 0x80u); if (_q) { uint32_t _v = 1u; std::memcpy(_q, &_v, 4); } }
+          { uint8_t* _q = GP(f + 0x94u); if (_q) { std::memcpy(_q, &_link, 4); } }
+          { uint8_t* _q = GP(f + 0x98u); if (_q) { uint32_t _z = 0u; std::memcpy(_q, &_z, 4); } }
+          if (g_dummy_gs_n++ < 10) printf("[GETSELF-ARM] dummy=%08X ->link=%08X\n", f, _link);
+        }
         else if (g_in_fiber_exec) {
           f = (g_cur_fiber ? g_cur_fiber : (g_last_fiber ? g_last_fiber : (g_fiber_list.empty() ? 0x82F00000u : g_fiber_list[0])));
         } else {
