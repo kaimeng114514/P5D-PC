@@ -938,6 +938,14 @@ static void job_probes(uint32_t pcv, RecState* s) {
   }
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x8116F7CAu) { static int _pr_n = 0;
+      if (_pr_n++ < 30) { char _nm[64] = {0}; uint8_t* _q = GP(s->r[1]); if (_q) { for (int _i = 0; _i < 60; ++_i) { char _c = (char)_q[_i]; if (!_c) break; _nm[_i] = (_c >= 32 && _c < 127) ? _c : '.'; } }
+        printf("[PROCREG] #%d name='%s' arg=%08X cb0=%08X cb1=%08X obj=%08X blk=%08X fib=%08X\n", _pr_n, _nm, s->r[0], s->r[4], s->r[5], s->r[6], g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+    if (_a == 0x81197CCCu) { static int _tm_n = 0;
+      if (_tm_n++ < 10) { printf("[TITLEMOV] titleMoviePlayer_81197CCC creator called blk=%u fib=%08X ring:", g_blkcnt_total, g_cur_fiber);
+        for (int _k = 0; _k < 16; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+    if (_a == 0x81197DF6u || _a == 0x81197DF8u) { static int _ts_n = 0;
+      if (_ts_n++ < 30) { printf("[TITLEST] at=%08X r0=%08X r4=%08X blk=%u fib=%08X\n", _a, s->r[0], s->r[4], g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
     if (_a == 0x81196F3Cu || _a == 0x81196F4Eu || _a == 0x81197408u || _a == 0x81197444u) { static int _ms_n = 0;
       if (_ms_n++ < 40) { printf("[MOVSTAT] at=%08X state_r0=%08X r4=%08X r5=%08X lr=%08X sp=%08X fib=%08X ring:", _a, s->r[0], s->r[4], s->r[5], s->r[14], s->r[13], g_cur_fiber);
         for (int _k = 0; _k < 16; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
