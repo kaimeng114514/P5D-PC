@@ -1572,8 +1572,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       break; }
     case 0x812B1BA0u: {                                               // sceFiberSwitch(fiber, ...): start/resume target
-      { static int _fsn = 0; if (_fsn++ < 24) { uint32_t _fb = s->r[0] & ~1u; auto _fi = g_fctx.find(_fb);
-          printf("[FIBSW] #%d lr=%08X arg=%08X fb=%08X curfib=%08X hasctx=%d fpc=%08X flr=%08X fr0=%08X\n", _fsn-1, s->r[14], s->r[1], _fb, g_cur_fiber, (int)(_fi!=g_fctx.end()), _fi!=g_fctx.end()?_fi->second.r[15]:0u, _fi!=g_fctx.end()?_fi->second.r[14]:0u, _fi!=g_fctx.end()?_fi->second.r[0]:0u); fflush(stdout); } }
+      { static int _fsn = 0; static uint32_t _lastpc = 0xFFFFFFFFu; if (_fsn < 600) { uint32_t _fb = s->r[0] & ~1u; auto _fi = g_fctx.find(_fb); uint32_t _pc = _fi!=g_fctx.end()?_fi->second.r[15]:0u;
+          if (_pc != _lastpc) { _lastpc = _pc; ++_fsn; printf("[FIBSW] #%d n=%u lr=%08X fb=%08X fpc=%08X flr=%08X fr0=%08X blk=%u\n", _fsn-1, g_main_n, s->r[14], _fb, _pc, _fi!=g_fctx.end()?_fi->second.r[14]:0u, _fi!=g_fctx.end()?_fi->second.r[0]:0u, g_blkcnt_total); fflush(stdout); } } }
       if (g_blkcnt_total > 1400000u) { static int _fsl=0; if (_fsl++ < 40) { printf("[FSW2] n=%u r0=%08X cur=%08X fex=%d inexec=%d lr=%08X sp=%08X ring:", g_blkcnt_total, s->r[0], g_cur_fiber, g_in_fex, g_in_fiber_exec, s->r[14], s->r[13]);
         for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       if (g_blkcnt_total > 1400000u && (s->r[0] & ~1u) == g_cur_fiber) {
@@ -1660,7 +1660,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       rc_restore(s);
       g_in_fiber_exec = 0;
       break; }
-    case 0x812B1B60u: r0 = 0; g_fiber_flag_return = 1; break;         // sceFiberReturnToThread
+    case 0x812B1B60u: { static int _frt = 0; if (_frt++ < 60) { printf("[FIBRT] #%d n=%u curfib=%08X lr=%08X fpc=%08X sp=%08X r0=%08X\n", _frt-1, g_main_n, g_cur_fiber, s->r[14], g_cur_fiber?(g_fctx.count(g_cur_fiber)?g_fctx[g_cur_fiber].r[15]:0u):0u, s->r[13], s->r[0]); fflush(stdout); } }
+      r0 = 0; g_fiber_flag_return = 1; break;         // sceFiberReturnToThread
     case 0x812B1BB0u: {                                               // _sceFiberInitializeImpl(fiber, name, entry, arg, ...)
       if (g_finit_n++ < 10) {
         uint32_t f84 = 0, f88 = 0; uint32_t off0 = s->r[0] - IMG_VA_BASE;
