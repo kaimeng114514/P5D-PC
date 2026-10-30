@@ -29,6 +29,13 @@
 #include <cstdint>
 #include <cstring>
 
+// M844: bridge for the guest displayQueueCallback (registered in SceGxmInitializeParams[+8], data size at +0xC).
+// The backend sceGxmDisplayQueueAddEntry is a pure STUB, so without this bridge the guest callback never runs and
+// the app frame pacing (display queue sync) stalls.
+extern "C" void p5d_hle_set_display_cb(uint32_t cb, uint32_t cbds);
+extern "C" void p5d_hle_display_queue(uint32_t cb, uint32_t data);
+static uint32_t g_p5d_display_cb = 0;
+
 #ifndef GXM_ABI_CALL_STUB_IMPLS
 #define GXM_ABI_CALL_STUB_IMPLS 0
 #endif
@@ -988,6 +995,8 @@ extern "C" uint32_t gxm_abi_call_B0F1E4EC(uint32_t* regs, uint32_t* stack_args) 
     const uint32_t a0 = regs ? regs[0u] : 0u;   // const SceGxmInitializeParams *
     void* p0 = gxm_abi_xlate(a0);   // const SceGxmInitializeParams *
     int32_t rv = sceGxmInitialize(p0);
+    if (p0) { const uint8_t* _q = (const uint8_t*)p0; uint32_t _cb = 0, _cbd = 0; std::memcpy(&_cb, _q + 8, 4); std::memcpy(&_cbd, _q + 0xC, 4);
+      if (_cb) { g_p5d_display_cb = _cb; p5d_hle_set_display_cb(_cb, _cbd); } }
     return (uint32_t)rv;
 }
 
@@ -1341,6 +1350,7 @@ extern "C" uint32_t gxm_abi_call_EC5C26B5(uint32_t* regs, uint32_t* stack_args) 
     void* p1 = gxm_abi_xlate(a1);   // SceGxmSyncObject *
     void* p2 = gxm_abi_xlate(a2);   // const void *
     int32_t rv = sceGxmDisplayQueueAddEntry(p0, p1, p2);
+    if (g_p5d_display_cb) p5d_hle_display_queue(g_p5d_display_cb, a2);   // M844: run the guest displayQueueCallback
     return (uint32_t)rv;
 }
 
