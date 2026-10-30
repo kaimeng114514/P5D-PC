@@ -929,6 +929,8 @@
 | M911 | §18.4456: ★★★★★★ **[PDUMP] 线程快照锁定 page1 卡点本质：多个 worker 线程 ready=1 但从未被执行（被 g_cur_thr 上下文屏蔽），且两个 CRI FS worker 在等 eventflag 60018000/6001A000 bit1**。n=59,500,000 时 `[PDUMP]`（`out64m_m986periodpump.txt`）：
 | M912 | §18.4457: ★★★★★ **M911 的周期抢占为什么没触发：判据用了 `g_blkcnt_total`，而它在嵌套执行里冻结——改用 job_probes 调用计数后抢占立即生效，且抢占对象正是那批 READY worker**。修复前 `out64m_m988preempt.txt` 的 `[PREEMPT]` **0 条**（尽管 page1 确实在 thread 上下文自旋）：因为 periodpump 条件 `(g_blkcnt_total - _pp_last) >= 65536` 在嵌套 fiber exec 内**永不成立**（g_blkcnt_total 冻结，这是 M859 起就有的规则）。**修复（18.4457）**：改为 `static uint32_t _pp_cnt; ++_pp_cnt; if (g_periodpump_env && _pp_cnt >= 65536u) { _pp_cnt=0; if (g_cur_thr) g_thr_blocked=1; else { g_pump_force=1; hle_thr_pump(s,60); g_pump_force=0; } }` —— 用 **job_probes 被调用次数** 作节拍（每个执行块一次，嵌套内也递增）。3M 冒烟测试（`out3m_m989preempt2.txt`）：`[PREEMPT]` **4 条**：`tid=40019000 pc=812B28A0`、`tid=4001D000 pc=8127B7C8`、`tid=4001C000 pc=81207442`、`tid=40018000 pc=810160FC` —— 正是 M911 [PDUMP] 里 ready=1 却从未执行的 worker 线程；exit=0、BADMEM=0。已后台启动 64M 长跑（`out64m_m990preempt2.txt`，THRYIELD+PERIODPUMP 计数版）验证 page1 是否完成 → 标题页。 |
 | M913 | §18.4458: ★★★★★★ **突破！PERIODPUMP（调用计数版）越过了 n≈59.8M 的 CRI/帧循环卡点，page1 进入 app 作业队列阶段；并发现/修复"抢占后无唤醒期限导致 worker 永久 waiting"**。64M 长跑（`out64m_m990preempt2.txt`，THRYIELD+PERIODPUMP 计数版）**完整跑到 64M 上限**：`done: blocks=64000000 pc=81003CE6`；n 从 59.5M 推进到 64M（此前永远冻结在 59.8M）→ **卡点被突破**。新卡点：反编译紧循环 `FUN_81003CCC`：
+| M914 | §18.4459: **门控修复：THRYIELD/PERIODPUMP 在 n<100000 会破坏 criFs 初始化（binit_after=0），加 `g_main_n >= 100000u` 门控后 binder 恢复正常**。130M 长跑（`out130m_m992wake.txt`，无门控）发现：`[CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000 **binit_after=00000000**`（binder 未建立！），`[JOB]` 从 n=5M 到 30M 全部 `binit=0 btab=0`——与之前 0x816A0BA0 不同。原因：THRYIELD/PERIODPUMP 在 n≈5000 时就会抢占/让出 guest 线程，**打乱了 criFs 初始化内部的线程/时序**，使 init 提前返回且未安装 binder。**修复（18.4459）**：两处均加 `g_main_n >= 100000u` 门控（`if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u)`；DelayThread 的 THRYIELD 分支同样加 `g_main_n >= 100000u`），让 boot/CRI 初始化阶段不受调度实验影响。3M 冒烟（`out3m_m993gate.txt`）：`[CRIFSHLE] ... binit_after=816A0BA0`（**binder 恢复**）、`[PREEMPT]` 10 条（tid=4001A000 CRI worker 等）、exit=0、BADMEM=0。已后台启动 **130M 长跑**（`out130m_m994gate.txt`，门控版）验证 page1 完成 → 标题页。 |
+| §18.4459 | Gating fix: THRYIELD/PERIODPUMP before n<100000 breaks criFs init (binit_after=0); adding a g_main_n >= 100000 guard restores the binder. The 130M run (out130m_m992wake.txt, ungated) showed [CRIFSHLE] criFs_Initialize(NULL,0,0) -> 0 n=5000 binit_after=00000000 (binder NOT established!) and [JOB] from n=5M to 30M all show binit=0 btab=0 - different from the previous 0x816A0BA0. Cause: THRYIELD/PERIODPUMP preempt/yield guest threads already around n~5000, disturbing the internal threading/timing of criFs initialization so init returns early without installing the binder. FIX (18.4459): add g_main_n >= 100000u guards to both places: (if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u)) and the DelayThread THRYIELD branch. 3M smoke test (out3m_m993gate.txt): [CRIFSHLE] ... binit_after=816A0BA0 (binder restored), [PREEMPT] 10 lines (tid=4001A000 CRI worker etc.), exit=0, BADMEM=0. A 130M long run with the gated version has been started in the background (out130m_m994gate.txt) to verify page1 completion -> title page. |
 ```c
 puVar2 = (undefined4 *)FUN_81003ba0();
 puVar5 = puVar2 + 0x84;                      // &ctx[0x210]
@@ -486793,3 +486795,34 @@ NEXT：读取 `out130m_m992wake.txt`：app 作业队列是否完成、page1 是�
 ANTI-FORGETTING ENTRY. Keywords: M913 BREAKTHROUGH PERIODPUMP call-counter got past n~59.8M stall: 64M run out64m_m990preempt2.txt completed done: blocks=64000000 pc=81003CE6, n advanced 59.5M->64M (was frozen at 59.8M), [SEQST] n=60M h=85B843AC ctrl=85B8436C cur=1 tab=813B01B4, PCRING tight loop 81016030 81016038 8101603A 81003CEC 81003CE6 8101600E; decompiled FUN_81003CCC waits: puVar5=ctx+0x210; do { iVar3=appJobQueue_8101600e(puVar5); } while(iVar3==0); then appJobQueue_8101603c(...) submits job; appJobQueue_8101600e returns param_1[1]==0. [PDUMP] n=59.5M shows ALL workers wait=1 obj=0 (no wake object) - caused by preemption bug: preempt set g_thr_blocked=1 without registering a wake deadline, pump marked threads waiting permanently. FIX 18.4458: preempt registers g_thr_wake_vt[tid]=g_vtime_extra+2000 and clears wait fields; wake sweep enabled under P5D_PERIODPUMP too; beat 65536->8192. 3M smoke out3m_m991wake.txt [PREEMPT] 10, exit=0, BADMEM=0. 130M long run started out130m_m992wake.txt; next: check app job queue completion, page1 end, [SEQST] page switch/[GXM] BeginScene/[TITLEMOV]/ctr.
 
 LOOKUP: 0x81003CCC, 0x81003CE6, 0x8101600E, 0x8101603C, 0x81016030, g_thr_wake_vt, P5D_PERIODPUMP, out130m_m992wake.txt -> §18.4457 [relevant: counter fix], §18.4456 [relevant: PDUMP]
+### 18.4459 PORT M914: THRYIELD/PERIODPUMP 门控（n>=100000）避免破坏 criFs 初始化
+
+1) 现象（130M 长跑 `out130m_m992wake.txt`，无门控）：
+```
+[CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000 binit_after=00000000   <- binder 未建立!
+[JOB] n=5000000 ... binit=0 btab=0
+[JOB] n=30000000 ... binit=0 btab=0
+```
+对比：之前无调度实验时 `binit_after=816A0BA0`。
+2) 原因：THRYIELD/PERIODPUMP 从 n≈5000 就开始抢占/让出 guest 线程，
+**打乱 criFs 初始化内部线程/时序** → init 提前返回且没有安装 binder。
+3) 修复（18.4459）：两处加 `g_main_n >= 100000u` 门控：
+```cpp
+if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u) { ... }
+if (g_thryield_env && g_main_n >= 100000u) { ... }   // DelayThread guest-thread 让出
+```
+4) 3M 冒烟（`out3m_m993gate.txt`）：
+```
+[CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000 binit_after=816A0BA0   <- binder 恢复
+[PREEMPT] tid=4001A000 pc=8127BC20 fib=848463A0  (CRI worker 被抢占调度)
+... 共 10 条
+done: blocks=3000000 ... exit=0；BADMEM 0
+```
+5) 已后台启动 **130M 长跑**：`out130m_m994gate.txt`（门控版）验证 page1 完成 → 标题页。
+NEXT：读取 `out130m_m994gate.txt`：`[JOB] binit` 是否保持、n 是否越过 59.8M/64M、appJobQueue 是否完成、
+`[SEQST]` 页面切换 / `[GXM]` BeginScene / `[TITLEMOV]` / `ctr` 是否出现。
+验证：`out130m_m992wake.txt`（binit=0 证据）、`out3m_m993gate.txt`（门控后 binit 恢复 + PREEMPT）。
+
+ANTI-FORGETTING ENTRY. Keywords: M914 gating fix - THRYIELD/PERIODPUMP before n<100000 breaks criFs init: ungated 130M run out130m_m992wake.txt shows [CRIFSHLE] criFs_Initialize -> 0 n=5000 binit_after=00000000 and [JOB] n=5M..30M binit=0 btab=0 (vs previous 0x816A0BA0). Cause: THRYIELD/PERIODPUMP preempt/yield guest threads at n~5000, disturbing criFs init internal threading/timing so init returns early without installing the binder. FIX 18.4459: add g_main_n >= 100000u guards to both: (if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u)) and DelayThread THRYIELD branch. 3M smoke out3m_m993gate.txt: [CRIFSHLE] binit_after=816A0BA0 (binder restored), [PREEMPT] 10 lines tid=4001A000 pc=8127BC20 (CRI worker preempted/scheduled), exit=0, BADMEM=0. 130M run with gated version started out130m_m994gate.txt; next: check [JOB] binit persists, n past 59.8M/64M, appJobQueue completes, [SEQST] page switch/[GXM] BeginScene/[TITLEMOV]/ctr.
+
+LOOKUP: g_main_n, P5D_PERIODPUMP, P5D_THRYIELD, binit_after, out130m_m994gate.txt -> §18.4458 [relevant: preempt wake fix], §18.4457 [relevant: counter beat]

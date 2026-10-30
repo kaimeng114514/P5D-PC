@@ -944,7 +944,7 @@ static void job_probes(uint32_t pcv, RecState* s) {
       for (auto& _kv : g_fctx) printf("[PDUMP] fib=%08X pc=%08X sp=%08X lr=%08X r0=%08X\n", _kv.first, _kv.second.r[15], _kv.second.r[13], _kv.second.r[14], _kv.second.r[0]);
       fflush(stdout); }
     { static uint32_t _pp_cnt = 0; ++_pp_cnt;
-      if (g_periodpump_env && _pp_cnt >= 8192u) { _pp_cnt = 0;
+      if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u) { _pp_cnt = 0;
         if (g_cur_thr) {   // 18.4458: preempt the running guest thread AND record a wake deadline so it can run again
           g_thr_wake_vt[g_cur_thr] = g_vtime_extra + 2000ull;
           g_thr_wait_obj = 0; g_thr_wait_bits = 0; g_thr_wait_mode = 0;
@@ -2316,7 +2316,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
       if (g_cur_thr) { static int _dt=0; if ((g_cur_thr == 0x4001B000u || g_cur_thr == 0x4001C000u) && _dt++<300){ printf("[DELAYTHR] tid=%08X usec=%u lr=%08X sp=%08X pc=%08X\n", g_cur_thr, s->r[0], s->r[14], s->r[13], g_cur_block); fflush(stdout);}
         // 18.4454 M909: cooperative yield - let the scheduler run the other guest threads (loader workers)
-        if (g_thryield_env) { static int _ty=0; if (_ty++ < 8) { printf("[THRYIELD-GT] tid=%08X usec=%u -> yield\n", g_cur_thr, s->r[0]); fflush(stdout); }
+        if (g_thryield_env && g_main_n >= 100000u) { static int _ty=0; if (_ty++ < 8) { printf("[THRYIELD-GT] tid=%08X usec=%u -> yield\n", g_cur_thr, s->r[0]); fflush(stdout); }
           g_thr_wake_vt[g_cur_thr] = g_vtime_extra + (uint64_t)(s->r[0] ? s->r[0] : 1u);
           g_thr_blocked = 1; g_thr_wait_obj = 0; g_thr_wait_bits = 0; g_thr_wait_mode = 0; }
         break; }
