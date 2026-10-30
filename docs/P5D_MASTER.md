@@ -933,6 +933,8 @@
 | M915 | §18.4460: **门控版 130M 长跑：CRI 资源流已开始工作（streamcnt=3），page1 加载持续推进（n 60.4M→62.1M），仍无 GXM 绘制**。130M 门控长跑（`out130m_m994gate.txt`，THRYIELD+PERIODPUMP 且 `n>=100000` 门控）关键数据：`[CRIFSHLE] binit_after=816A0BA0`（binder 恢复）；`[JOB] n=60000000 st_job1180=3318072773 st_job0D90=3318072773 ctr=9 seq=85B843AC **streamcnt=3** binit=2171210656`（**CRI 流加载进行中**，此前 streamcnt=0）；`[SEQST] n=60M h=85B843AC ctrl=85B8436C cur=1 tab=813B01B4 pc=8127B85C`（page1 控制器活跃，pc 在 CRI FS 内）；`[IDR] state=1 idx=1 handle=85B8591C`；n 已从 59.8M 卡点推进到 **62,090,000**（`[FRAMEDUMP] n=62090000 ctr=9 pc=8127B7D8 blk=8127B7C8`），130M 上限仍有空间。`[GXM]` 仍 0、`[TITLEMOV]` 0 —— **page1 资源加载尚未完成，标题渲染未开始**。结论：门控+抢占+唤醒的调度修复组合成功让 page1 真正开始加载资源；下一步等待/推进该加载完成。NEXT: 继续观察 `out130m_m994gate.txt`（后台仍在跑）：`streamcnt` 是否完成/归 0、`[IDR]`/`[SEQST]` 是否推进到下一页、`[GXM]` BeginScene/Draw 是否首次出现（首帧渲染提交）。 |
 | M916 | §18.4461: **page1 期间 HLE 直方图：全是 worker 线程在轮询，主上下文调用被刷屏淹没 → 新增 [H57M] 过滤探针抓主上下文文件 I/O 路径**。130M 门控长跑（`out130m_m994gate.txt`）n 推进到 **63,185,000**（`[FRAMEDUMP] n=63185000 ctr=9 pc=8128EA7E blk=8127C0F8`），`[JOB] n=60M streamcnt=3`（CRI 流仍在加载），`[GXM]`/`[TITLEMOV]` 仍 0。`[H57]`（n≥59M，cap 3000）按线程分组：
 | M917 | §18.4462: **[H57M] 揭示 page1 主上下文只有 libc+DelayThreadCB 睡眠循环（无文件 I/O API 调用）；反汇编确认 FUN_8127C0E8 是"延迟 N ms"包装；新增 [HLEDUMP] 全量直方图枚举 page1 使用的全部 HLE stub**。130M 长跑（`out130m_m996h57m.txt`，带 [H57M]）数据：n=60,355,000（`pc=81283C8A blk=8127B860`），`[SEQST] cur=1`、`[JOB] streamcnt=3`、`[GXM]`/`[TITLEMOV]` 0。**`[H57M]`（2500 条，n≥59.43M，thr=0 主上下文）直方图**：
+| M918 | §18.4463: **HLEDUMP 阈值不可达（62M 太远）→ 改为可配置 `P5D_HLEDUMP_AT` 并重跑；同时记录 page1 卡点的 watchdog 环证据**。前一次 70M HLEDUMP 长跑（`out70m_m997hledump.txt`）在 page1 区域进展很慢（CPU 907s 时 n 仅 60.36M，`[HLEDUMP]` 0 条，因为阈值 62M 未到），但抓到了完整 watchdog 环：`[WD] pcring: 8127B85C 8127B36A 8127B370 8127BB28 8127BE36 8127BE4E **812B2AE0(SetEventFlag)** 8127BE56 8127BB2E 8127B374 8127B860 81283C8A 8128EA78 **8127C0E8/8127C0F4(DelayThreadCB 包装)** 812B2A80`；`hle_ring` 两种：thr=4001D000/40020000 的 `SetEventFlag(60016000,1) + WaitVblankStart` 帧循环；以及 `UnlockLwMutex/WaitEventFlag(60014000)/GetThreadId/…` 的 CRI 内部环。`[PCALL]` 显示 n=54M/56M/58M/60M 主循环 pc 已进入 8127B85C/8127BE4E（CRI FS）。**修复（18.4463）**：`[HLEDUMP]` 阈值改为环境变量 `P5D_HLEDUMP_AT`（默认 62000000，可在 59M 后任意设置），并已用 **`P5D_HLEDUMP_AT=60000000` 启动 62M 长跑**（`out62m_m998hledump2.txt`）——page1 一开始（n=60M）即打印 page1 期间全部 HLE stub 调用直方图 top48。NEXT: 读取 `[HLEDUMP]` → 找出未知/文件相关 stub → 补 HLE。 |
+| §18.4463 | HLEDUMP threshold unreachable (62M too far) -> made configurable via P5D_HLEDUMP_AT and rerun; also recorded page1 stall watchdog-ring evidence. The previous 70M HLEDUMP run (out70m_m997hledump.txt) progressed very slowly in the page1 region (n only 60.36M at CPU 907s, [HLEDUMP] 0 lines because the 62M threshold was not reached), but captured the full watchdog ring: [WD] pcring 8127B85C 8127B36A 8127B370 8127BB28 8127BE36 8127BE4E 812B2AE0(SetEventFlag) 8127BE56 8127BB2E 8127B374 8127B860 81283C8A 8128EA78 8127C0E8/8127C0F4(DelayThreadCB wrapper) 812B2A80; hle_ring has two kinds: thr=4001D000/40020000 SetEventFlag(60016000,1)+WaitVblankStart frame loop, and the UnlockLwMutex/WaitEventFlag(60014000)/GetThreadId/... CRI internal ring. [PCALL] shows main-loop pc entering 8127B85C/8127BE4E (CRI FS) at n=54M/56M/58M/60M. FIX (18.4463): [HLEDUMP] threshold now comes from env P5D_HLEDUMP_AT (default 62000000, can be set to anything after 59M), and a 62M run was started with P5D_HLEDUMP_AT=60000000 (out62m_m998hledump2.txt) - as soon as page1 starts (n=60M) it prints the full page1 HLE stub histogram top48. NEXT: read [HLEDUMP] -> find unknown/file-related stubs -> add HLE. |
 | va@lr | 次数 | 名称 |
 |---|---|---|
 | 812B2A80@8127C0F8 | **820** | **sceKernelDelayThreadCB**（CRI FS 睡眠循环）|
@@ -486959,3 +486961,29 @@ NEXT：读 `[HLEDUMP]` → 找出 page1 期间被调用的未知/文件相关 st
 ANTI-FORGETTING ENTRY. Keywords: M917 [H57M] page1 main-context (thr=0) histogram in out130m_m996h57m.txt: 812B2A80@8127C0F8 x820 sceKernelDelayThreadCB (CRI FS sleep loop), 812B27B0@81278C66 x530 GetThreadId TLS-like, 812B2800@81278C78 x530 unmapped CRI internal stub, 812B22E0@8116529E x131 strlen, 812B2260 memset ~200, 812B22A0 malloc x73, 812B2250 free x50, 812B2270 memcpy ~63, 812B2910@81278C00 x14 CreateLwMutex, 812B1840 x4 CtrlReadBufferPositive, 812B1930 x4 TouchRead => NO file I/O API calls in page1 main context; FUN_8127C0E8 disassembly = push {r4,lr}; movs r1,#0x3e8; mul r0,r0,r1; cbz r0; blx 812B2A80 DelayThreadCB; pop = if(r0) DelayThreadCB(r0*1000); Fios workers 40018000/40019000 idle waiting eventflag 60014000 bit1; FHOPEN/FHREAD=0 whole run -> read submission API unknown; added [HLEDUMP] full per-stub histogram n in [59M,62M] dumped top48 at n>=62M (P5D_HLEDUMP=1); 70M run started out70m_m997hledump.txt; NEXT: read [HLEDUMP] -> find unknown/file-related stub used in page1 -> add HLE read-completion delivery -> page1 completes -> title page.
 
 LOOKUP: 0x8127C0E8, 0x812B2A80, 0x812B2800, 0x812B27B0, 0x60014000, P5D_HLEDUMP, out70m_m997hledump.txt -> §18.4461 [relevant: H57M added], §18.4460 [relevant: streamcnt=3]
+### 18.4463 PORT M918: HLEDUMP 阈值可配置（P5D_HLEDUMP_AT）+ page1 watchdog 环证据
+
+1) 前一次 70M HLEDUMP 长跑（`out70m_m997hledump.txt`）：
+- page1 区域进展慢：CPU 907s 时 n 仅 60,360,000；`[HLEDUMP]` 0 条（阈值 62M 未到）。
+- 但抓到完整 watchdog 环：
+```
+[WD] pcring: 8127B85C 8127B36A 8127B370 8127BB28 8127BE36 8127BE4E 812B2AE0 8127BE56
+             8127BB2E 8127B374 8127B860 81283C8A 8128EA78 8127C0E8 8127C0F4 812B2A80
+[WD] hle_ring (thr=4001D000): 812B2AE0(SetEventFlag 60016000) @8127BE56, 812B1810(WaitVblankStart) @811539FE 交替
+[WD] hle_ring (CRI): 812B28A0(UnlockLwMutex)/812B27B0(GetThreadId)/812B2800 ... 
+[PCALL] n=54000000 pc=811DFB06; n=56000000 pc=811DFDC8; n=58000000 pc=8121CEF4; n=60000000 pc=8127B85C
+```
+2) 修复（18.4463）：`[HLEDUMP]` 的打印阈值从硬编码 62000000 改为环境变量：
+```cpp
+static uint32_t _hd_at = 62000000u;
+const char* _a = getenv("P5D_HLEDUMP_AT"); if (_a && atoi(_a) > 0) _hd_at = (uint32_t)atoi(_a);
+... if (g_main_n >= _hd_at && !_hddone) { _hddone = 1; ...top48... }
+```
+3) 已启动 **62M 长跑**：`out62m_m998hledump2.txt`（`P5D_HLEDUMP=1` + `P5D_HLEDUMP_AT=60000000`）——
+n 到 60M（page1 开始）即打印 page1 期间全部 HLE stub 调用次数 top48。
+NEXT：读取 `[HLEDUMP]` → 找出未知/文件相关 stub → 补 HLE 读完成投递 → page1 加载完成 → 标题页。
+验证：`out70m_m997hledump.txt`（WD 环）、`out62m_m998hledump2.txt`（HLEDUMP 待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M918 HLEDUMP threshold unreachable (62M) so made configurable via env P5D_HLEDUMP_AT (default 62000000); previous 70M HLEDUMP run out70m_m997hledump.txt slow page1 (n only 60.36M at CPU 907s, [HLEDUMP] 0 lines) but captured watchdog rings: [WD] pcring 8127B85C 8127B36A 8127B370 8127BB28 8127BE36 8127BE4E 812B2AE0(SetEventFlag) 8127BE56 8127BB2E 8127B374 8127B860 81283C8A 8128EA78 8127C0E8 8127C0F4 812B2A80 (DelayThreadCB wrapper); hle_ring thr=4001D000: SetEventFlag(60016000,1)@8127BE56 + WaitVblankStart@811539FE alternating; CRI thr ring UnlockLwMutex/GetThreadId/812B2800; [PCALL] n=54M pc=811DFB06, n=56M pc=811DFDC8, n=58M pc=8121CEF4, n=60M pc=8127B85C (CRI FS). 62M run started with P5D_HLEDUMP=1 + P5D_HLEDUMP_AT=60000000 -> out62m_m998hledump2.txt dumps page1 HLE histogram at n=60M; NEXT: read [HLEDUMP] -> find unknown/file-related stubs -> add HLE read-completion -> page1 completes -> title page.
+
+LOOKUP: P5D_HLEDUMP_AT, 0x8127C0E8, 0x60014000, 0x60016000, out62m_m998hledump2.txt -> §18.4462 [relevant: HLEDUMP added], §18.4461 [relevant: H57M]
