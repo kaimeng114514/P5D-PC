@@ -916,6 +916,9 @@ static void pending_req_scan() {
 static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
+    if (_a == 0x81196F3Cu || _a == 0x81196F4Eu || _a == 0x81197408u || _a == 0x81197444u) { static int _ms_n = 0;
+      if (_ms_n++ < 40) { printf("[MOVSTAT] at=%08X state_r0=%08X r4=%08X r5=%08X lr=%08X sp=%08X fib=%08X ring:", _a, s->r[0], s->r[4], s->r[5], s->r[14], s->r[13], g_cur_fiber);
+        for (int _k = 0; _k < 16; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x81206BDCu || _a == 0x81206BECu || _a == 0x81206C02u) { static int _fb_n = 0;
       if (_fb_n++ < 40) { printf("[F206] at=%08X r0=%08X r4=%08X r2=%08X lr=%08X sp=%08X fib=%08X thr=%08X ring:", _a, s->r[0], s->r[4], s->r[2], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
         for (int _k = 0; _k < 20; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 20u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
