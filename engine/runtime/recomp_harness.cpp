@@ -5499,6 +5499,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
+    if (getenv("P5D_PCTRACE") && ((n <= 2000) || (n < 800000 && ((uint32_t)n % 200u) == 0u))) { printf("[PCTRACE] n=%u blk=%u pc=%08X fib=%08X\n", (unsigned)n, g_blkcnt_total, g_cur_block, g_cur_fiber); fflush(stdout); }
     if (g_watch_addr != 0) {   // 18.4173: GP-based watch (heap addresses are not at va-IMG_VA_BASE)
       uint8_t* _wp = GP(g_watch_addr);
       if (_wp) { uint32_t v; std::memcpy(&v, _wp, 4);
@@ -5587,6 +5588,10 @@ uint32_t _binit=0,_btab=0;
         { uint8_t* _q=GP(0x8153FEF4u); if(_q) std::memcpy(&_binit,_q,4); }
         { uint8_t* _q=GP(0x8154013Cu); if(_q) std::memcpy(&_btab,_q,4); }
         printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X fiosbusy=%u streamcnt=%u slot=%u binit=%u btab=%u\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg,_a6b4,_a368,_a6b8,_binit,_btab); fflush(stdout); }
+      // 18.4419: initialize guest CRI FS (criFs_Initialize(NULL,0,0)) from HLE before the boot page requests resources
+      if (n == 55000000 && getenv("P5D_CRIFSHLE")) { static int _cfh = 0; if (!_cfh) { _cfh = 1;
+        uint32_t _cr = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);
+        printf("[CRIFSHLE] criFs_Initialize(NULL,0,0) -> %08X n=%d\n", _cr, n); fflush(stdout); } }
       if ((n % 10000000) == 0) { static int _ts_n = 0; ++_ts_n;
         printf("[TS] n=%d thr=%zu fib=%zu\n", n, g_thr.size(), g_fctx.size());
         for (auto& _kv : g_thr) { HThread& _t = _kv.second;
