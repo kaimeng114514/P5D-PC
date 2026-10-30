@@ -926,6 +926,12 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x811823FEu || _a0 == 0x8128E394u || _a0 == 0x8128DF6Eu || _a0 == 0x8128715Eu || _a0 == 0x8128DEFCu || _a0 == 0x811829E2u) {
+      static int _fs_n = 0; static int _fs_late = 0; ++_fs_n;
+      int _late = (g_main_n > 10000000u && !_fs_late); if (_late) _fs_late = 1;
+      if (_fs_n <= 8 || (_fs_n % 20000) == 0 || _late) {
+        printf("[FIOSW] #%d at=%08X n=%u late=%d r0=%08X r1=%08X r2=%08X r3=%08X fib=%08X\n", _fs_n, _a0, g_main_n, _late, s->r[0], s->r[1], s->r[2], s->r[3], g_cur_fiber); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
     if (_a0 == 0x81181EACu || _a0 == 0x81181F1Au || _a0 == 0x81181F9Cu || _a0 == 0x81182014u || _a0 == 0x811820B6u ||
         _a0 == 0x811821E2u || _a0 == 0x81182298u || _a0 == 0x811823FEu || _a0 == 0x81182742u || _a0 == 0x81182C56u ||
         _a0 == 0x81182F6Au || _a0 == 0x811830E2u) { static int _wv_n = 0; static int _wv_late = 0; ++_wv_n;
@@ -5522,7 +5528,11 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         { uint8_t* _q=GP(0x85A8B980u+4u); if(_q) std::memcpy(&_s4,_q,4); }
         { uint8_t* _q=GP(0x816CC63Cu); if(_q) std::memcpy(&_ctr2,_q,4); }
         { uint8_t* _q=GP(0x813B01A8u); if(_q) std::memcpy(&_pg,_q,4); }
-        printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg); fflush(stdout); }
+        uint32_t _a6b4=0,_a368=0,_a6b8=0;
+        { uint8_t* _q=GP(0x8156A6B4u); if(_q) std::memcpy(&_a6b4,_q,4); }
+        { uint8_t* _q=GP(0x8156A368u); if(_q) std::memcpy(&_a368,_q,4); }
+        { uint8_t* _q=GP(0x8156A6B8u); if(_q) std::memcpy(&_a6b8,_q,4); }
+        printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X fiosbusy=%u streamcnt=%u slot=%u\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg,_a6b4,_a368,_a6b8); fflush(stdout); }
       if ((n % 10000000) == 0) { static int _ts_n = 0; ++_ts_n;
         printf("[TS] n=%d thr=%zu fib=%zu\n", n, g_thr.size(), g_fctx.size());
         for (auto& _kv : g_thr) { HThread& _t = _kv.second;
