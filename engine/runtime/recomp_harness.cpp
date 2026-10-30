@@ -3551,6 +3551,28 @@ static BlockFn gbn(uint32_t pc) {
         _q=GP(0x816CC700u); if(_q) std::memcpy(&_g2,_q,4);
         _q=GP(0x816CC630u); if(_q) std::memcpy(&_g3,_q,4);
         printf("[RPROBE] pc=%08X blk=%u fib=%08X thr=%08X g66C=%08X g700=%08X g630=%08X\n", pc, g_blkcnt_total, g_cur_fiber, g_cur_thr, _g1, _g2, _g3); fflush(stdout); } } }
+  { static int _hp=-1; static std::map<uint32_t,uint32_t> _hot; static int _hpd=0;
+    if (_hp<0) { const char* _e=getenv("P5D_HOTPCS"); _hp=(_e&&atoi(_e))?1:0; }
+    if (_hp) {
+      uint32_t _b = g_blkcnt_total;
+      if (_b > 400000u && _b < 1900000u) { ++_hot[pc & ~1u]; }
+      if (_b >= 1900000u && !_hpd) { _hpd=1;
+        std::vector<std::pair<uint32_t,uint32_t>> _v(_hot.begin(), _hot.end());
+        std::sort(_v.begin(), _v.end(), [](const std::pair<uint32_t,uint32_t>&a, const std::pair<uint32_t,uint32_t>&b){ return a.second > b.second; });
+        printf("[HOTPCS] window=400K..1.9M distinct=%zu total_counted=%u top25:", _hot.size(), (unsigned)_v.size());
+        for (size_t _i=0; _i<_v.size() && _i<25; ++_i) printf(" %08X=%u", _v[_i].first, _v[_i].second);
+        printf("\n"); fflush(stdout); } } }
+  { static int _hp=-1; static std::map<uint32_t,uint32_t> _hot; static int _hpd=0;
+    if (_hp<0) { const char* _e=getenv("P5D_HOTPCS"); _hp=(_e&&atoi(_e))?1:0; }
+    if (_hp) {
+      uint32_t _b = g_blkcnt_total;
+      if (_b > 400000u && _b < 1900000u) { ++_hot[pc & ~1u]; }
+      if (_b >= 1900000u && !_hpd) { _hpd=1;
+        std::vector<std::pair<uint32_t,uint32_t>> _v(_hot.begin(), _hot.end());
+        std::sort(_v.begin(), _v.end(), [](const std::pair<uint32_t,uint32_t>&a, const std::pair<uint32_t,uint32_t>&b){ return a.second > b.second; });
+        printf("[HOTPCS] window=400K..1.9M distinct=%zu total_counted=%u top25:", _hot.size(), (unsigned)_v.size());
+        for (size_t _i=0; _i<_v.size() && _i<25; ++_i) printf(" %08X=%u", _v[_i].first, _v[_i].second);
+        printf("\n"); fflush(stdout); } } }
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
 
   pc &= ~1u;   // 18.3939: normalize Thumb bit (block table is keyed by even instruction addresses)
