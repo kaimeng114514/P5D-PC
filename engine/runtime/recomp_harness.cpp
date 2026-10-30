@@ -987,15 +987,17 @@ static void job_probes(uint32_t pcv, RecState* s) {
       if (_ba_n <= 3 || (_ba_n % 1000) == 0 || _late) { printf("[NODE] load-step #%d list=%08X node=%08X blk=%u late=%d\n", _ba_n, s->r[0], s->r[1], g_blkcnt_total, _late); fflush(stdout); } }
     if (_a == 0x8117BC66u) { static int _br_n = 0; ++_br_n; if (_br_n <= 10 || (_br_n % 2000) == 0) { printf("[NODE] load-step-ret #%d ret=%08X blk=%u\n", _br_n, s->r[0], g_blkcnt_total); fflush(stdout); } }
     if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
-      static int _gc_n = 0;
-      if (_gc_n++ < 120) { int _id = 0;
+      static int _gc_n = 0; static int _gc_late = 0; ++_gc_n;
+      int _late = (g_main_n > 10000000u && !_gc_late); if (_late) _gc_late = 1;
+      if (_gc_n < 120 || _late) { int _id = 0;
         if (_a == 0x811849A4u) _id = 0; else if (_a == 0x811849ACu) _id = 1; else if (_a == 0x811849B4u) _id = 2; else if (_a == 0x811849BCu) _id = 3;
         else if (_a == 0x811849C4u) _id = 4; else if (_a == 0x811849CCu) _id = 5; else if (_a == 0x811849D4u) _id = 6; else _id = 7;
-        printf("[GDCHK] id=%d at=%08X ret=%08X blk=%u fib=%08X\n", _id, _a, s->r[0], g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+        printf("[GDCHK] id=%d at=%08X ret=%08X n=%u late=%d fib=%08X\n", _id, _a, s->r[0], g_main_n, _late, g_cur_fiber); fflush(stdout); } }
     if (_a == 0x81185036u || _a == 0x811850BAu || _a == 0x81184FFEu) { static int _idr_n = 0;
-      if (_idr_n++ < 60) { uint32_t _c = s->r[5]; uint32_t _st = 0, _ix = 0, _hd = 0;
+      static int _idr_late = 0; int _ilate = (g_main_n > 10000000u && !_idr_late); if (_ilate) _idr_late = 1;
+      if (_idr_n++ < 60 || _ilate) { uint32_t _c = s->r[5]; uint32_t _st = 0, _ix = 0, _hd = 0;
         if (_c) { { uint8_t* _q = GP(_c); if (_q) std::memcpy(&_st, _q, 4); } { uint8_t* _q = GP(_c+4); if (_q) std::memcpy(&_ix, _q, 4); } { uint8_t* _q = GP(_c+8); if (_q) std::memcpy(&_hd, _q, 4); } }
-        printf("[IDR] at=%08X ctrl=%08X state=%d idx=%d handle=%08X r0=%08X blk=%u\n", _a, _c, (int)_st, (int)_ix, _hd, s->r[0], g_blkcnt_total); fflush(stdout); } }
+        printf("[IDR] at=%08X ctrl=%08X state=%d idx=%d handle=%08X r0=%08X n=%u late=%d\n", _a, _c, (int)_st, (int)_ix, _hd, s->r[0], g_main_n, _ilate); fflush(stdout); } }
     if (_a == 0x81185616u) { static int _sr_n = 0;
       if (_sr_n++ < 30) { uint32_t _h = 0, _t = 0; { uint8_t* _q = GP(0x813B01A8u); if (_q) std::memcpy(&_h, _q, 4); }
         { uint8_t* _q = GP(0x813B01ACu); if (_q) std::memcpy(&_t, _q, 4); }
