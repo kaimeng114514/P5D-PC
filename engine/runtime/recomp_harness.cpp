@@ -1260,6 +1260,7 @@ static void canhle_check(uint32_t dst, uint32_t n, const char* k) {
 }
 static uint32_t canary_retry_pc(RecState* s);   // M831 (defined near fiber_load)
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
+  if (g_ngs_env < 0) { const char* _ge = getenv("P5D_NGS"); g_ngs_env = (_ge && atoi(_ge) != 0) ? 1 : 0; }
   if (g_main_n < 4000u) { static std::set<uint32_t> _seen; static int _n = 0;
     if (_seen.insert(stub_va).second && _n++ < 400) {
       char _sa[96] = {0}; uint8_t* _p = (s->r[0] >= 0x80600000u && s->r[0] < 0x85000000u) ? GP(s->r[0]) : nullptr;
@@ -1511,6 +1512,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B1F30u: r0 = g_ngs_env ? 4 : 0; break;
     case 0x812B1FE0u: r0 = g_ngs_env ? 2 : 0; break;
     case 0x812B1F70u: r0 = 0; break;                                  // SceNgs system release -> success (always 0)
+    // 18.4421: audio output + NGS runtime pump HLE (active when P5D_NGS=1): CRI audio thread FUN_8125Bxxx calls these every frame
+    case 0x812B1ED0u: { static int _aport = 0; r0 = g_ngs_env ? (uint32_t)(0x7000 | (++_aport)) : 0u; break; }  // sceAudioOutOpenPort(type,len,48000,mode) -> port id
+    case 0x812B1EE0u: r0 = 0; break;                                  // sceAudioOutSetVolume(port, flag, vols) -> ok
+    case 0x812B1FC0u: r0 = 0; break;                                  // sceNgsSystemUpdate(sys) -> ok
+    case 0x812B2060u: r0 = 0; break;                                  // sceNgsVoiceGetStateData(...) -> ok (no write)
     case 0x812B27B0u: {   // 18.4228c: the guest uses GetThreadId result as a POINTER base (BADMEM va = tid+2) -> return a real TLS-like guest object
       static uint32_t g_tid_ptr = 0; if (!g_tid_ptr) g_tid_ptr = hle_malloc(0x80u);
       if (g_tidp_n++ < 6) { printf("[TIDPTR] GetThreadId -> %08X (was 0x100/0x4001)\n", g_tid_ptr); fflush(stdout); }
