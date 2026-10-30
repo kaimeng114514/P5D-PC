@@ -2162,6 +2162,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         for (uint32_t i = 0; i < cnt; ++i) {
           uint32_t pp = base + i * 16u; uint8_t* pb = GP(pp + 6u);
           if (pb && pb[0] == (uint8_t)(sem & 0xFFu) && pb[1] == (uint8_t)(idx & 0xFFu)) { r0 = pp; break; } } }
+      if (r0 == 0u && prog) {   // 18.4434: fake program -> stable per-(prog,sem,idx) fake parameter instead of NULL
+        static std::map<std::pair<uint32_t,uint32_t>,uint32_t> fp_sem;
+        std::pair<uint32_t,uint32_t> _k((prog << 8) ^ sem, idx); auto _sp = fp_sem.find(_k);
+        if (_sp == fp_sem.end()) { uint32_t _o = hle_malloc(0x100); if (_o) { std::memset(GP(_o), 0, 0x100); uint8_t* q = GP(_o + 0x10u); if (q) { uint32_t v = 1u; std::memcpy(q, &v, 4); } } fp_sem[_k] = _o; _sp = fp_sem.find(_k); }
+        r0 = _sp->second; }
       if (g_gxm_new_n++ < 10) printf("[GXM-FPS] prog=%08X sem=%u idx=%u -> %08X lr=%08X\n", prog, sem, idx, r0, s->r[14]);
       break; }
     case 0x812B1350u: {                                               // 18.4259: sceGxmShaderPatcherCreateFragmentProgram(patcher,id,outFmt,msaa,blend,[sp]vprog,[sp+4?]out)
@@ -2205,15 +2210,20 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B1530u: {                                               // sceGxmShaderPatcherGetProgramFromId(id) -> registered header, else fake
       auto itp = g_prog_header_by_id.find(s->r[0]);
       if (itp != g_prog_header_by_id.end() && itp->second) { r0 = itp->second; break; }
-      static uint32_t fp_prog = 0;
-      if (!fp_prog) { fp_prog = hle_malloc(0x200); }
-      if (g_gxm_stub_n++ < 6) printf("[GXMS] GetProgramFromId id=%08X -> prog=%08X lr=%08X\n", s->r[0], fp_prog, s->r[14]);
-      r0 = fp_prog; break; }
+      // 18.4434: stable per-id fake program object (was ONE shared object for every id -> all shaders merged)
+      static std::map<uint32_t,uint32_t> fp_progs;
+      uint32_t _id = s->r[0]; auto _fp = fp_progs.find(_id);
+      if (_fp == fp_progs.end()) { uint32_t _o = hle_malloc(0x200); if (_o) std::memset(GP(_o), 0, 0x200); fp_progs[_id] = _o; _fp = fp_progs.find(_id);
+        if (g_gxm_stub_n++ < 8) printf("[GXMS] GetProgramFromId id=%08X -> new fake prog=%08X lr=%08X\n", _id, _o, s->r[14]); }
+      r0 = _fp->second; break; }
     case 0x812B12A0u: {                                               // sceGxmProgramFindParameterByName(program, name) -> fake param ptr
-      static uint32_t fp_param = 0;
-      if (!fp_param) { fp_param = hle_malloc(0x200); if (fp_param) { uint8_t* q = GP(fp_param + 0x10u); if (q) { uint32_t v = 1u; std::memcpy(q, &v, 4); } } }
-      if (g_gxm_stub_n++ < 6) printf("[GXMS] FindParam prog=%08X name=%08X -> param=%08X lr=%08X\n", s->r[0], s->r[1], fp_param, s->r[14]);
-      r0 = fp_param; break; }
+      // 18.4434: stable per-(program,name) fake parameter object (was ONE shared object)
+      static std::map<std::pair<uint32_t,uint32_t>,uint32_t> fp_params;
+      std::pair<uint32_t,uint32_t> _k(s->r[0], s->r[1]); auto _pp = fp_params.find(_k);
+      if (_pp == fp_params.end()) { uint32_t _o = hle_malloc(0x100); if (_o) { std::memset(GP(_o), 0, 0x100); uint8_t* q = GP(_o + 0x10u); if (q) { uint32_t v = 1u; std::memcpy(q, &v, 4); } }
+        fp_params[_k] = _o; _pp = fp_params.find(_k);
+        if (g_gxm_stub_n++ < 8) printf("[GXMS] FindParam prog=%08X name=%08X -> new fake param=%08X lr=%08X\n", _k.first, _k.second, _o, s->r[14]); }
+      r0 = _pp->second; break; }
     case 0x812B1270u: {                                               // sceGxmProgramParameterGetCategory(param) -> category
       r0 = 1u;                                                       // 1 = vector-ish category so the loader table keeps the param
       break; }
@@ -3555,22 +3565,11 @@ static BlockFn gbn(uint32_t pc) {
     if (_hp<0) { const char* _e=getenv("P5D_HOTPCS"); _hp=(_e&&atoi(_e))?1:0; }
     if (_hp) {
       uint32_t _b = g_blkcnt_total;
-      if (_b > 400000u && _b < 1900000u) { ++_hot[pc & ~1u]; }
-      if (_b >= 1900000u && !_hpd) { _hpd=1;
+      if (_b > 200000u && _b < 1200000u) { ++_hot[pc & ~1u]; }
+      if (_b >= 1200000u && !_hpd) { _hpd=1;
         std::vector<std::pair<uint32_t,uint32_t>> _v(_hot.begin(), _hot.end());
         std::sort(_v.begin(), _v.end(), [](const std::pair<uint32_t,uint32_t>&a, const std::pair<uint32_t,uint32_t>&b){ return a.second > b.second; });
-        printf("[HOTPCS] window=400K..1.9M distinct=%zu total_counted=%u top25:", _hot.size(), (unsigned)_v.size());
-        for (size_t _i=0; _i<_v.size() && _i<25; ++_i) printf(" %08X=%u", _v[_i].first, _v[_i].second);
-        printf("\n"); fflush(stdout); } } }
-  { static int _hp=-1; static std::map<uint32_t,uint32_t> _hot; static int _hpd=0;
-    if (_hp<0) { const char* _e=getenv("P5D_HOTPCS"); _hp=(_e&&atoi(_e))?1:0; }
-    if (_hp) {
-      uint32_t _b = g_blkcnt_total;
-      if (_b > 400000u && _b < 1900000u) { ++_hot[pc & ~1u]; }
-      if (_b >= 1900000u && !_hpd) { _hpd=1;
-        std::vector<std::pair<uint32_t,uint32_t>> _v(_hot.begin(), _hot.end());
-        std::sort(_v.begin(), _v.end(), [](const std::pair<uint32_t,uint32_t>&a, const std::pair<uint32_t,uint32_t>&b){ return a.second > b.second; });
-        printf("[HOTPCS] window=400K..1.9M distinct=%zu total_counted=%u top25:", _hot.size(), (unsigned)_v.size());
+        printf("[HOTPCS] window=200K..1.2M distinct=%zu total_counted=%u top25:", _hot.size(), (unsigned)_v.size());
         for (size_t _i=0; _i<_v.size() && _i<25; ++_i) printf(" %08X=%u", _v[_i].first, _v[_i].second);
         printf("\n"); fflush(stdout); } } }
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
