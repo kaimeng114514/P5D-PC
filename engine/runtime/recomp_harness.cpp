@@ -1573,7 +1573,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       break; }
     case 0x812B1BA0u: {                                               // sceFiberSwitch(fiber, ...): start/resume target
       { static int _fsn = 0; static uint32_t _lastpc = 0xFFFFFFFFu; if (_fsn < 600) { uint32_t _fb = s->r[0] & ~1u; auto _fi = g_fctx.find(_fb); uint32_t _pc = _fi!=g_fctx.end()?_fi->second.r[15]:0u;
-          if (_pc != _lastpc) { _lastpc = _pc; ++_fsn; printf("[FIBSW] #%d n=%u lr=%08X fb=%08X fpc=%08X flr=%08X fr0=%08X blk=%u\n", _fsn-1, g_main_n, s->r[14], _fb, _pc, _fi!=g_fctx.end()?_fi->second.r[14]:0u, _fi!=g_fctx.end()?_fi->second.r[0]:0u, g_blkcnt_total); fflush(stdout); } } }
+          if (_pc != _lastpc) { _lastpc = _pc; ++_fsn; printf("[FIBSW] #%d n=%u lr=%08X fb=%08X fpc=%08X flr=%08X fr0=%08X blk=%u\n", _fsn-1, g_main_n, s->r[14], _fb, _pc, _fi!=g_fctx.end()?_fi->second.r[14]:0u, _fi!=g_fctx.end()?_fi->second.r[0]:0u, g_blkcnt_total); fflush(stdout); }
+          static std::map<uint32_t,uint32_t> _freq; static uint32_t _recent[8]; static int _ri = 0; ++_freq[_pc]; _recent[_ri++ & 7] = _pc;
+          static uint32_t _last_report = 0;
+          if (g_blkcnt_total - _last_report >= 2000000u) { _last_report = g_blkcnt_total;
+            std::vector<std::pair<uint32_t,uint32_t>> _v(_freq.begin(), _freq.end());
+            std::sort(_v.begin(), _v.end(), [](const std::pair<uint32_t,uint32_t>&a, const std::pair<uint32_t,uint32_t>&b){ return a.second > b.second; });
+            printf("[FSTAT] blk=%u distinct=%zu top:", g_blkcnt_total, _freq.size());
+            for (size_t _i2 = 0; _i2 < _v.size() && _i2 < 10; ++_i2) printf(" %08X=%u", _v[_i2].first, _v[_i2].second);
+            printf(" recent:"); for (int _i2 = 0; _i2 < 8; ++_i2) printf(" %08X", _recent[(_ri + _i2) & 7]); printf("\n"); fflush(stdout); } } }
       if (g_blkcnt_total > 1400000u) { static int _fsl=0; if (_fsl++ < 40) { printf("[FSW2] n=%u r0=%08X cur=%08X fex=%d inexec=%d lr=%08X sp=%08X ring:", g_blkcnt_total, s->r[0], g_cur_fiber, g_in_fex, g_in_fiber_exec, s->r[14], s->r[13]);
         for (int _k=0;_k<12;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 12u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
       if (g_blkcnt_total > 1400000u && (s->r[0] & ~1u) == g_cur_fiber) {
