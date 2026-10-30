@@ -74,6 +74,7 @@ static unsigned g_loop_cnt[4] = {0u,0u,0u,0u};
 static int g_wd_thread = 0;
 static int g_hacks = 0;
 static int g_pump_wallclock = 0;
+static int g_fastsleep = [](){ const char* e = getenv("P5D_FASTSLEEP"); return (e && *e == '1') ? 1 : 0; }();   // M840 test-only: skip HLE sleeps for fast wall-clock iteration
 static int g_cb_yield = 0;
 static int g_nested_stop_n = 0;
 static int g_fiber_nested = 0;
@@ -697,15 +698,15 @@ static int assert_hle(RecState* s, uint32_t pcv) {   // 18.4205: platform ASSERT
   static long long _acnt = 0; ++_acnt;
   static unsigned long long _prev3 = 0, _prevblk = 0;
   if ((_acnt % 1000000) == 0) {
-    printf("[ASSERTRATE] n=%lld loop3=%u (+%llu) blk=%llu (+%llu) pc15=%08X lr=%08X sp=%08X\n",
-           _acnt, g_loop_cnt[3], (unsigned long long)g_loop_cnt[3] - _prev3,
+    printf("[ASSERTRATE] n=%lld loops=%u/%u/%u/%u blk=%llu (+%llu) pc15=%08X lr=%08X sp=%08X fib=%08X thr=%08X\n",
+           _acnt, g_loop_cnt[0], g_loop_cnt[1], g_loop_cnt[2], g_loop_cnt[3],
            (unsigned long long)g_blkcnt_total, (unsigned long long)g_blkcnt_total - _prevblk,
-           s->r[15], s->r[14], s->r[13]);
+           s->r[15], s->r[14], s->r[13], g_cur_fiber, g_cur_thr);
     _prev3 = g_loop_cnt[3]; _prevblk = g_blkcnt_total; fflush(stdout);
   }
   if (_acnt <= 30 || (_acnt & 0x3FFFFFF) == 0) {
     printf("[ASSERT] #%lld msg='%s' file='%s' lr=%08X sp=%08X fib=%08X ring:", _acnt, msg, file, s->r[14], s->r[13], g_cur_fiber);
-    for (int _k = 0; _k < 24; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 24u + (uint32_t)_k) & 63u]);
+    for (int _k = 0; _k < 64; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 64u + (uint32_t)_k) & 63u]);
     printf("\nstack:"); for (int _k = 0; _k < 24; ++_k) { uint32_t _w = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_k * 4u); if (_q) std::memcpy(&_w, _q, 4); printf(" %08X", _w); }
     printf("\n"); fflush(stdout); }
   s->r[0] = 0u; s->r[15] = s->r[14];
@@ -1234,7 +1235,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2910u: r0 = hle_malloc(64); break;                      // sceKernelCreateLwMutex -> struct ptr (18.4272: reverted - old-runtime work+4/+8 writes reproduce the documented M684 BADMEM va=8 negative result)
     case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread)
       if (g_hostthreads) { uint32_t me = tl_ht_tid ? tl_ht_tid : 0x40010000u; uint32_t w = s->r[0]; auto& e = g_lwm_real[w];
-        for (;;) { if (e.first == 0u || e.first == me || g_shutdown) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
+        for (;;) { if (e.first == 0u || e.first == me || g_shutdown) break; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(200)); }
         e.first = me; ++e.second; }
       r0 = 0; break; }
     case 0x812B28A0u: {                                               // sceKernelUnlockLwMutex
@@ -1598,11 +1599,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B1810u: {                                               // 18.4243: sceDisplayWaitVblankStartMultiCB (NID 05F27764) - NOT GetFrameBuf!
       uint32_t cnt = s->r[0]; if (cnt == 0u) cnt = 1u; if (cnt > 4u) cnt = 4u;
       ++g_vblank_n;
-      if (tl_ht_tid) std::this_thread::sleep_for(std::chrono::microseconds(16000u * cnt));
+      if (tl_ht_tid && !g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(16000u * cnt));
       if (g_vblank_n <= 8) { printf("[VBLANK] count=%u n=%d tid=%08X\n", s->r[0], g_vblank_n, tl_ht_tid); fflush(stdout); }
       r0 = 0; break; }
     case 0x812B1820u: {                                               // 18.4243: sceDisplayWaitSetFrameBufMulti (NID 7D9864A8) - NOT SetFrameBuf
-      if (tl_ht_tid) std::this_thread::sleep_for(std::chrono::microseconds(1000));
+      if (tl_ht_tid && !g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(1000));
       r0 = 0; break; }
     case 0x812B2410u: {                                               // 18.4243: strncat (NID FBA69BC2, SceLibc) - was missing
       uint32_t dst = s->r[0], src = s->r[1], n = s->r[2];
@@ -1804,7 +1805,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t have = (it == g_sema.end()) ? 0u : it->second;
       if (obj == 0x50018000u) { static int _gfs=0; if (_gfs++ < 100) { printf("[GFS] wait tid=%08X have=%u lr=%08X fib=%08X blk=%08X n=%u\n", g_cur_thr, have, s->r[14], g_cur_fiber, g_cur_block, g_blkcnt_total); fflush(stdout); } }
       if (g_thr_log_n++ < 80) printf("[SEM] wait obj=%08X need=%u have=%u cur_thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]);
-      if (tl_ht_tid) { for (;;) { if (g_shutdown) break; uint32_t _h = (g_sema.count(obj) ? g_sema[obj] : 0u); if (_h >= need) { g_sema[obj] = _h - need; break; } std::this_thread::sleep_for(std::chrono::microseconds(200)); } r0 = 0; break; }
+      if (tl_ht_tid) { for (;;) { if (g_shutdown) break; uint32_t _h = (g_sema.count(obj) ? g_sema[obj] : 0u); if (_h >= need) { g_sema[obj] = _h - need; break; } if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(200)); } r0 = 0; break; }
       if (g_sem2_n++ < 60) { printf("[SEM2] wait obj=%08X need=%u have=%u thr=%08X lr=%08X\n", obj, need, have, g_cur_thr, s->r[14]); fflush(stdout); }
       { uint32_t _mytok = g_cur_thr ? g_cur_thr : (0xF0000000u | (g_cur_fiber & 0xFFFFFFu));
         if (have < need && g_sema_owner.count(obj) && g_sema_owner[obj] == _mytok) {
@@ -1852,7 +1853,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       auto eval = [&](uint32_t curv) -> bool { return bits == 0u || (orMode ? ((curv & bits) != 0u) : ((curv & bits) == bits)); };
       uint32_t cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u);
       bool ok = eval(cur);
-      if (tl_ht_tid) { for (;;) { if (g_shutdown) break; cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); if (ok) break; std::this_thread::sleep_for(std::chrono::microseconds(200)); }
+      if (tl_ht_tid) { for (;;) { if (g_shutdown) break; cur = (g_eflag.count(obj) ? g_eflag[obj] : 0u); ok = eval(cur); if (ok) break; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(200)); }
         if (outp) { uint8_t* p = GP(outp); if (p) std::memcpy(p, &cur, 4); }
         if (mode & 4u) g_eflag[obj] = 0u; else if (mode & 2u) g_eflag[obj] = cur & ~bits;
         r0 = 0; break; }
@@ -1992,7 +1993,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
     case 0x812B2A50u: {                                               // sceKernelDelayThread -> cooperative yield (per-frame pacing)
       g_vtime_extra += (uint64_t)(s->r[0] ? s->r[0] : 1u);   // M815: deterministic virtual sleep
       r0 = 0;
-      if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
+      if (tl_ht_tid) { uint32_t _us = s->r[0]; if (_us > 2000u) _us = 2000u; if (_us < 100u) _us = 100u; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(_us)); break; }
       if (g_in_fex == 1 && ((++g_yield_main_tick & 0x3F) == 0)) { g_yield_to_main = 1;
         if (g_ytest_n++ < 8) { printf("[YMAIN] request from DelayThread fib=%08X pc=%08X\n", g_cur_fiber, s->r[15]); fflush(stdout); } break; }
       if (g_delay_n++ < 8) printf("[DELAY] usec=%u lr=%08X fib=%08X\n", s->r[0], s->r[14], g_cur_fiber);
@@ -2852,7 +2853,7 @@ if (g_hacks && (pc & ~1u) == 0x811E2B50u) {
 }
 if (family_skip(s, pc)) continue;
 if (nulldesc_skip(s, pc)) continue;
-if (assert_hle(s, pc)) continue;
+if (assert_hle(s, pc)) { pc = s->r[15]; continue; }   // M841: keep the local pc in sync with the hook result
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
 g_loop_site = 0; ++g_loop_cnt[0]; g_current_loop_pc = (int)pc; h7344_probe(s, pc);
@@ -3778,7 +3779,7 @@ if (g_hacks && (pc & ~1u) == 0x811E2B50u) {
 }
 if (family_skip(s, pc)) continue;
 if (nulldesc_skip(s, pc)) continue;
-if (assert_hle(s, pc)) continue;
+if (assert_hle(s, pc)) { pc = s->r[15]; continue; }   // M841: refresh local pc - the hook stores the return pc in s->r[15]; without this the loop re-asserts forever with a stale pc (2.149e9-iteration loop)
 assert_msg_probe(s, pc);
 initwatch_probe(s, pc);
 g_loop_site = 1; ++g_loop_cnt[1]; g_current_loop_pc = (int)pc; h7344_probe(s, pc);
@@ -4605,7 +4606,7 @@ if (g_hacks && (pc & ~1u) == 0x811E2B50u) {
 }
 if (family_skip(&s, pc)) continue;
 if (nulldesc_skip(&s, pc)) continue;
-if (assert_hle(&s, pc)) continue;
+if (assert_hle(&s, pc)) { pc = s.r[15]; continue; }   // M841: refresh local pc (same stale-pc assert spin as loop_site 1)
 assert_msg_probe(&s, pc);
 initwatch_probe(&s, pc);
 g_loop_site = 2; ++g_loop_cnt[2]; g_current_loop_pc = (int)pc; h7344_probe(&s, pc);
