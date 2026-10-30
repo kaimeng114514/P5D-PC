@@ -5597,6 +5597,11 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
+    { static long long _cfat = -1; if (_cfat < 0) { const char* _e = getenv("P5D_CRIFSHLE_AT"); _cfat = _e ? atoll(_e) : 55000000; }
+      if ((long long)n >= _cfat && getenv("P5D_CRIFSHLE")) { static int _cfh = 0; if (!_cfh) { _cfh = 1;
+        uint32_t _cr = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);
+        uint32_t _bi=0; { uint8_t* _q=GP(0x8153FEF4u); if(_q) std::memcpy(&_bi,_q,4); }
+        printf("[CRIFSHLE] criFs_Initialize(NULL,0,0) -> %08X n=%d binit_after=%08X\n", _cr, n, _bi); fflush(stdout); } } }
     { static auto _rt0 = std::chrono::steady_clock::now(); static uint32_t _rn0 = 0;
       if ((uint32_t)n - _rn0 >= 5000000u) { auto _rt1 = std::chrono::steady_clock::now(); long long _ms = std::chrono::duration_cast<std::chrono::milliseconds>(_rt1-_rt0).count();
         printf("[RATE] n=%u dblk=%u wall_ms=%lld blocks_per_s=%.0f pc=%08X fib=%08X ctr_probe=%u\n", (uint32_t)n, (uint32_t)n-_rn0, _ms, _ms ? ((uint32_t)n-_rn0)*1000.0/_ms : 0.0, g_cur_block, g_cur_fiber, 0u); fflush(stdout); _rt0=_rt1; _rn0=(uint32_t)n; } }
@@ -5725,11 +5730,7 @@ uint32_t _binit=0,_btab=0;
         { uint8_t* _q=GP(0x8154013Cu); if(_q) std::memcpy(&_btab,_q,4); }
         printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X fiosbusy=%u streamcnt=%u slot=%u binit=%u btab=%u\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg,_a6b4,_a368,_a6b8,_binit,_btab); fflush(stdout); }
       // 18.4419: initialize guest CRI FS (criFs_Initialize(NULL,0,0)) from HLE before the boot page requests resources
-      { static long long _cfat = -1; if (_cfat < 0) { const char* _e = getenv("P5D_CRIFSHLE_AT"); _cfat = _e ? atoll(_e) : 55000000; }
-        if ((long long)n == _cfat && getenv("P5D_CRIFSHLE")) { static int _cfh = 0; if (!_cfh) { _cfh = 1;
-          uint32_t _cr = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);
-          uint32_t _bi=0; { uint8_t* _q=GP(0x8153FEF4u); if(_q) std::memcpy(&_bi,_q,4); }
-          printf("[CRIFSHLE] criFs_Initialize(NULL,0,0) -> %08X n=%d binit_after=%08X\n", _cr, n, _bi); fflush(stdout); } } }
+
       if ((n % 10000000) == 0) { static int _ts_n = 0; ++_ts_n;
         printf("[TS] n=%d thr=%zu fib=%zu\n", n, g_thr.size(), g_fctx.size());
         for (auto& _kv : g_thr) { HThread& _t = _kv.second;
