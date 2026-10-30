@@ -3251,6 +3251,25 @@ static uint32_t mb_811DB5E0(RecState* s) {   // tail: adds r0,r6,#0; bl 0x812073
 // M834: the batch generator skips the fall-through block 0x8102A50E inside FUN_8102A500 (block 0x8102A500 returns
 // 0x8102A50E but no block is emitted there; batch_028 has 0x8102A500 and 0x8102A516 but not 0x8102A50E). Emulate it:
 // movs r4,#0 ; cmp r5,#0 ; beq.w 0x8102A654 (empty list -> epilogue) ; fall-through 0x8102A516.
+// M845: FUN_811EB930 = display-queue submit. It dereferences DAT_816CBDEC+0x30/+0x34 (the current
+// display buffer descriptor). In the current run DAT_816CBDEC is still 0 because the buffer-manager setup
+// path (FUN_811EA15C / FUN_811EA552 family) has not yet assigned it, so the AOT block crashed on guest va=0x30
+// ([BADMEM] guest va=0x00000030 unmapped block=0x811EB930 -> std::abort exit 3). Guard: when the descriptor is
+// null, skip the sceGxmDisplayQueueAddEntry submission, still rotate the triple-buffer counter (DAT_816CBC14+1)%3
+// and clear DAT_816CBDE8/EC/F0, then return through the real epilogue (push {r4,r5,lr}; sub sp,#0xc).
+static uint32_t mb_811EB930(RecState* s) {
+  uint32_t desc = 0; { uint8_t* q = GP(0x816CBDECu); if (q) std::memcpy(&desc, q, 4); }
+  if (desc != 0u) { BlockFn raw = gbn_raw(0x811EB930u); if (raw) return raw(s); }
+  { static int _n = 0; if (_n++ < 12) { printf("[EB930-SKIP] display buffer DAT_816CBDEC=0 -> skip display queue submit (fiber=%08X sp=%08X)\n", g_cur_fiber, s->r[13]); fflush(stdout); } }
+  uint32_t sp = s->r[13], r4 = 0, r5 = 0, pc = 0;
+  { uint8_t* q = GP(sp + 0xC); if (q) std::memcpy(&r4, q, 4); }
+  { uint8_t* q = GP(sp + 0x10); if (q) std::memcpy(&r5, q, 4); }
+  { uint8_t* q = GP(sp + 0x14); if (q) std::memcpy(&pc, q, 4); }
+  s->r[13] = sp + 0x18u; s->r[4] = r4; s->r[5] = r5;
+  { uint32_t v = 0; uint8_t* q = GP(0x816CBC14u); if (q) std::memcpy(&v, q, 4); v = (v + 1u) % 3u; if (q) std::memcpy(q, &v, 4); }
+  { uint32_t z = 0; uint8_t* q; q = GP(0x816CBDE8u); if (q) std::memcpy(q, &z, 4); q = GP(0x816CBDECu); if (q) std::memcpy(q, &z, 4); q = GP(0x816CBDF0u); if (q) std::memcpy(q, &z, 4); }
+  return pc;
+}
 static uint32_t mb_8102A50E(RecState* s) {
   s->r[4] = 0;
   return (s->r[5] == 0u) ? 0x8102A654u : 0x8102A516u;   // flags unused by the successor block (starts with ldr r1,[r5])
@@ -3266,6 +3285,7 @@ static void init_manual_blocks(void) {
   g_manual_blocks[0x811DB4AEu] = (BlockFn)mb_811DB4AE;
   g_manual_blocks[0x811DB5E0u] = (BlockFn)mb_811DB5E0;
   g_manual_blocks[0x8102A50Eu] = (BlockFn)mb_8102A50E;
+  g_manual_blocks[0x811EB930u] = (BlockFn)mb_811EB930;   // M845: null display-buffer guard (skip submit instead of abort)
 }
 static BlockFn gbn(uint32_t pc) {
   { auto _mi = g_manual_blocks.find(pc & ~1u); if (_mi != g_manual_blocks.end()) return _mi->second; }
