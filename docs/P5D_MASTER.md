@@ -931,6 +931,17 @@
 | M913 | §18.4458: ★★★★★★ **突破！PERIODPUMP（调用计数版）越过了 n≈59.8M 的 CRI/帧循环卡点，page1 进入 app 作业队列阶段；并发现/修复"抢占后无唤醒期限导致 worker 永久 waiting"**。64M 长跑（`out64m_m990preempt2.txt`，THRYIELD+PERIODPUMP 计数版）**完整跑到 64M 上限**：`done: blocks=64000000 pc=81003CE6`；n 从 59.5M 推进到 64M（此前永远冻结在 59.8M）→ **卡点被突破**。新卡点：反编译紧循环 `FUN_81003CCC`：
 | M914 | §18.4459: **门控修复：THRYIELD/PERIODPUMP 在 n<100000 会破坏 criFs 初始化（binit_after=0），加 `g_main_n >= 100000u` 门控后 binder 恢复正常**。130M 长跑（`out130m_m992wake.txt`，无门控）发现：`[CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000 **binit_after=00000000**`（binder 未建立！），`[JOB]` 从 n=5M 到 30M 全部 `binit=0 btab=0`——与之前 0x816A0BA0 不同。原因：THRYIELD/PERIODPUMP 在 n≈5000 时就会抢占/让出 guest 线程，**打乱了 criFs 初始化内部的线程/时序**，使 init 提前返回且未安装 binder。**修复（18.4459）**：两处均加 `g_main_n >= 100000u` 门控（`if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u)`；DelayThread 的 THRYIELD 分支同样加 `g_main_n >= 100000u`），让 boot/CRI 初始化阶段不受调度实验影响。3M 冒烟（`out3m_m993gate.txt`）：`[CRIFSHLE] ... binit_after=816A0BA0`（**binder 恢复**）、`[PREEMPT]` 10 条（tid=4001A000 CRI worker 等）、exit=0、BADMEM=0。已后台启动 **130M 长跑**（`out130m_m994gate.txt`，门控版）验证 page1 完成 → 标题页。 |
 | M915 | §18.4460: **门控版 130M 长跑：CRI 资源流已开始工作（streamcnt=3），page1 加载持续推进（n 60.4M→62.1M），仍无 GXM 绘制**。130M 门控长跑（`out130m_m994gate.txt`，THRYIELD+PERIODPUMP 且 `n>=100000` 门控）关键数据：`[CRIFSHLE] binit_after=816A0BA0`（binder 恢复）；`[JOB] n=60000000 st_job1180=3318072773 st_job0D90=3318072773 ctr=9 seq=85B843AC **streamcnt=3** binit=2171210656`（**CRI 流加载进行中**，此前 streamcnt=0）；`[SEQST] n=60M h=85B843AC ctrl=85B8436C cur=1 tab=813B01B4 pc=8127B85C`（page1 控制器活跃，pc 在 CRI FS 内）；`[IDR] state=1 idx=1 handle=85B8591C`；n 已从 59.8M 卡点推进到 **62,090,000**（`[FRAMEDUMP] n=62090000 ctr=9 pc=8127B7D8 blk=8127B7C8`），130M 上限仍有空间。`[GXM]` 仍 0、`[TITLEMOV]` 0 —— **page1 资源加载尚未完成，标题渲染未开始**。结论：门控+抢占+唤醒的调度修复组合成功让 page1 真正开始加载资源；下一步等待/推进该加载完成。NEXT: 继续观察 `out130m_m994gate.txt`（后台仍在跑）：`streamcnt` 是否完成/归 0、`[IDR]`/`[SEQST]` 是否推进到下一页、`[GXM]` BeginScene/Draw 是否首次出现（首帧渲染提交）。 |
+| M916 | §18.4461: **page1 期间 HLE 直方图：全是 worker 线程在轮询，主上下文调用被刷屏淹没 → 新增 [H57M] 过滤探针抓主上下文文件 I/O 路径**。130M 门控长跑（`out130m_m994gate.txt`）n 推进到 **63,185,000**（`[FRAMEDUMP] n=63185000 ctr=9 pc=8128EA7E blk=8127C0F8`），`[JOB] n=60M streamcnt=3`（CRI 流仍在加载），`[GXM]`/`[TITLEMOV]` 仍 0。`[H57]`（n≥59M，cap 3000）按线程分组：
+| thr | 调用 | 说明 |
+|---|---|---|
+| 40018000 | Lock/Unlock LwMutex + **WaitEventFlag(60014000, bit1)** 各 368 | **空闲 Fios worker 1** |
+| 40019000 | 同上 各 368 | **空闲 Fios worker 2** |
+| 4001D000 | SetEventFlag(60016000,bit1) 328 + **WaitVblankStart** 328 | 显示/帧线程 |
+| 4001B000/4001C000 | WaitSema/SignalSema/DelayThread | CRI 异步线程 |
+| 40017000 | DelayThread 23 | 主线程（DelayThread 等待）|
+| **thr=0（主上下文）** | **0 条**（被 worker 刷屏挤掉 cap） | 未知 |
+且 `[FHOPEN]`/`[FHREAD]` 等 Fios HLE 用例统计 = **0**（整场运行从未调用）→ CRI FS 的 I/O 路径不是我们已实现的 Fios FH* 用例。因此新增 **`[H57M]` 过滤探针**（n≥59M，排除 8 个 worker 刷屏 VA，cap 2500）：打印 `va/pc/lr/a0-a2/fib/thr/n`，用于抓主上下文的真实文件 I/O 调用序列。已启动 130M 长跑（`out130m_m996h57m.txt`，带 [H57M]）。NEXT: 读取 `[H57M]` 序列 → 确定 CRI FS 使用的 I/O API → 补 HLE 处理（读完成投递/同步语义）→ page1 加载完成 → 标题页。 |
+| §18.4461 | HLE histogram during page1: all worker-thread polling; main-context calls drowned by spam - added [H57M] filtered probe to capture the main-context file-IO path. 130M gated run (out130m_m994gate.txt) advanced n to 63,185,000 ([FRAMEDUMP] n=63185000 ctr=9 pc=8128EA7E blk=8127C0F8), [JOB] n=60M streamcnt=3 (CRI streams still loading), [GXM]/[TITLEMOV] still 0. [H57] (n>=59M, cap 3000) by thread: thr=40018000 Lock/Unlock LwMutex + WaitEventFlag(60014000, bit1) x368 each = idle Fios worker 1; thr=40019000 same x368 = idle Fios worker 2; thr=4001D000 SetEventFlag(60016000,bit1) x328 + WaitVblankStart x328 = display/frame thread; thr=4001B000/4001C000 WaitSema/SignalSema/DelayThread = CRI async threads; thr=40017000 DelayThread x23 = main thread; thr=0 (main context) 0 lines (cap exhausted by worker spam). Also [FHOPEN]/[FHREAD] Fios HLE cases = 0 over the whole run -> CRI FS I/O path is not our implemented Fios FH* cases. So added the [H57M] filtered probe (n>=59M, excludes the 8 spam VAs, cap 2500) printing va/pc/lr/a0-a2/fib/thr/n to capture the real main-context file I/O call sequence. A 130M run with [H57M] has been started (out130m_m996h57m.txt). NEXT: read the [H57M] sequence -> identify the I/O API CRI FS uses -> add HLE handling (read-completion delivery/sync semantics) -> page1 loading completes -> title page. |
 | §18.4460 | Gated 130M run: CRI resource streams are now working (streamcnt=3) and page1 loading keeps progressing (n 60.4M->62.1M), still no GXM drawing. Key data from the 130M gated run (out130m_m994gate.txt, THRYIELD+PERIODPUMP with n>=100000 gating): [CRIFSHLE] binit_after=816A0BA0 (binder restored); [JOB] n=60000000 st_job1180=3318072773 st_job0D90=3318072773 ctr=9 seq=85B843AC streamcnt=3 binit=2171210656 (CRI stream loading in progress, previously streamcnt=0); [SEQST] n=60M h=85B843AC ctrl=85B8436C cur=1 tab=813B01B4 pc=8127B85C (page1 controller active, pc inside CRI FS); [IDR] state=1 idx=1 handle=85B8591C; n advanced from the 59.8M stall to 62,090,000 ([FRAMEDUMP] n=62090000 ctr=9 pc=8127B7D8 blk=8127B7C8), still room to the 130M limit. [GXM] still 0 and [TITLEMOV] 0 - page1 resource loading not finished and title rendering not started. Conclusion: the scheduling fixes (gating + preemption + wake) successfully made page1 actually begin loading resources; next step is to let/force this loading complete. NEXT: keep watching out130m_m994gate.txt (still running in background): whether streamcnt completes/goes to 0, whether [IDR]/[SEQST] advance to the next page, and whether [GXM] BeginScene/Draw first appears (first frame render submission). |
 | §18.4459 | Gating fix: THRYIELD/PERIODPUMP before n<100000 breaks criFs init (binit_after=0); adding a g_main_n >= 100000 guard restores the binder. The 130M run (out130m_m992wake.txt, ungated) showed [CRIFSHLE] criFs_Initialize(NULL,0,0) -> 0 n=5000 binit_after=00000000 (binder NOT established!) and [JOB] from n=5M to 30M all show binit=0 btab=0 - different from the previous 0x816A0BA0. Cause: THRYIELD/PERIODPUMP preempt/yield guest threads already around n~5000, disturbing the internal threading/timing of criFs initialization so init returns early without installing the binder. FIX (18.4459): add g_main_n >= 100000u guards to both places: (if (g_periodpump_env && _pp_cnt >= 8192u && g_main_n >= 100000u)) and the DelayThread THRYIELD branch. 3M smoke test (out3m_m993gate.txt): [CRIFSHLE] ... binit_after=816A0BA0 (binder restored), [PREEMPT] 10 lines (tid=4001A000 CRI worker etc.), exit=0, BADMEM=0. A 130M long run with the gated version has been started in the background (out130m_m994gate.txt) to verify page1 completion -> title page. |
 ```c
@@ -486853,3 +486864,35 @@ NEXT：继续观察该后台运行：`streamcnt` 变化、`[IDR]`/`[SEQST]` 推�
 ANTI-FORGETTING ENTRY. Keywords: M915 gated 130M run out130m_m994gate.txt (THRYIELD+PERIODPUMP with g_main_n>=100000 gating + CRIFSHLE AT=5000 + GETSELFFIX + NOSCHEDRUN + GXMABI + FASTSLEEP): [CRIFSHLE] binit_after=816A0BA0 (binder restored and persists), [JOB] n=60000000 st_job1180=3318072773 st_job0D90=3318072773 ctr=9 seq=85B843AC streamcnt=3 binit=2171210656 (CRI resource streams now loading, previously streamcnt=0), [SEQST] n=60M h=85B843AC ctrl=85B8436C cur=1 tab=813B01B4 pc=8127B85C, [IDR] state=1 idx=1 handle=85B8591C, n advanced from the 59.8M stall to 62,090,000 ([FRAMEDUMP] n=62090000 ctr=9 pc=8127B7D8 blk=8127B7C8); [GXM] 0 and [TITLEMOV] 0 - page1 resource loading not finished, title rendering not started. Conclusion: gating+preemption+wake scheduling fixes made page1 actually start loading resources. NEXT: keep watching the background run: streamcnt completion, [IDR]/[SEQST] advance, first [GXM] BeginScene/Draw.
 
 LOOKUP: streamcnt, st_job1180, 0x85B843AC, 0x8127B85C, out130m_m994gate.txt -> §18.4459 [relevant: gating fix], §18.4458 [relevant: preempt wake]
+### 18.4461 PORT M916: page1 HLE 直方图（worker 轮询为主）+ [H57M] 过滤探针
+
+1) 130M 门控长跑（`out130m_m994gate.txt`）最新状态：
+```
+[FRAMEDUMP] n=63185000 flags=00000003 ctr=9 pc=8128EA7E blk=8127C0F8 sp=84855FC0 fib=848463A0 gxm(b/e/p)=0/0/0
+[JOB] n=60000000 ... streamcnt=3 binit=2171210656 (0x816A0BA0)
+[GXM] 0 条；[TITLEMOV] 0
+```
+2) `[H57]`（n≥59M，cap 3000）按线程统计：
+| thr | (va, count) | 角色 |
+|---|---|---|
+| 40018000 | 812B2830 LockLwMutex ×368、812B2880 WaitEventFlag(60014000,bit1) ×368、812B28A0 UnlockLwMutex ×368 | **空闲 Fios worker 1** |
+| 40019000 | 同上各 ×368 | **空闲 Fios worker 2** |
+| 4001D000 | 812B2AE0 SetEventFlag(60016000,bit1) ×328、812B1810 WaitVblankStart ×328 | 显示/帧线程 |
+| 4001B000 | WaitSema ×33、SignalSema ×33、DelayThread ×11 | CRI 异步线程 |
+| 4001C000 | WaitSema ×12、SignalSema ×12、DelayThread ×12 | CRI 异步线程 |
+| 40017000 | DelayThread ×23 | 主线程 |
+| **thr=0** | **0 条**（cap 被 worker 刷屏占满） | 未捕获 |
+3) 另外 `[FHOPEN]`/`[FHREAD]`/`[OPENMISS]`/`[READMISS]` 全为 **0**（整场运行）→ CRI FS 的 I/O 不走已实现的 Fios FH* HLE 用例。
+4) 新增 `[H57M]` 过滤探针（`hle_call` 内，n≥59M，排除 8 个刷屏 VA，cap 2500）：
+```cpp
+bool spam = (stub_va == 812B2830||812B28A0||812B2880||812B1810||812B2AE0||812B2A50||812B27A0||812B2AD0);
+if (g_main_n >= 59000000u && !spam && _h57m++ < 2500)
+  printf("[H57M] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X fib=%08X thr=%08X n=%u\n", ...);
+```
+已启动 **130M 长跑**：`out130m_m996h57m.txt`（带 [H57M]）。
+NEXT：读取 `[H57M]` → 确定 CRI FS 使用的 I/O API → 补 HLE（读完成投递/同步）→ page1 加载完成 → 标题页。
+验证：`out130m_m994gate.txt`（H57 直方图/n=63.185M/streamcnt=3）、`out130m_m996h57m.txt`（H57M 待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M916 page1 HLE histogram: 130M gated run out130m_m994gate.txt advances n to 63,185,000 ([FRAMEDUMP] n=63185000 ctr=9 pc=8128EA7E blk=8127C0F8), streamcnt=3, no GXM/TITLEMOV; [H57] cap 3000 grouped by thr: 40018000 & 40019000 = Lock/Unlock LwMutex + WaitEventFlag(60014000 bit1) x368 each (idle Fios workers), 4001D000 = SetEventFlag(60016000 bit1) x328 + WaitVblankStart x328 (display thread), 4001B000/4001C000 = WaitSema/SignalSema/DelayThread (CRI async), 40017000 = DelayThread x23 (main), thr=0 = 0 lines (cap exhausted by worker spam); FHOPEN/FHREAD/OPENMISS/READMISS = 0 over whole run -> CRI FS I/O does not use the implemented Fios FH* HLE cases. Added [H57M] filtered probe in hle_call (n>=59M, excludes spam VAs 812B2830/28A0/2880/1810/2AE0/2A50/27A0/2AD0, cap 2500) printing va/pc/lr/a0-a2/fib/thr/n; 130M run with [H57M] started out130m_m996h57m.txt; NEXT: read [H57M] sequence to identify the CRI FS I/O API, add HLE read-completion/sync handling -> page1 completes -> title page.
+
+LOOKUP: 0x60014000, 0x60016000, 0x812B2880, 0x812B2830, 0x812B1810, [H57M], out130m_m996h57m.txt -> §18.4460 [relevant: streamcnt=3], §18.4459 [relevant: gating]

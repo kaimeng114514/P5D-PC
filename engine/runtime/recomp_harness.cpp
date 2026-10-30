@@ -1299,6 +1299,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
   { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _h57m = 0;   // 18.4461: filtered trace - main/unknown context only (skip worker spam), captures the file-IO path
+    bool _spam = (stub_va == 0x812B2830u || stub_va == 0x812B28A0u || stub_va == 0x812B2880u || stub_va == 0x812B1810u
+               || stub_va == 0x812B2AE0u || stub_va == 0x812B2A50u || stub_va == 0x812B27A0u || stub_va == 0x812B2AD0u);
+    if (g_main_n >= 59000000u && !_spam && _h57m++ < 2500) { printf("[H57M] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X fib=%08X thr=%08X n=%u\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], g_cur_fiber, g_cur_thr, g_main_n); fflush(stdout); } }
   { g_hle_ring_va[g_hle_ring_n & 127] = stub_va; g_hle_ring_lr[g_hle_ring_n & 127] = s->r[14]; ++g_hle_ring_n; }
   if (g_in_fiber_exec && g_cur_fiber && g_cur_fiber != g_fiber_list.empty() && 0) {}
   if (g_in_fiber_exec && g_cur_fiber && g_fiber_list.size() > 1 && g_cur_fiber == g_fiber_list[1] && g_f2hle_n++ < 90) {
