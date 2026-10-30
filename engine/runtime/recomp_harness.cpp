@@ -938,23 +938,34 @@ static void job_probes(uint32_t pcv, RecState* s) {
   }
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
-    if (_a == 0x810995D4u) { static int _gr_n = 0; ++_gr_n;
-      if (_gr_n < 6 || (_gr_n % 5000) == 0) { uint32_t _l = 0; { uint8_t* _q = GP(0x81386CECu); if (_q) std::memcpy(&_l, _q, 4); }
-        printf("[GRES] #%d list=%08X blk=%u words:", _gr_n, _l, g_blkcnt_total);
+    if (_a == 0x810995D4u) { static int _gr_n = 0; static int _gr_late = 0; ++_gr_n;
+      int _late = (g_blkcnt_total > 10000000u && !_gr_late); if (_late) _gr_late = 1;
+      if (_gr_n < 6 || (_gr_n % 1000) == 0 || _late) { uint32_t _l = 0; { uint8_t* _q = GP(0x81386CECu); if (_q) std::memcpy(&_l, _q, 4); }
+        printf("[GRES] #%d list=%08X blk=%u late=%d words:", _gr_n, _l, g_blkcnt_total, _late);
         if (_l) { for (int _k = 0; _k < 8; ++_k) { uint32_t _v = 0; uint8_t* _q = GP(_l + (uint32_t)_k * 4); if (_q) std::memcpy(&_v, _q, 4); printf(" %08X", _v); } }
         printf("\n"); fflush(stdout); } }
     if (_a == 0x810994B2u) { static int _gi_n = 0; if (_gi_n++ < 6) { printf("[GRES] global_resource_810994B2 INIT called blk=%u fib=%08X\n", g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
-    if (_a == 0x811DB1F0u || _a == 0x8119934Au || _a == 0x8119934Cu) { static int _sc2_n = 0; ++_sc2_n;
-      if (_sc2_n <= 20 || (_sc2_n % 20000) == 0) { printf("[SCHED] #%d at=%08X blk=%u fib=%08X ring:", _sc2_n, _a, g_blkcnt_total, g_cur_fiber);
+    if (_a == 0x81199336u || _a == 0x811DB020u || _a == 0x811DB1F0u) { static int _fr_n = 0; static int _fr_late = 0; ++_fr_n;
+      int _late = (g_blkcnt_total > 10000000u && !_fr_late); if (_late) _fr_late = 1;
+      if (_fr_n <= 3 || (_fr_n % 2000) == 0 || _late) { printf("[FRAME] #%d at=%08X blk=%u late=%d fib=%08X ring:", _fr_n, _a, g_blkcnt_total, _late, g_cur_fiber);
+        for (int _k = 0; _k < 8; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 8u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
+    if (_a == 0x811DB1F0u || _a == 0x8119934Au || _a == 0x8119934Cu) { static int _sc2_n = 0; static int _sc2_late = 0; ++_sc2_n;
+      int _late = (g_blkcnt_total > 10000000u && !_sc2_late); if (_late) _sc2_late = 1;
+      if (_sc2_n <= 3 || (_sc2_n % 1000) == 0 || _late) { printf("[SCHED] #%d at=%08X blk=%u fib=%08X late=%d ring:", _sc2_n, _a, g_blkcnt_total, g_cur_fiber, _late);
         for (int _k = 0; _k < 8; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 8u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x81184776u || _a == 0x81159CB0u || _a == 0x8117BCB0u || _a == 0x8115FC0Eu || _a == 0x8115FC28u) {
-      static int _am_n = 0; ++_am_n;
-      if (_am_n <= 40 || (_am_n % 5000) == 0) {
+      static int _am_n = 0; static int _am_late = 0; ++_am_n;
+      int _late = (g_blkcnt_total > 10000000u && !_am_late); if (_late) _am_late = 1;
+      if (_am_n <= 3 || (_am_n % 1000) == 0 || _late) {
         const char* _nm = (_a == 0x81184776u) ? "appmain_update" : (_a == 0x81159CB0u) ? "app_main_start_step" : (_a == 0x8117BCB0u) ? "reslist_pump_all" : (_a == 0x8115FC0Eu) ? "loader_check" : "loader_get";
-        printf("[MAIN] #%d %s at=%08X blk=%u fib=%08X r0=%08X r1=%08X ring:", _am_n, _nm, _a, g_blkcnt_total, g_cur_fiber, s->r[0], s->r[1]);
+        printf("[MAIN] #%d %s at=%08X blk=%u fib=%08X late=%d r0=%08X r1=%08X ring:", _am_n, _nm, _a, g_blkcnt_total, g_cur_fiber, _late, s->r[0], s->r[1]);
         for (int _k = 0; _k < 8; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 8u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
-    if (_a == 0x810995A0u) { static int _gp_n = 0; ++_gp_n; if (_gp_n <= 5 || (_gp_n % 500) == 0) { printf("[GRES] global_resource_810995A0 PUMP #%d blk=%u\n", _gp_n, g_blkcnt_total); fflush(stdout); } }
-    if (_a == 0x8117BA30u) { static int _ba_n = 0; ++_ba_n; if (_ba_n <= 10 || (_ba_n % 2000) == 0) { printf("[NODE] load-step #%d list=%08X node=%08X blk=%u\n", _ba_n, s->r[0], s->r[1], g_blkcnt_total); fflush(stdout); } }
+    if (_a == 0x810995A0u) { static int _gp_n = 0; static int _gp_late = 0; ++_gp_n;
+      int _late = (g_blkcnt_total > 10000000u && !_gp_late); if (_late) _gp_late = 1;
+      if (_gp_n <= 3 || (_gp_n % 1000) == 0 || _late) { printf("[GRES] global_resource_810995A0 PUMP #%d blk=%u late=%d\n", _gp_n, g_blkcnt_total, _late); fflush(stdout); } }
+    if (_a == 0x8117BA30u) { static int _ba_n = 0; static int _ba_late = 0; ++_ba_n;
+      int _late = (g_blkcnt_total > 10000000u && !_ba_late); if (_late) _ba_late = 1;
+      if (_ba_n <= 3 || (_ba_n % 1000) == 0 || _late) { printf("[NODE] load-step #%d list=%08X node=%08X blk=%u late=%d\n", _ba_n, s->r[0], s->r[1], g_blkcnt_total, _late); fflush(stdout); } }
     if (_a == 0x8117BC66u) { static int _br_n = 0; ++_br_n; if (_br_n <= 10 || (_br_n % 2000) == 0) { printf("[NODE] load-step-ret #%d ret=%08X blk=%u\n", _br_n, s->r[0], g_blkcnt_total); fflush(stdout); } }
     if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
       static int _gc_n = 0;
