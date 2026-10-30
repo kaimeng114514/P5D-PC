@@ -476,6 +476,9 @@ static void fios_ensure_cpk() {
   if (g_cpk2.open("C:\\dev\\p5d_rom\\data\\vita.cpk")) printf("[FIOS] mounted vita.cpk files=%zu\n", g_cpk2.file_count());
   else printf("[FIOS] WARN: vita.cpk not mounted\n");
   { int n = 0; for (auto& kv : g_cpk.entries()) { if (n < 24) printf("[CPKNAME] %s\n", kv.first.c_str()); ++n; }
+  { int _an = 0; for (auto& kv : g_cpk.entries()) { std::string _l = kv.first; for (auto& c : _l) c = (char)std::tolower((unsigned char)c);
+      if (_l.size() >= 4 && _l.compare(_l.size()-4,4,".acf") == 0 && _an++ < 60) printf("[ACF] %s\n", kv.first.c_str()); }
+    printf("[ACF] total=%d\n", _an); }
     if (n) { int pick = 0; for (auto& kv : g_cpk.entries()) { if (pick == 0) g_inject_name = kv.first; ++pick; }
       printf("[CPKNAME] picked first entry: '%s' (total %zu)\n", g_inject_name.c_str(), g_cpk.file_count()); } }
 }
@@ -925,6 +928,21 @@ static void pending_req_scan() {
 }
 
 static void job_probes(uint32_t pcv, RecState* s) {
+  { uint32_t _b0 = pcv & ~1u;
+    if (_b0 == 0x81279486u || _b0 == 0x81279520u) { static int _ac_n = 0; if (_ac_n++ < 60) {
+        char _fmt[160] = {0}, _arg[160] = {0}; uint8_t* _q = GP(s->r[1]);
+        if (_q) { for (int _k = 0; _k < 150; ++_k) { char _c = (char)_q[_k]; if (!_c) break; _fmt[_k] = (_c >= 32 && _c < 127) ? _c : 0x2E; } }
+        uint8_t* _q2 = GP(s->r[2]);
+        if (_q2) { for (int _k = 0; _k < 150; ++_k) { char _c = (char)_q2[_k]; if (!_c) break; _arg[_k] = (_c >= 32 && _c < 127) ? _c : 0x2E; } }
+        printf("[CRIFMT] at=%08X n=%u fmt=%s arg2=%s\n", _b0, g_main_n, _fmt, _arg); fflush(stdout); } }
+    if (_b0 == 0x81224160u) { static int _ca_n = 0; if (_ca_n++ < 6) {
+        uint32_t _cf = s->r[0]; printf("[CRIATOM] #%d n=%u r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X words:", _ca_n, g_main_n, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14]);
+        for (int _k = 0; _k < 0x40; _k += 4) { uint32_t _v = 0; uint8_t* _q = GP(_cf + (uint32_t)_k); if (_q) std::memcpy(&_v, _q, 4); printf(" %08X", _v); }
+        printf("\n"); fflush(stdout); } }
+    if (_b0 >= 0x81224950u && _b0 <= 0x81224970u) { static int _rq_n = 0; if (_rq_n++ < 12) {
+        printf("[CRIREQ] pc=%08X n=%u r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X\n", _b0, g_main_n, s->r[0], s->r[1], s->r[2], s->r[3], s->r[4], s->r[5], s->r[6], s->r[7], s->r[8], s->r[9]); fflush(stdout); } }
+    if (_b0 == 0x81224940u || _b0 == 0x81224960u) { static int _lst_n = 0; if (_lst_n++ < 12) {
+        printf("[CRISITE] at=%08X n=%u r0=%08X r1=%08X r2=%08X r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X\n", _b0, g_main_n, s->r[0], s->r[1], s->r[2], s->r[3], s->r[4], s->r[5], s->r[6], s->r[7], s->r[14]); fflush(stdout); } } }
   { uint32_t _a0 = pcv & ~1u;
     if (_a0 == 0x81278F96u || _a0 == 0x81279176u || _a0 == 0x81279486u || _a0 == 0x81279520u) {
       static int _lg_n = 0;
@@ -1241,6 +1259,11 @@ static void canhle_check(uint32_t dst, uint32_t n, const char* k) {
 }
 static uint32_t canary_retry_pc(RecState* s);   // M831 (defined near fiber_load)
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
+  if (g_main_n < 4000u) { static std::set<uint32_t> _seen; static int _n = 0;
+    if (_seen.insert(stub_va).second && _n++ < 400) {
+      char _sa[96] = {0}; uint8_t* _p = (s->r[0] >= 0x80600000u && s->r[0] < 0x85000000u) ? GP(s->r[0]) : nullptr;
+      if (_p) { int _ok = 1; for (int _k = 0; _k < 60; ++_k) { char _c = (char)_p[_k]; if (!_c) break; if (_c < 32 || _c > 126) { _ok = 0; break; } _sa[_k] = _c; } if (!_ok) _sa[0] = 0; }
+      printf("[EARLYHLE] n=%u va=%08X r0=%08X r1=%08X r2=%08X r3=%08X str0=%s lr=%08X\n", g_main_n, stub_va, s->r[0], s->r[1], s->r[2], s->r[3], _sa, s->r[14]); fflush(stdout); } }
   hw_check(stub_va);
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
