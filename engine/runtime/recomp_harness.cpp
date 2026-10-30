@@ -925,6 +925,10 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x811E5CCAu || _a0 == 0x811C6B9Eu || _a0 == 0x811C6ACCu || _a0 == 0x811C6D98u) { static int _pk_n = 0; static int _pk_late = 0; ++_pk_n;
+      int _late = (g_main_n > 10000000u && !_pk_late); if (_late) _pk_late = 1;
+      if (_pk_n <= 6 || (_pk_n % 1000) == 0 || _late) { printf("[PUMPCH] #%d at=%08X n=%u late=%d r0=%08X r1=%08X fib=%08X\n", _pk_n, _a0, g_main_n, _late, s->r[0], s->r[1], g_cur_fiber); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
     if (_a0 == 0x811E5C66u || _a0 == 0x811E5C76u || _a0 == 0x811E5C86u || _a0 == 0x811E5C98u || _a0 == 0x811E5CA8u || _a0 == 0x811E5CB8u) { static int _hp_n = 0; static int _hp_late = 0; ++_hp_n;
       int _late = (g_main_n > 10000000u && !_hp_late); if (_late) _hp_late = 1;
       if (_hp_n <= 6 || (_hp_n % 1000) == 0 || _late) { printf("[HPTAB] #%d at=%08X n=%u late=%d r0=%08X r1=%08X fib=%08X\n", _hp_n, _a0, g_main_n, _late, s->r[0], s->r[1], g_cur_fiber); fflush(stdout); } } }
