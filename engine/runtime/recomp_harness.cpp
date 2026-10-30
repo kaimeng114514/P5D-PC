@@ -367,6 +367,7 @@ static uint32_t g_display_cb = 0, g_display_cbds = 0, g_display_maxpend = 0, g_d
 // DAT_813AF6B4; the completion callback is FUN_81159276(state, movie). We schedule the callback with state=1 once
 // shortly after PLAY MOVIE executes, so the boot state machine advances past the movie (our HLE video decoder never
 // produces frames). call_guest_cb sets r1=0, so a 2-arg variant call_guest_cb2 is used.
+static uint32_t g_main_n = 0;   // M859: outer dispatch-loop iteration counter (g_blkcnt_total freezes inside nested fiber exec)
 static int      g_movie_played = 0;
 static int      g_movie_wait_n = 0;
 static uint32_t g_moviecb_pending = 0, g_moviecb_a0 = 0, g_moviecb_a1 = 0;
@@ -923,6 +924,11 @@ static void pending_req_scan() {
 }
 
 static void job_probes(uint32_t pcv, RecState* s) {
+  { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x8119934Au || _a0 == 0x81198D0Cu || _a0 == 0x81198C8Eu || _a0 == 0x81198D9Cu) { static int _gf_n = 0; static int _gf_late = 0; ++_gf_n;
+      int _late = (g_main_n > 10000000u && !_gf_late); if (_late) _gf_late = 1;
+      uint32_t _fl = 0, _ctr = 0; { uint8_t* _q = GP(0x816CC630u); if (_q) std::memcpy(&_fl, _q, 4); } { uint8_t* _q = GP(0x816CC63Cu); if (_q) std::memcpy(&_ctr, _q, 4); }
+      if (_gf_n <= 4 || (_gf_n % 20000) == 0 || _late) { printf("[GFD] #%d at=%08X n=%u late=%d flags=%08X ctr=%u fib=%08X\n", _gf_n, _a0, g_main_n, _late, _fl, _ctr, g_cur_fiber); fflush(stdout); } } }
   { static int _pbshot = 0;
     if (!_pbshot && g_blkcnt_total > 2000000u) {
       _pbshot = 1;
@@ -952,32 +958,32 @@ static void job_probes(uint32_t pcv, RecState* s) {
   hw_check(pcv);
   { uint32_t _a = pcv & ~1u;
     if (_a == 0x810995D4u) { static int _gr_n = 0; static int _gr_late = 0; ++_gr_n;
-      int _late = (g_blkcnt_total > 10000000u && !_gr_late); if (_late) _gr_late = 1;
+      int _late = (g_main_n > 10000000u && !_gr_late); if (_late) _gr_late = 1;
       if (_gr_n < 6 || (_gr_n % 1000) == 0 || _late) { uint32_t _l = 0; { uint8_t* _q = GP(0x81386CECu); if (_q) std::memcpy(&_l, _q, 4); }
         printf("[GRES] #%d list=%08X blk=%u late=%d words:", _gr_n, _l, g_blkcnt_total, _late);
         if (_l) { for (int _k = 0; _k < 8; ++_k) { uint32_t _v = 0; uint8_t* _q = GP(_l + (uint32_t)_k * 4); if (_q) std::memcpy(&_v, _q, 4); printf(" %08X", _v); } }
         printf("\n"); fflush(stdout); } }
     if (_a == 0x810994B2u) { static int _gi_n = 0; if (_gi_n++ < 6) { printf("[GRES] global_resource_810994B2 INIT called blk=%u fib=%08X\n", g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
     if (_a == 0x81199336u || _a == 0x811DB020u || _a == 0x811DB1F0u) { static int _fr_n = 0; static int _fr_late = 0; ++_fr_n;
-      int _late = (g_blkcnt_total > 10000000u && !_fr_late); if (_late) _fr_late = 1;
+      int _late = (g_main_n > 10000000u && !_fr_late); if (_late) _fr_late = 1;
       if (_fr_n <= 3 || (_fr_n % 2000) == 0 || _late) { printf("[FRAME] #%d at=%08X blk=%u late=%d fib=%08X ring:", _fr_n, _a, g_blkcnt_total, _late, g_cur_fiber);
         for (int _k = 0; _k < 8; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 8u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x811DB1F0u || _a == 0x8119934Au || _a == 0x8119934Cu) { static int _sc2_n = 0; static int _sc2_late = 0; ++_sc2_n;
-      int _late = (g_blkcnt_total > 10000000u && !_sc2_late); if (_late) _sc2_late = 1;
+      int _late = (g_main_n > 10000000u && !_sc2_late); if (_late) _sc2_late = 1;
       if (_sc2_n <= 3 || (_sc2_n % 1000) == 0 || _late) { printf("[SCHED] #%d at=%08X blk=%u fib=%08X late=%d ring:", _sc2_n, _a, g_blkcnt_total, g_cur_fiber, _late);
         for (int _k = 0; _k < 8; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 8u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x81184776u || _a == 0x81159CB0u || _a == 0x8117BCB0u || _a == 0x8115FC0Eu || _a == 0x8115FC28u) {
       static int _am_n = 0; static int _am_late = 0; ++_am_n;
-      int _late = (g_blkcnt_total > 10000000u && !_am_late); if (_late) _am_late = 1;
+      int _late = (g_main_n > 10000000u && !_am_late); if (_late) _am_late = 1;
       if (_am_n <= 3 || (_am_n % 1000) == 0 || _late) {
         const char* _nm = (_a == 0x81184776u) ? "appmain_update" : (_a == 0x81159CB0u) ? "app_main_start_step" : (_a == 0x8117BCB0u) ? "reslist_pump_all" : (_a == 0x8115FC0Eu) ? "loader_check" : "loader_get";
         printf("[MAIN] #%d %s at=%08X blk=%u fib=%08X late=%d r0=%08X r1=%08X ring:", _am_n, _nm, _a, g_blkcnt_total, g_cur_fiber, _late, s->r[0], s->r[1]);
         for (int _k = 0; _k < 8; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 8u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x810995A0u) { static int _gp_n = 0; static int _gp_late = 0; ++_gp_n;
-      int _late = (g_blkcnt_total > 10000000u && !_gp_late); if (_late) _gp_late = 1;
+      int _late = (g_main_n > 10000000u && !_gp_late); if (_late) _gp_late = 1;
       if (_gp_n <= 3 || (_gp_n % 1000) == 0 || _late) { printf("[GRES] global_resource_810995A0 PUMP #%d blk=%u late=%d\n", _gp_n, g_blkcnt_total, _late); fflush(stdout); } }
     if (_a == 0x8117BA30u) { static int _ba_n = 0; static int _ba_late = 0; ++_ba_n;
-      int _late = (g_blkcnt_total > 10000000u && !_ba_late); if (_late) _ba_late = 1;
+      int _late = (g_main_n > 10000000u && !_ba_late); if (_late) _ba_late = 1;
       if (_ba_n <= 3 || (_ba_n % 1000) == 0 || _late) { printf("[NODE] load-step #%d list=%08X node=%08X blk=%u late=%d\n", _ba_n, s->r[0], s->r[1], g_blkcnt_total, _late); fflush(stdout); } }
     if (_a == 0x8117BC66u) { static int _br_n = 0; ++_br_n; if (_br_n <= 10 || (_br_n % 2000) == 0) { printf("[NODE] load-step-ret #%d ret=%08X blk=%u\n", _br_n, s->r[0], g_blkcnt_total); fflush(stdout); } }
     if (_a == 0x811849A4u || _a == 0x811849ACu || _a == 0x811849B4u || _a == 0x811849BCu || _a == 0x811849C4u || _a == 0x811849CCu || _a == 0x811849D4u || _a == 0x811849E0u) {
@@ -1014,6 +1020,9 @@ static void job_probes(uint32_t pcv, RecState* s) {
         for (int _k = 0; _k < 16; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
     if (_a == 0x81197DF6u || _a == 0x81197DF8u) { static int _ts_n = 0;
       if (_ts_n++ < 30) { printf("[TITLEST] at=%08X r0=%08X r4=%08X blk=%u fib=%08X\n", _a, s->r[0], s->r[4], g_blkcnt_total, g_cur_fiber); fflush(stdout); } }
+    if (_a == 0x81185926u || _a == 0x811857C2u) { static int _p1_n = 0; static int _p1_late = 0; ++_p1_n;
+      int _late = (g_main_n > 10000000u && !_p1_late); if (_late) _p1_late = 1;
+      if (_p1_n <= 3 || (_p1_n % 5000) == 0 || _late) { printf("[PAGE] #%d at=%08X blk=%u late=%d r0=%08X\n", _p1_n, _a, g_blkcnt_total, _late, s->r[0]); fflush(stdout); } }
     if (_a == 0x81196F3Cu || _a == 0x81196F4Eu || _a == 0x81197408u || _a == 0x81197444u) { static int _ms_n = 0;
       if (_ms_n++ < 40) { printf("[MOVSTAT] at=%08X state_r0=%08X r4=%08X r5=%08X lr=%08X sp=%08X fib=%08X ring:", _a, s->r[0], s->r[4], s->r[5], s->r[14], s->r[13], g_cur_fiber);
         for (int _k = 0; _k < 16; ++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); } }
@@ -5398,7 +5407,7 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       std::memcpy(g_live_fctx.r, s.r, sizeof(s.r)); g_live_fctx.apsr = s.apsr;
       g_live_fctx.r[15] = pc; g_live_fiber = g_cur_fiber; g_live_valid = 1;
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
-    ++n;
+    ++n; g_main_n = (uint32_t)n;
     if (g_watch_addr != 0) {   // 18.4173: GP-based watch (heap addresses are not at va-IMG_VA_BASE)
       uint8_t* _wp = GP(g_watch_addr);
       if (_wp) { uint32_t v; std::memcpy(&v, _wp, 4);
@@ -5471,7 +5480,18 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
             }
             fflush(stdout); }
         } }
-      if ((n % 5000000) == 0) { uint32_t _c8c = 0; { uint8_t* _q = GP(0x816CC6A8u); if (_q) std::memcpy(&_c8c, _q, 4); }
+      if ((n % 5000000) == 0) {
+        { static int _sq_n = 0; ++_sq_n;
+          uint32_t _h = 0; { uint8_t* _q = GP(0x813B01A8u); if (_q) std::memcpy(&_h, _q, 4); }
+          uint32_t _ctrl = 0, _tab = 0;
+          if (_h) _ctrl = call_guest_cb2(&s, 0x8116F8A8u, _h, 0u, 200000);
+          { uint8_t* _q = GP(0x813B01ACu); if (_q) std::memcpy(&_tab, _q, 4); }
+          uint32_t _flag = 0, _cur = 0, _prev = 0, _delay = 0;
+          if (_ctrl) { { uint8_t* _q = GP(_ctrl); if (_q) std::memcpy(&_flag, _q, 4); } { uint8_t* _q = GP(_ctrl + 4); if (_q) std::memcpy(&_cur, _q, 4); }
+            { uint8_t* _q = GP(_ctrl + 8); if (_q) std::memcpy(&_prev, _q, 4); } { uint8_t* _q = GP(_ctrl + 0x0C); if (_q) std::memcpy(&_delay, _q, 4); } }
+          printf("[SEQST] n=%d h=%08X ctrl=%08X flag=%08X cur=%d prev=%d delay=%08X tab=%08X pc=%08X\n", n, _h, _ctrl, _flag, (int)_cur, (int)_prev, _delay, _tab, nxt);
+          fflush(stdout); }
+        uint32_t _c8c = 0; { uint8_t* _q = GP(0x816CC6A8u); if (_q) std::memcpy(&_c8c, _q, 4); }
         int _cnt = 0; uint32_t _p = _c8c; while (_p && _cnt < 4000) { uint32_t _nx = 0; uint8_t* _q = GP(_p + 0x28); if (_q) std::memcpy(&_nx, _q, 4); _p = _nx; ++_cnt; }
         uint32_t _mp = 0, _ms = 0, _ml = 0; { auto _it = g_fctx.find(0x848468E0u); if (_it != g_fctx.end()) { _mp = _it->second.r[15]; _ms = _it->second.r[13]; _ml = _it->second.r[14]; } }
         uint32_t _ctr = 0; { uint8_t* _qc = GP(0x816CC63Cu); if (_qc) std::memcpy(&_ctr, _qc, 4); }
