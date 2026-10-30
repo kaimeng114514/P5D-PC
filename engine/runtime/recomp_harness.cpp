@@ -926,6 +926,12 @@ static void pending_req_scan() {
 
 static void job_probes(uint32_t pcv, RecState* s) {
   { uint32_t _a0 = pcv & ~1u;
+    if (_a0 == 0x81285E86u || _a0 == 0x81286336u || _a0 == 0x81286368u || _a0 == 0x812864B4u || _a0 == 0x8128665Au || _a0 == 0x8128E394u) {
+      static int _bd_n = 0; static int _bd_late = 0; ++_bd_n;
+      int _late = (g_main_n > 10000000u && !_bd_late); if (_late) _bd_late = 1;
+      if (_bd_n <= 10 || (_bd_n % 5000) == 0 || _late) {
+        printf("[BIND] #%d at=%08X n=%u late=%d r0=%08X r1=%08X r2=%08X r3=%08X fib=%08X\n", _bd_n, _a0, g_main_n, _late, s->r[0], s->r[1], s->r[2], s->r[3], g_cur_fiber); fflush(stdout); } } }
+  { uint32_t _a0 = pcv & ~1u;
     if (_a0 == 0x811823FEu || _a0 == 0x8128E394u || _a0 == 0x8128DF6Eu || _a0 == 0x8128715Eu || _a0 == 0x8128DEFCu || _a0 == 0x811829E2u) {
       static int _fs_n = 0; static int _fs_late = 0; ++_fs_n;
       int _late = (g_main_n > 10000000u && !_fs_late); if (_late) _fs_late = 1;
@@ -5532,7 +5538,10 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
         { uint8_t* _q=GP(0x8156A6B4u); if(_q) std::memcpy(&_a6b4,_q,4); }
         { uint8_t* _q=GP(0x8156A368u); if(_q) std::memcpy(&_a368,_q,4); }
         { uint8_t* _q=GP(0x8156A6B8u); if(_q) std::memcpy(&_a6b8,_q,4); }
-        printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X fiosbusy=%u streamcnt=%u slot=%u\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg,_a6b4,_a368,_a6b8); fflush(stdout); }
+uint32_t _binit=0,_btab=0;
+        { uint8_t* _q=GP(0x8153FEF4u); if(_q) std::memcpy(&_binit,_q,4); }
+        { uint8_t* _q=GP(0x8154013Cu); if(_q) std::memcpy(&_btab,_q,4); }
+        printf("[JOB] n=%d st_job1180=%u st_job0D90=%u st_gres1=%u st_gres2=%u ctr=%u seq=%08X fiosbusy=%u streamcnt=%u slot=%u binit=%u btab=%u\n", n, _s1,_s2,_s3,_s4,_ctr2,_pg,_a6b4,_a368,_a6b8,_binit,_btab); fflush(stdout); }
       if ((n % 10000000) == 0) { static int _ts_n = 0; ++_ts_n;
         printf("[TS] n=%d thr=%zu fib=%zu\n", n, g_thr.size(), g_fctx.size());
         for (auto& _kv : g_thr) { HThread& _t = _kv.second;
