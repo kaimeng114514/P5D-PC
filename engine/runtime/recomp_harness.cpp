@@ -1880,6 +1880,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t cnt = s->r[0]; if (cnt == 0u) cnt = 1u; if (cnt > 4u) cnt = 4u;
       ++g_vblank_n;
       if (tl_ht_tid && !g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(16000u * cnt));
+      // 18.4453 M908: guest-thread mode has no preemption; the app render loop blocks here for vsync
+      // on real hardware which lets the loader/worker threads run. Emulate the time slice by advancing
+      // the virtual clock and pumping ready guest threads (env-gated experiment).
+      { static int _vbp = -1; if (_vbp < 0) { const char* _e = getenv("P5D_VBPUMP"); _vbp = (_e && atoi(_e)) ? 1 : 0; }
+        if (_vbp) { g_vtime_extra += 16000ull * (uint64_t)cnt;
+          static int _vbn = 0; if (_vbn++ < 6) { printf("[VBPUMP] cnt=%u n=%u fib=%08X thr=%08X vblank=%u\n", cnt, g_main_n, g_cur_fiber, g_cur_thr, g_vblank_n); fflush(stdout); }
+          hle_thr_pump(s, 300); } }
       if (g_vblank_n <= 8) { printf("[VBLANK] count=%u n=%d tid=%08X\n", s->r[0], g_vblank_n, tl_ht_tid); fflush(stdout); }
       r0 = 0; break; }
     case 0x812B1820u: {                                               // 18.4243: sceDisplayWaitSetFrameBufMulti (NID 7D9864A8) - NOT SetFrameBuf
