@@ -989,6 +989,25 @@
 | M971 | §18.4516: **NV12 彩色模式已生效（`[TEXSRC] mode=3`、`[TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544`、`[TEXSRC-NV12] shown frame=1`、`[TEXSRC-SYNC] mode=draw div=1.000`）——后端成功读取预解码 title 影片并转换/上传了第 1 帧；但 page1 首帧 RT 仍是黑（该 draw 的片元输出为黑/淡入层），所以再加**宿主影片层**：每帧调用 `p5d_movie_set_frame(BGRA,960,544)`，present 时后端把 `g_movie_img` **全屏 blit** 到交换链（`[MOVIEBLIT]`），从而窗口必然显示真实影片帧；并在 present 后用 `save_screenshot("p5d_swap_N.bmp")` 抓交换链做证据**。证据：
 | M972 | §18.4517: ★★★★★★★★ **【窗口真实显示通路验证】`recomp_harness` 窗口（"P5D Native Port"，hwnd=8070000，976×583）经 Windows 屏幕捕获实测显示 **白色画面（mean=248.6、max=255，带黑边 letterbox）**——说明：①窗口/交换链/显示通路真实工作；②但交换链内容与我们 RT 截图（黑色）不同。同时发现：从 NV12 影片文件直接提取的 **title 影片第 0/1 帧本身就是黑色**（frame0 mean=0.0 max=4），所以白色**不是**影片帧内容 → 白色来自交换链 clear/未初始化 movie image blit/呈现图不匹配之一。`[MOVIEBLIT] 960x544 -> 960x544` 在 stderr 中已出现（影片层 blit 确实执行）**。证据：
 | M973 | §18.4518: ★★★★★★★★★★ **【真实画面首次上屏！】纯红诊断运行实测：窗口屏幕捕获 **31050/35624 采样像素为纯红**（SCREEN mean=100.6 max=249 red=31050）——证明「宿主影片层 BMP → `p5d_movie_set_frame` → `vkCmdBlitImage` 全屏 blit 到交换链 → `vkQueuePresentKHR` → 窗口 → 物理屏幕」整条**显示通路真实工作**。同时澄清两个假象：①`PrintWindow` 抓 Vulkan 窗口永远是**白色占位**（mean=246.9 red=0，GDI 无法抓 Vulkan surface）；②`save_screenshot` 对交换链读到**纯白**（`[SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp`）——它没正确读 presented image；③早前"白色窗口"判断是这两个假象之一造成，**以屏幕捕获为准**。另外已从 NV12 文件提取并确认 **title 影片第 300 帧 = P5D 真实标题画面**（红色城市剪影 + 彩色纸屑雨，`movie_frame_300.png`），已启动 `P5D_MOVIE_START=300` 运行，屏幕应显示**原版游戏真实标题画面**。证据：
+| M974 | §18.4519: ★★★★★★★★★★★ **【真实游戏画面】：屏幕捕获成功捕获到**原版 P5D 标题画面**（红色天空 + 城市剪影 + 彩色三角/星形纸屑雨）真实显示在 `recomp_harness` 窗口（976×583）中——与本项目从 NV12 直接解码的 title 影片第 300 帧（`movie_frame_300.png`）一致。这是本项目**第一次在屏幕上显示原版游戏的真实画面内容**。证据文件：`C:\dev\p5d_build\evidence_p5d_title_real.png`（窗口捕获）与 `evidence_p5d_title_frame300_ref.png`（NV12 原帧参考）。捕获方法（唯一可靠）：枚举 `recomp_harness` 的窗口 → `MoveWindow` 到干净位置 → `BringWindowToTop`/`SetForegroundWindow` → `CopyFromScreen` 抓窗口矩形；`PrintWindow`（GDI，Vulkan 白占位）与 `save_screenshot`（读交换链白图）均不可用。运行：`out80m_m1053title300.txt`：
+```
+[MOVIE] P5D_MOVIE_START -> frame=300
+[MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790
+[MOVIE] frame=300/900 -> scratch=99C67790 set_texsrc_addr+set_frame
+[MOVIE] frame=301/900 -> ...
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560
+WINDOW hwnd=17508452 976x583
+CAP mean=82.6 max=255 nonblack=32312/35624 red=6649
+```
+**画面内容**：深红天空 + 城市建筑剪影（底部）+ 大量彩色三角/星形纸屑（红/青/黄/紫/白）——完全对应 title 影片第 300 帧 = **P5D 的真实标题画面**。
+说明（诚实边界）：当前上屏的是**宿主影片层**（预解码 NV12 → BGRA → `p5d_movie_set_frame` → present 全屏 blit）这一**演示通路**，证明「真实游戏内容 → 屏幕」链路可用；**不等于**引擎自己绘制影片 quad 的最终形态（后者仍需把影片解码/纹理内容接回引擎渲染路径）。但显示通路、真实内容、窗口证据三者已全部打通。
+NEXT：
+① 影片层改为**按墙钟推进**（当前只在 DisplayQueueAddEvent 推进 1 帧 → 画面静止），让 title 影片动画真正播放；
+② 把影片内容接回**引擎自己的影片 quad**（`P5D_TEXSRC` 门控/纹理替换→由原版着色器绘制），实现"原版代码自己画"的最终形态；
+③ 修正 `save_screenshot` 交换链读取（present 前 capture），使无窗口也能取证。 |
+| §18.4519 | REAL GAME PICTURE: screen capture successfully captured the ORIGINAL P5D TITLE PICTURE (red sky + city skyline silhouettes + colorful triangle/star confetti rain) really displayed in the recomp_harness window (976x583) - matching title movie frame 300 (movie_frame_300.png) decoded directly from the NV12. This is the FIRST time this project displays real original-game picture content on screen. Evidence files: C:\dev\p5d_build\evidence_p5d_title_real.png (window capture) and evidence_p5d_title_frame300_ref.png (NV12 reference frame). Capture method (the only reliable one): enumerate the recomp_harness window -> MoveWindow to a clean position -> BringWindowToTop/SetForegroundWindow -> CopyFromScreen of the window rect; PrintWindow (GDI, white placeholder for Vulkan) and save_screenshot (reads white swapchain image) are both unusable. Run out80m_m1053title300.txt: [MOVIE] P5D_MOVIE_START -> frame=300; [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790; [MOVIE] frame=300/900 -> scratch=99C67790 set_texsrc_addr+set_frame; [MOVIE] frame=301/900; [PRESENT] #1 imgIdx=0 result=0; [ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009; WINDOW hwnd=17508452 976x583; CAP mean=82.6 max=255 nonblack=32312/35624 red=6649. Picture content: dark red sky + city building silhouettes (bottom) + many colorful triangle/star confetti (red/cyan/yellow/purple/white) = exactly title movie frame 300 = the REAL P5D TITLE PICTURE. Honest boundary: what is on screen is the HOST MOVIE LAYER (pre-decoded NV12 -> BGRA -> p5d_movie_set_frame -> present fullscreen blit) demonstration path, proving the 'real game content -> screen' chain works; this is NOT yet the final form where the engine itself draws the movie quad (that still requires feeding video decode/texture content back into the engine render path). But display chain, real content and window evidence are all proven now. NEXT: (1) advance the movie layer by wall clock (currently only 1 frame per DisplayQueueAddEvent -> static picture) so the title movie animation really plays; (2) wire the movie content back into the engine's own movie quad (P5D_TEXSRC gating / texture replacement -> drawn by the original shaders) for the final 'original code draws it' form; (3) fix save_screenshot swapchain reading (capture before present) so evidence works without a window. |
 1) 纯红诊断运行（`P5D_MOVIE_TEST=solid:FF0000`）：
 ```
 [MOVIE] solid test color=FF0000 set_frame       ← 影片层帧=纯红
@@ -490660,3 +490679,47 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M973 REAL PICTURE ON SCREEN FOR THE FIRST TIME - solid-red diagnostic run: window screen capture (CopyFromScreen) shows 31050/35624 sampled pixels pure red (SCREEN mean=100.6 max=249 red=31050) proving the whole display chain works: host movie layer BGRA -> p5d_movie_set_frame -> vkCmdBlitImage fullscreen blit to swapchain -> vkQueuePresentKHR -> window -> physical screen. Artifacts: PrintWindow on a Vulkan window always returns a WHITE placeholder (mean=246.9 red=0; GDI cannot capture Vulkan surfaces); save_screenshot reads PURE WHITE from the swapchain ([SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp) - does not read the presented image; the earlier 'white window' judgement came from these artifacts, SCREEN CAPTURE is authoritative. Evidence: err80m_m1052solid.txt [PRES] cd=8D300000 imgIdx=0; [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0; [MOVIEBLIT] 960x544 -> 960x544 fullscreen blit; [RTSTAT] cd=8D300000 max=0 mean=0.00 file=p5d_disp_1.bmp. Title movie frame 300 (movie_frame_300.png, decoded directly from NV12) = red sky + city building silhouettes + colorful triangle/star confetti = the REAL P5D TITLE PICTURE. P5D_MOVIE_START=300 run started (out80m_m1053title300.txt) expecting the original P5D title screen on the physical screen. NEXT: (1) capture the screen after page1 -> save a REAL P5D TITLE PICTURE screenshot (first real game-picture evidence); (2) fix save_screenshot swapchain reading (capture before present or copy the presented image); (3) wire the movie layer into the correct timing (P5D_TEXSRC_FH gating / let the engine draw the movie quad itself).
 
 LOOKUP: red=31050/35624, SCREEN mean=100.6, PrintWindow white placeholder, [SHOTSTAT] mean=255.00, p5d_swap_1.bmp, [CPYIMG], [MOVIEBLIT], P5D_MOVIE_TEST=solid:FF0000, P5D_MOVIE_START=300, movie_frame_300.png, out80m_m1053title300.txt -> §18.4517 [relevant: display path verified], §18.4516 [relevant: host movie layer]
+### 18.4519 PORT M974: 【真实游戏画面】原版 P5D 标题画面已显示在屏幕上（证据截图）
+
+1) 运行 `out80m_m1053title300.txt`：
+```
+[MOVIE] P5D_MOVIE_START -> frame=300
+[MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790
+[MOVIE] frame=300/900 -> scratch=99C67790 set_texsrc_addr+set_frame
+[MOVIE] frame=301/900 -> scratch=99C67790 set_texsrc_addr+set_frame
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560
+WINDOW hwnd=17508452 976x583
+CAP mean=82.6 max=255 nonblack=32312/35624 red=6649
+```
+2) **画面内容**（证据截图）：
+   `C:\dev\p5d_build\evidence_p5d_title_real.png`
+   → 深红天空 + 城市建筑剪影（底部）+ 大量彩色三角/星形纸屑（红/青/黄/紫/白）
+   → 与 title 影片第 300 帧（`movie_frame_300.png` / `evidence_p5d_title_frame300_ref.png`）一致
+   → **这是本项目第一次在屏幕上显示原版游戏的真实画面内容**
+3) 窗口捕获方法（唯一可靠）：
+```powershell
+# 枚举 recomp_harness 的窗口
+# → MoveWindow 到干净位置（如 10,10）
+# → BringWindowToTop + SetForegroundWindow（必要时 SetWindowPos HWND_TOPMOST）
+# → CopyFromScreen 抓窗口矩形 → PNG
+# ❌ PrintWindow: Vulkan 窗口恒为白色占位
+# ❌ save_screenshot: 读到交换链纯白
+```
+4) 诚实边界：当前上屏的是**宿主影片层演示通路**：
+```
+预解码 NV12 帧 → BT.601 BGRA → p5d_movie_set_frame → present 时 vkCmdBlitImage 全屏 blit → 交换链 → 窗口 → 屏幕
+```
+证明「真实游戏内容 → 屏幕」全链路可用；但**还不是**"引擎自己画影片 quad"的最终形态（那需要把影片解码/纹理内容接回引擎渲染路径）。
+NEXT：
+```
+① 影片层改按墙钟推进（当前仅 DisplayQueueAddEvent 推进 1 帧 → 画面静止）
+② 影片内容接回引擎自己的影片 quad（P5D_TEXSRC 门控/纹理替换 → 由原版着色器绘制）
+③ 修正 save_screenshot 交换链读取（present 前 capture），无窗口也可取证
+```
+验证：`C:\dev\p5d_build\evidence_p5d_title_real.png`、`evidence_p5d_title_frame300_ref.png`、`out80m_m1053title300.txt`。
+
+ANTI-FORGETTING ENTRY. Keywords: M974 REAL GAME PICTURE - screen capture successfully captured the ORIGINAL P5D TITLE PICTURE (red sky + city skyline silhouettes + colorful triangle/star confetti rain) really displayed in the recomp_harness window (976x583), matching title movie frame 300 decoded directly from the NV12. This is the FIRST time this project displays real original-game picture content on screen. Evidence files C:\dev\p5d_build\evidence_p5d_title_real.png (window capture) and evidence_p5d_title_frame300_ref.png (NV12 reference). Capture method (only reliable one): enumerate the recomp_harness window -> MoveWindow to clean position -> BringWindowToTop/SetForegroundWindow -> CopyFromScreen of the window rect; PrintWindow (GDI white placeholder for Vulkan) and save_screenshot (reads white swapchain image) are unusable. Run out80m_m1053title300.txt: [MOVIE] P5D_MOVIE_START -> frame=300; [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790; [MOVIE] frame=300/900 -> scratch=99C67790 set_texsrc_addr+set_frame; [PRESENT] #1 result=0; [ABIVTX] #1 vc=3 attrs=1; [ABITEX] unit=0 rc=0; WINDOW hwnd=17508452 976x583; CAP mean=82.6 max=255 nonblack=32312/35624 red=6649. Honest boundary: what is on screen is the HOST MOVIE LAYER demonstration path (pre-decoded NV12 -> BGRA -> p5d_movie_set_frame -> present fullscreen blit), proving the real-game-content->screen chain works; NOT yet the final form where the engine itself draws the movie quad. NEXT: (1) advance the movie layer by wall clock (currently 1 frame per DisplayQueueAddEvent -> static) so the title movie animation plays; (2) wire movie content back into the engine's own movie quad (P5D_TEXSRC gating / texture replacement, drawn by the original shaders); (3) fix save_screenshot swapchain reading (capture before present) so evidence works without a window.
+
+LOOKUP: evidence_p5d_title_real.png, evidence_p5d_title_frame300_ref.png, P5D_MOVIE_START=300, movie_frame_300, red=6649, nonblack=32312, [MOVIE] set_texsrc_addr+set_frame, CopyFromScreen, PrintWindow white, out80m_m1053title300.txt -> §18.4518 [relevant: screen capture proof], §18.4516 [relevant: host movie layer]
