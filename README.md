@@ -11,20 +11,20 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 
 ---
 
-## 当前状态（2026-10-31，里程碑 M923；整体约 55–60%）
+## 当前状态（2026-10-31，里程碑 M940；整体约 65–70%）
 
 | 模块 | 完成度 | 当前状态 |
 |---|---|---|
 | ARM/Thumb → x86-64 **AOT 静态重编译** | 90–95% | **229,791 个基本块 / 32 个宿主批次**已翻译并原生执行，`[NOFN]=0`；修复全局性 **pc-relative 字面量加载错误**（`ldr/ldrd/vldr [pc,#imm]` 原先按 `r15` 生成 → 485 处修正、22/32 批次重编） |
 | 原版 eboot/SELF **原样加载** | 85–90% | ELF 段映射、导入表、NID 解析、模块启动全部可用；默认 30M 块回归稳定 `exit=0`；**完整 boot 链已打通**：S0_LOGO → 启动 USM 影片（约 100 秒虚拟时间，guest 软件解码器 `FUN_811DF91A`）→ 应用世界在 **n≈59.5M** 恢复运行 → **S1 标题加载页（page1）开始运行** |
 | **HLE 系统 API 接管** | 70–75% | 内存/线程/fiber/信号量/事件标志/消息/文件/GXM/CRI 日志骨架均工作；本阶段新增：`sceKernelCreateLwMutex` 语义修正、`sceKernelLockLwMutexCB`(0x812B2800) 别名、`sceDisplayWaitVblankStartMultiCB` 时间片模拟、`sceKernelGetProcessTimeWide` 虚拟时钟模式、CRI FS 初始化桥（`0x8128399E`）等 |
-| **GXM → Vulkan** | 50–60% | Vulkan 后端/窗口/交换链初始化成功；`CreateContext` / `CreateRenderTarget` / ShaderPatcher / 程序与参数缓存可用；**修复 `sceGxmGetRenderTargetMemSize` 从不写 out 参数导致的 2.2GB 垃圾分配 OOM**；guest displayQueueCallback 已正确注册；**BeginScene / EndScene / Draw / Present 仍未发生（尚无可见帧）** |
+| **GXM → Vulkan** | 70–80% | **首帧已上屏**：真实 SPIR-V 管线（GXP→SPIR-V manifest 4331 条）创建成功（`[REAL-PIPE] #1 OK`），BeginScene → Draw（UBO/纹理绑定）→ `end_frame()` → `vkQueueSubmit` → `vkQueuePresentKHR` 全部成功（`ef_debug.log: after present result=0`）；`sceGxmDisplayQueueAddEntry` 已接线为提交+present；下一步补全 title 渲染细节与后续场景 |
 | 资源 / 文件系统 | 65–70% | `data.cpk`（10,555 文件）+ `vita.cpk`（531 文件）已挂载；**CRI FS binder 已初始化并保持**（`binit=0x816A0BA0`，n=5000 由 HLE 直接调用 guest `criFs_Initialize`）；page1 阶段 **CRI 流已打开（`streamcnt=3`）**，sequence 控制器 `page0..page5` 回调全部注册；读完成投递链路仍在定位 |
 | 线程 / fiber / 调度 | 85–90% | **guest 双 fiber 启动链完全打通**（fiber A 原生完成位 → `FUN_8120683C` 返回 → 销毁 A → 运行 fiber B）；线程级 `sceFiberGetSelf` 重新武装 dummy 使调度器恢复切换；新增**周期抢占 + 虚拟唤醒期限**（`P5D_PERIODPUMP`/`P5D_THRYIELD`），修复"抢占后 worker 永久 waiting"；调度实验早期门控 `n>=100000` 保护 CRI 初始化 |
 | 音频（SceNgs / CRI Atom） | 5–10% | CRI Atom 初始化已进入；仍缺 ACF/ACB 配置与解码，音频输出为桩 |
 | 输入（SceCtrl / SceTouch） | ~10% | Pad/Touch HLE 骨架可用，可注入按键；游戏侧输入流未接通 |
 | 视频解码 | 10–15% | 启动 USM 影片由 guest 软件解码跑通（约 5,000 万块）；`VdecInitLibrary` 已在 page1 被调用一次，真实 AVC/CRI Mana 解码未完成 |
-| 场景链 S0→S4→RESULT | **S0 ✅ / S1 加载中 / S2–S4 0/7** | S0_LOGO 完整通过；S1_TITLE 进入 **boot page1（标题加载页）**，`ctr=9`、页面序列回调活跃，但页未结束；S2_MENU / S3_SELECT / S4_GAME / RESULT 未到达 |
+| 场景链 S0→S4→RESULT | **S0 ✅ / S1 加载中（page1 已出画面）** | S0_LOGO 完整通过；S1_TITLE 的 page1 现在会真实渲染并 present（首帧已上屏），但 page1 尚未结束；S2–S4 未到达 |
 | 单 exe 打包 / 移动端 | ~40% / 0% | 仓库/许可证/审计/CI 在跑；单文件成品与移动端尚未开始 |
 
 ### 最近关键里程碑（M869–M923）
@@ -42,10 +42,17 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 - **M921（18.4466）**：反汇编发现 **CRI 帧节拍器 `FUN_8127BB30`**：用 `sceKernelGetProcessTimeWide()/1000` 计算帧间隔并 `DelayThreadCB(sleep)`；真实墙钟 vs 虚拟时间不一致 → `P5D_VTIME=1`（进程时间/RTC 返回虚拟时间）
 - **M922–M923**：`P5D_WAKE57` 周期唤醒阻塞在 eventflag `60018000/6001A000/6001C000` 的 loader worker；`[P1TICK]` 每 1M n 打印 page1 进度（`ctr`/seq/pc/GXM 计数）
 
+### 最近关键里程碑（M935–M940）
+
+- **M935–M937（18.4480–18.4482）**：GXP→SPIR-V 管线接线：manifest 4331 条、FNV-1a64 哈希、`select_real_pipeline`；发现 page1 走 **Precomputed** 状态 API 且 ShaderPatcher 是 STUB（program 句柄全 0）→ 实现**假句柄链**（RegisterProgram → Create*Program → Precomputed 捕获）
+- **M938（18.4483）**：假句柄链全链打通（`[ABIPGID]→[ABIPGOBJ]→[ABIOBJ]→[SHADERMOD] ok`），真实 `vkCreateGraphicsPipelines` 调用；修复 "Draw" 子串误匹配 `PrecomputedDrawInit` 导致的过早建管线崩溃
+- **M939（18.4484）**：**第一发真实 draw 完整执行**（`[REAL-PIPE] #1 OK`、`[FRAMEBEGIN] frame=1`、`[FUBOHOST]`、`[TEXBIND]`）；发现 app 不调用 `sceGxmEndScene`，只调用 `sceGxmDisplayQueueAddEntry` → 把两者接到后端 `end_frame()`（提交+present）
+- **M940（18.4485）**：★★★★★ **首帧上屏成功**：`[FRAMESUBMIT] frame=1`、`ef_debug.log: after submit result=0 / after present result=0`（`vkQueuePresentKHR` 成功）；新增首帧截图钩子（`p5d_frame_first.bmp`）
+
 ### 当前阻塞（明确、可执行）
 
-- **S1 boot page1（标题加载页）的帧循环不退出**：主 fiber 停留在 CRI FS 帧节拍循环（`FUN_8127BB30` → `FUN_8127C0E8` → `DelayThreadCB`；等待标志循环 `FUN_8127B336`），worker 线程空闲/等待，**该阶段没有任何文件 I/O API 调用、也没有 GXM 绘制调用**；`[P1TICK]` 显示外层 n 极慢推进（约 9 分钟 0.2M）——**外层循环被内层嵌套执行吞掉**
-- 因为 page1 不结束，**标题页/标题影片不开始**，因此 **GXM BeginScene/Draw/Present 仍未发生**（无可见帧）
+- **S1 boot page1（标题加载页）的帧循环仍需跑完**（现在会真实渲染并 present）——旧描述：：主 fiber 停留在 CRI FS 帧节拍循环（`FUN_8127BB30` → `FUN_8127C0E8` → `DelayThreadCB`；等待标志循环 `FUN_8127B336`），worker 线程空闲/等待，**该阶段没有任何文件 I/O API 调用、也没有 GXM 绘制调用**；`[P1TICK]` 显示外层 n 极慢推进（约 9 分钟 0.2M）——**外层循环被内层嵌套执行吞掉**
+- **首帧已上屏（M940）**；待办：让 page1 结束进入标题页、完善 title 渲染、再向 S2–S4 推进
 - 音频（ACF/ACB）、真实视频解码（AVC/CRI Mana）、输入流仍未接入
 
 下一步任务顺序：

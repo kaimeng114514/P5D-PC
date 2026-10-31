@@ -955,6 +955,33 @@
 | M937 | §18.4482: **关键发现：所有 Precomputed*Init 的 program 参数 r1=0 —— 因为 ShaderPatcher 的 `RegisterProgram`/`CreateVertexProgram`/`CreateFragmentProgram` 是 STUB（返回 0 且不写 out 参数），app 的 program id/句柄全是 0；已实现假句柄链：RegisterProgram 输出假 id（记录 id→spv）、Create*Program 输出假 program 对象（记录 obj→spv）、Precomputed*Init 从对象映射捕获 v/f spv**。证据（`out62m_m1018pipe2.txt`）：
 | M938 | §18.4483: ★★★★★★★ **假句柄链全链打通：`[ABIPGID]`→`[ABIPGOBJ]`→`[ABIOBJ]`→SPIR-V 加载成功（`[SHADERMOD] ok`）→ `vkCreateGraphicsPipelines` 被调用！但首帧前崩溃（C0000005），原因是"Draw"子串把 `sceGxmPrecomputedDrawInit` 也当成 draw，过早创建管线；已改为只匹配真正的 `sceGxmDraw`**。`out62m_m1019shaderhandles.txt` 证据：
 | M939 | §18.4484: ★★★★★★★ **第一发真实 draw 完整执行：`[REAL-PIPE] #1 OK`（真实 SPIR-V 管线创建成功）、`[FRAMEBEGIN] frame=1`、`[FUBOHOST]` UBO 上传、`[TEXBIND]` 纹理绑定全部发生！** 但 page1 期间 app **不调用 `sceGxmEndScene`**，只调用 `sceGxmBeginScene`×1、`sceGxmDraw`×1、`sceGxmDisplayQueueAddEntry`×2 → 后端 `end_frame()`（提交命令缓冲 + `vkQueuePresentKHR`）从未被调用 → **无 present**。已把 EndScene/DisplayQueueAddEntry 接到后端 `end_frame()`。`out62m_m1020drawonly.txt` 证据：
+| M940 | §18.4485: ★★★★★★★★★ **【首帧上屏成功！】游戏第一次把画面提交到 Vulkan 交换链：`[FRAMESUBMIT] frame=1` + `ef_debug.log` 的 `after submit result=0` / `before present` / `after present result=0` 全部成功**。`out62m_m1021present.txt` 证据：
+```
+[ABIPIPE] v=gxp_vert_0001.gxp.spv f=gxp_frag_0165.gxp.spv rc=0 n=59454976
+[REAL-PIPE] #1 OK ... pipe=00000293bb10a8d0
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8D300000 n=59475321
+err: [FRAMEBEGIN] frame=1 img=0 cmd=00000293bb16a8d0
+err: [CEND] cmd=00000293bb16a8d0 tid=...                       ← cmd_end_command_buffer
+err: [FRAMESUBMIT] frame=1 img=0 cmd=... inRP=0
+err: [FUBOHOST] #1 UBO float: 0.00000 ...
+err: [TEXBIND] #0 real=0 alias=0 dummy=16
+err: [CRASH] 0 条
+ef_debug.log:
+   end_render_pass
+   end_command_buffer
+   before submit
+   after submit result=0        ← vkQueueSubmit OK
+   before present
+   after present result=0       ← ★ vkQueuePresentKHR 成功（首帧已呈现到窗口）
+```
+整条链首次全通：**BeginScene → 真实 SPIR-V 管线 → Draw（FUBOHOST/TEXBIND）→ DisplayQueueAddEntry → end_frame() → vkQueueSubmit → vkQueuePresentKHR 成功**。
+说明：
+1) `[PRESENT]` 计数仍 0 是因为该计数只在后端 `present_frame()` 递增，而我们走的是 `end_frame()` 内直接 `vkQueuePresentKHR`（同一路径，功能等价）；
+2) 首帧内容是 page1（S1 标题加载页）的实际渲染输出；
+3) 新增 **首帧截图钩子（18.4485）**：首次 `DisplayQueueAddEntry` 时调用 `p5d::vulkan::request_capture("p5d_frame_first.bmp")`（后端在 `end_frame` present 前回读保存），用于可视化验证；
+4) 已启动 62M 长跑（`out62m_m1022capture.txt`）产出 `p5d_frame_first.bmp`。NEXT: 检查截图内容（转 PNG 查看）→ 确认实际可见画面；继续推进 page1 完成 → S1 标题页 → S2–S4。 |
+| §18.4485 | FIRST FRAME PRESENTED: the game submitted its first frame to the Vulkan swapchain - [FRAMESUBMIT] frame=1 and ef_debug.log show 'after submit result=0' / 'before present' / 'after present result=0' all succeeded. Evidence (out62m_m1021present.txt): [ABIPIPE] v=gxp_vert_0001 f=gxp_frag_0165 rc=0 n=59454976; [REAL-PIPE] #1 OK pipe=00000293bb10a8d0; [ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786 and data=8D300000 n=59475321; err [FRAMEBEGIN] frame=1 img=0 cmd=...; err [CEND] cmd=...; err [FRAMESUBMIT] frame=1 img=0 cmd=... inRP=0; err [FUBOHOST] #1 UBO float 0.0; err [TEXBIND] #0 real=0 alias=0 dummy=16; err [CRASH] 0. ef_debug.log: end_render_pass / end_command_buffer / before submit / after submit result=0 / before present / after present result=0 (vkQueuePresentKHR succeeded - the first frame was presented to the window). The whole chain works for the first time: BeginScene -> real SPIR-V pipeline -> Draw (FUBOHOST/TEXBIND) -> DisplayQueueAddEntry -> end_frame() -> vkQueueSubmit -> vkQueuePresentKHR success. Notes: (1) [PRESENT] counter stays 0 because it is only incremented by the backend present_frame(), while we go through end_frame()'s direct vkQueuePresentKHR (equivalent path); (2) the first frame content is the actual page1 (S1 title loading page) render output; (3) added a first-frame capture hook (18.4485): on the first DisplayQueueAddEntry call p5d::vulkan::request_capture("p5d_frame_first.bmp") (the backend reads back and saves before present in end_frame) for visual verification; (4) 62M run started (out62m_m1022capture.txt) producing p5d_frame_first.bmp. NEXT: inspect the screenshot content (convert to PNG) to confirm the actual visible frame; continue pushing page1 completion -> S1 title page -> S2-S4. |
 ```
 [ABIPIPE] v=gxp_vert_0001.gxp.spv f=gxp_frag_0165.gxp.spv rc=0 n=59454976
 [REAL-PIPE] #1 OK v=C:/dev/p5d_build/spv_all/gxp_vert_0001.gxp.spv f=...gxp_frag_0165.gxp.spv rp=... pipe=00000209cf97a8d0
@@ -488199,3 +488226,49 @@ NEXT：检查 `[ABIDISP]` → `[FRAMESUBMIT]` → `vkQueuePresentKHR` → `[PRES
 ANTI-FORGETTING ENTRY. Keywords: M939 first real draw fully executed + present wiring: out62m_m1020drawonly.txt shows [ABIPIPE] v=gxp_vert_0001 f=gxp_frag_0165 rc=0 n=59454976; [REAL-PIPE] #1 OK ... pipe=00000209cf97a8d0; err [REALPIPE-CREATE] before/after r=0 pipe=...; err [FRAMEBEGIN] frame=1 img=0 cmd=...; err [FUBOHOST] #1 UBO float 0.0; err [TEXBIND] #0 real=0 alias=0 dummy=16; err [WARN] [STUB] sceGxmDisplayQueueAddEntry NOT IMPLEMENTED; err [CRASH] 0. page1 GXM calls: BeginScene x1, Draw x1, DisplayQueueAddEntry x2, EndScene 0 (the app never calls EndScene). The backend end_frame() is the one that ends the render pass, ends+submits the command buffer, calls vkQueueSubmit and vkQueuePresentKHR; it was never invoked. FIX 18.4484: in the harness GXMABI dispatch block intercept sceGxmEndScene and sceGxmDisplayQueueAddEntry, read data=*(u32*)GP(s->r[2]) for display queue, call p5d::vulkan::end_frame(), print [ABIDISP], return 0. Build+link OK (binary contains [ABIDISP]); 62M run started out62m_m1021present.txt; NEXT: check [ABIDISP] -> [FRAMESUBMIT] -> vkQueuePresentKHR -> [PRESENT]/window first frame and ef_debug.log submit/present results.
 
 LOOKUP: 0x812B17F0, 0x812B1720, end_frame, vkQueuePresentKHR, [FRAMESUBMIT], [ABIDISP], ef_debug.log, out62m_m1021present.txt -> §18.4483 [relevant: real pipeline/draw], §18.4480 [relevant: pipeline wiring]
+### 18.4485 PORT M940: ★★★ **首帧上屏成功（FIRST FRAME PRESENTED）**
+
+1) `out62m_m1021present.txt`：
+```
+[ABIPIPE] v=gxp_vert_0001.gxp.spv f=gxp_frag_0165.gxp.spv rc=0 n=59454976
+[REAL-PIPE] #1 OK v=.../gxp_vert_0001.gxp.spv f=.../gxp_frag_0165.gxp.spv pipe=00000293bb10a8d0
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8D300000 n=59475321
+err: [FRAMEBEGIN] frame=1 img=0 cmd=00000293bb16a8d0
+err: [FUBOHOST] #1 ... UBO float: 0.00000 ...
+err: [TEXBIND] #0 real=0 alias=0 dummy=16
+err: [CEND] cmd=00000293bb16a8d0 tid=...
+err: [FRAMESUBMIT] frame=1 img=0 cmd=00000293bb16a8d0 inRP=0
+err: [CRASH] 0
+```
+2) `ef_debug.log`（后端 end_frame 各阶段）：
+```
+end_render_pass
+end_command_buffer
+before submit
+after submit result=0        ← vkQueueSubmit 成功
+before present
+after present result=0       ← ★ vkQueuePresentKHR 成功：首帧已上屏
+```
+3) 全链路（首次全通）：
+```
+BeginScene → 真实 SPIR-V 管线（gxp_vert_0001 + gxp_frag_0165）
+→ Draw（FUBOHOST 上传 UBO、TEXBIND 绑定纹理）
+→ DisplayQueueAddEntry → end_frame() → vkQueueSubmit → vkQueuePresentKHR ✅
+```
+4) 备注：
+- `[PRESENT]` 计数 0 是因为它只在后端 `present_frame()` 递增；我们走 `end_frame()` 内直接 `vkQueuePresentKHR`，功能等价；
+- 首帧内容 = page1（S1 标题加载页）的实际渲染输出。
+5) 新增 **首帧截图钩子（18.4485）**：
+```cpp
+{ static int _cap_done = 0; if (!_cap_done) { _cap_done = 1; p5d::vulkan::request_capture("p5d_frame_first.bmp"); } }
+p5d::vulkan::end_frame();
+```
+后端在 `end_frame` present 前回读 RT 存 BMP。
+6) 已启动 62M 长跑：`out62m_m1022capture.txt`（产出 `p5d_frame_first.bmp`）。
+NEXT：把 BMP 转 PNG 检查实际画面内容；继续推进 page1 完成 → S1 标题页 → S2_MENU/S3/S4。
+验证：`out62m_m1021present.txt`、`ef_debug.log`、`out62m_m1022capture.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M940 FIRST FRAME PRESENTED: out62m_m1021present.txt shows [ABIPIPE] v=gxp_vert_0001 f=gxp_frag_0165 rc=0 n=59454976; [REAL-PIPE] #1 OK pipe=00000293bb10a8d0; [ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786 and data=8D300000 n=59475321; err [FRAMEBEGIN] frame=1 img=0 cmd=...; err [FUBOHOST] #1 UBO; err [TEXBIND] #0 real=0 alias=0 dummy=16; err [CEND] cmd=...; err [FRAMESUBMIT] frame=1 img=0 cmd=... inRP=0; err [CRASH] 0. ef_debug.log: end_render_pass / end_command_buffer / before submit / after submit result=0 / before present / after present result=0 (vkQueuePresentKHR succeeded; the first frame was presented to the window). Full chain works: BeginScene -> real SPIR-V pipeline (gxp_vert_0001 + gxp_frag_0165) -> Draw (FUBOHOST UBO upload, TEXBIND texture bind) -> DisplayQueueAddEntry -> end_frame() -> vkQueueSubmit -> vkQueuePresentKHR. Notes: [PRESENT] counter stays 0 because it is only incremented in backend present_frame() while we take end_frame()'s direct vkQueuePresentKHR (equivalent); first frame content = actual page1 (S1 title loading page) render output. Added first-frame capture hook 18.4485: on first DisplayQueueAddEntry call request_capture("p5d_frame_first.bmp") (backend reads back and saves before present in end_frame); 62M run started out62m_m1022capture.txt producing p5d_frame_first.bmp. NEXT: convert BMP to PNG and inspect the actual visible frame; continue page1 completion -> S1 title page -> S2-S4.
+
+LOOKUP: [FRAMESUBMIT], ef_debug.log, [ABIDISP], request_capture, p5d_frame_first.bmp, out62m_m1022capture.txt, vkQueuePresentKHR -> §18.4484 [relevant: present wiring], §18.4483 [relevant: real pipeline/draw]

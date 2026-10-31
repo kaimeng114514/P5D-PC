@@ -937,6 +937,7 @@ static void pending_req_scan() {
 
 static int g_periodpump_env = -1;
 namespace p5d { namespace vulkan { void end_frame(); void present_frame(uint32_t colorData); } }   // 18.4484 M939
+namespace p5d { namespace vulkan { void request_capture(const char* name); } }   // 18.4485 M940
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 static void job_probes(uint32_t pcv, RecState* s) {
   { static int _ri_env = -1; if (_ri_env < 0) { const char* _e = getenv("P5D_RINIT"); _ri_env = (_e && atoi(_e)) ? 1 : 0; }
@@ -1475,6 +1476,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (strncmp(_ge->name, "sceGxmEndScene", 14) == 0 || strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) {
         uint32_t _data = 0;
         if (strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
+        { static int _cap_done = 0; if (!_cap_done) { _cap_done = 1; p5d::vulkan::request_capture("p5d_frame_first.bmp"); } }   // 18.4485 M940: capture the first presented frame
         p5d::vulkan::end_frame();
         static int _dn = 0; if (_dn++ < 16) { printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n); fflush(stdout); }
         s->r[0] = 0; return s->r[14];
