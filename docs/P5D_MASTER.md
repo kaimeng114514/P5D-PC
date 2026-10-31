@@ -980,6 +980,56 @@
 | M962 | §18.4507: ★★★★★★★ **page1 真实绘制序列完整打通：`sceGxmSetVertexProgram(8540C000)` → `sceGxmSetFragmentProgram(8540C040)` → `sceGxmSetVertexStream(0, 0x8E500000)` → `sceGxmDraw`（索引 3 个顶点）；`[ABIVTX]` 首次成功解包真实顶点数据：`vc=3 attrs=1 rc=0 v0=(-1,-1,1) v1=(3,-1,1)`（**全屏背景三角形**），`[ABIIDX] icount=3 maxvc=3`；但 RT 仍黑——原因定位为：**真实顶点着色器需要真实默认 UBO，而我们 ReserveVertex/FragmentDefaultUniformBuffer 返回的 guest UBO 内容从未上传到 Vulkan（后端 update_uniform_buffer* 系列无人调用）**。已实现默认 UBO 捕获+上传。** 证据（`out62m_m1043realtri.txt`）：
 | M963 | §18.4508: **真实画面决战运行结果：真实顶点数据 + 真实绘制 + 片元默认 UBO 捕获都发生了，但**顶点默认 UBO 未被捕获**（`[ABIUBO]` 只有 frag 一行）→ 真实 VS 仍拿 0 UBO → RT 全黑。** `out62m_m1044real.txt`：
 | M964 | §18.4509: ★★★★★★★★★ **【关键突破】Ghidra 反编译 `FUN_811EF610`/`FUN_811EFD8E`/`FUN_811EFE6A` 揭示：引擎所有 uniform 都是通过 `sceGxmSetUniformDataF`(0x812B13B0, NID 0x65DD0C84) 写入的（`FUN_811EFE6A` 内部直接调用它），而我们的 ABI 表里它是 STUB → 默认 UBO 永远全 0——这就是真实画面最后一块拼图！已实现真实 `sceGxmSetUniformDataF`（把数据写入 guest 默认 UBO，配合 M962 的 draw 时上传）**。反编译证据（`C:\dev\p5d_build\ghidra_out\ubomgr2.txt`，来自完整分析的 Ghidra 工程 `P5D_FULL`）：
+| M965 | §18.4510: **补齐纹理数据通路：根据 Ghidra 反编译 + 旧 host 的 Vita3K 权威位域公式，实现真实 `sceGxmTextureInit*` 控制块编码、`SetFragmentTexture`/`PrecomputedFragmentStateSetTexture` 绑定捕获、draw 时 `upload_gxm_control_resolved` 解析上传**。同时确认 M964 的 uniform 试验结果：page1 该 pass **不调用 `sceGxmSetUniformDataF`**（`[ABIUFD]` 0 行）——因为 page1 是全屏背景 pass，顶点数据本身已是 NDC（v0=(-1,-1,1) v1=(3,-1,1)），VS 直接透传、真正决定画面的是**片元纹理**（此前 `[TEXBIND] dummy=16` → 全黑）。证据：
+1) M964 决战运行 `out62m_m1045uniform.txt`：
+```
+[ABIUBO] frag ubo=85B85100
+[ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000)
+[ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIVP] SetVertexProgram obj=8540C000
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 result=0
+[ABIUFD] 0 条                  ← 该 pass 不走 SetUniformDataF
+RT STATS: mean=0.00 max=0
+```
+2) Ghidra 反编译确认的纹理 API 签名（`gxm_abi.cpp` guest ABI 注释）：
+```c
+int sceGxmTextureInitLinear (SceGxmTexture *texture, const void *data, SceGxmTextureFormat texFormat,
+                             unsigned width, unsigned height, unsigned mipCount);   // 6 参数
+int sceGxmTextureInitTiled  (...);  同形
+int sceGxmSetFragmentTexture(SceGxmContext *context, unsigned textureIndex, const SceGxmTexture *texture);
+int sceGxmPrecomputedFragmentStateSetTexture(SceGxmPrecomputedFragmentState *state, unsigned index, const SceGxmTexture *texture);
+int sceGxmSetVertexTexture / PrecomputedVertexStateSetTexture  (同形)
+```
+3) SceGxmTexture 16 字节控制块编码（Vita3K gxm/types.h 位域，旧 host `tex_init` 已验证公式）：
+```cpp
+unsigned tp = (typeMask >> 29) & 7;
+w0 = (fmt & 0x80000000) | (((mip-1) & 0xF) << 17);
+w1 = (fmt & 0x1F000000) | (typeMask & 0xE0000000);
+if (tp==1 || tp==2) w1 |= (lh & 0xF) | ((lw & 0xF) << 12);          // swizzled: log2(w/h)
+else                w1 |= ((h-1) & 0xFFF) | (((w-1) & 0xFFF) << 12);
+w2 = data & 0xFFFFFFFC;
+w3 = ((fmt >> 12) & 7) << 28;
+// typeMask: linear=0x60000000, tiled=0x80000000, swizzled=0x20000000, strided=0xC0000000, cube=0x40000000
+```
+4) **实现（18.4510，`recomp_harness.cpp`）**：
+```cpp
+// (a) 文件级 abi_tex_encode(host_ptr, typeMask, data, fmt, w, h, mip) 写 4 个 u32
+// (b) 拦截 sceGxmTextureInit*:
+if (strncmp(name,"sceGxmTextureInit",17)==0) {
+    _tex=s->r[0]; _data=s->r[1]; _fmt=s->r[2]; _w=s->r[3]; _h=_stk[0]; _mip=_stk[1];
+    _mask 由名字决定；abi_tex_encode(GP(_tex), _mask,_data,_fmt,_w,_h,_mip);
+    printf("[ABITEXI] ..."); return 0;
+}
+// (c) 拦截 SetFragmentTexture / PrecomputedFragmentStateSetTexture / Vertex 变体:
+_unit=s->r[1]; _ct=s->r[2]; memcpy(_frag_tex[_unit] 或 _vert_tex[_unit], GP(_ct), 16);
+printf("[ABITEXB] frag unit=%u ctrl=%08X w=%08X %08X");
+// (d) draw 时对每个非零 unit:
+upload_gxm_control_resolved(u, _frag_tex[u]);   printf("[ABITEX] unit=%u rc=%d w0=%08X w1=%08X data=%08X");
+```
+5) 编译链接成功（二进制含 `[ABITEXI]/[ABITEXB]/[ABITEX]`）；已启动 62M 决战运行 v2（`out62m_m1046tex.txt`：真实顶点+真实纹理+真实 uniform+真实着色器）。
+NEXT：若 RT 截图出现游戏画面元素（背景图/文字/UI）→ **真实画面成功**；若仍黑 → 检查纹理格式解析（`[ABITEX] rc`）、swizzle/tiled 解码、以及 page1 的 fragment shader 是否另有 uniform 需求。 |
+| §18.4510 | Completed the texture data path: based on Ghidra decompilation + the old host's Vita3K-authoritative bitfield formula, implemented real sceGxmTextureInit* control-block encoding, SetFragmentTexture/PrecomputedFragmentStateSetTexture binding capture, and draw-time upload_gxm_control_resolved resolve+upload. Also confirmed the M964 uniform experiment: page1's pass does NOT call sceGxmSetUniformDataF ([ABIUFD] 0 lines) because page1 is a full-screen background pass whose vertex data is already NDC (v0=(-1,-1,1) v1=(3,-1,1)), so the VS passes it through and the actual picture depends on the FRAGMENT TEXTURE (previously [TEXBIND] dummy=16 -> all black). Evidence: (1) M964 decisive run out62m_m1045uniform.txt: [ABIUBO] frag ubo=85B85100; [ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000); [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIVP] SetVertexProgram obj=8540C000; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; [ABIUFD] 0 lines (this pass does not use SetUniformDataF); RT STATS mean=0.00 max=0. (2) Ghidra-confirmed texture API signatures (gxm_abi.cpp guest ABI comments): sceGxmTextureInitLinear(texture, data, texFormat, width, height, mipCount) 6 args; same for Tiled; sceGxmSetFragmentTexture(context, textureIndex, texture); sceGxmPrecomputedFragmentStateSetTexture(state, index, texture); vertex variants same shape. (3) SceGxmTexture 16-byte control block encoding (Vita3K gxm/types.h bitfields, old host tex_init formula): tp=(typeMask>>29)&7; w0=(fmt&0x80000000)|(((mip-1)&0xF)<<17); w1=(fmt&0x1F000000)|(typeMask&0xE0000000); if (tp==1||tp==2) w1|=(lh&0xF)|((lw&0xF)<<12) else w1|=((h-1)&0xFFF)|(((w-1)&0xFFF)<<12); w2=data&0xFFFFFFFC; w3=((fmt>>12)&7)<<28; typeMask linear=0x60000000, tiled=0x80000000, swizzled=0x20000000, strided=0xC0000000, cube=0x40000000. (4) Implementation 18.4510 in recomp_harness.cpp: file-level abi_tex_encode(host_ptr,typeMask,data,fmt,w,h,mip) writing 4 u32 LE; intercept sceGxmTextureInit* (r0=texture,r1=data,r2=fmt,r3=width,[sp+0]=height,[sp+1]=mipCount, mask by name) -> abi_tex_encode(GP(tex),...) + [ABITEXI]; intercept SetFragmentTexture/PrecomputedFragmentStateSetTexture/vertex variants: _unit=s->r[1], _ct=s->r[2], memcpy 16B into _frag_tex[_unit]/_vert_tex[_unit] + [ABITEXB]; at draw for each non-zero unit upload_gxm_control_resolved(u,_frag_tex[u]) printing [ABITEX] with rc and w0/w1/data. (5) Build+link OK (binary contains [ABITEXI]/[ABITEXB]/[ABITEX]); 62M decisive run v2 started (out62m_m1046tex.txt: real vertices + real textures + real uniforms + real shaders). NEXT: if the RT capture shows game picture elements (background image/text/UI) the REAL PICTURE succeeded; if still black check the texture format resolution ([ABITEX] rc), swizzle/tiled decoding, and whether page1's fragment shader needs uniforms. |
 ```c
 // FUN_811efe6a(param_1, param_2, param_3) - uniform 写入 helper
 iVar1 = *(int *)(param_3 + param_2 * 4);
@@ -489944,3 +489994,74 @@ NEXT：page1 RT 截图/窗口应出现**游戏真实画面**。
 ANTI-FORGETTING ENTRY. Keywords: M964 Ghidra decompilation of FUN_811efe6a shows uniforms go through SceGxm_65DD0C84 = sceGxmSetUniformDataF (NID 0x65DD0C84, VA 0x812B13B0), which was a STUB in our ABI table, so the default UBO stayed all zero -> real VS w=0 -> black. Implemented real sceGxmSetUniformDataF in recomp_harness.cpp: signature int sceGxmSetUniformDataF(void *uniformBuffer, const SceGxmProgramParameter *parameter, unsigned componentOffset, unsigned componentCount, const float *sourceData); code: _ubo=s->r[0], _par=s->r[1], _coff=s->r[2], _ccnt=s->r[3], _src=_stk[0]; _res=*(u32*)(GP(_par)+0xC); _dst=GP(_ubo); _ssrc=GP(_src); _off=_res*16+_coff*4; memcpy(_dst+_off,_ssrc,_ccnt*4) if within 0x1000; print [ABIUFD]; return 0. Also the decompiled FUN_811EF610 (attribute builder) confirms our semantic/format mapping: POSITION semantic 0xb fmt 9(F32) comps 3/4; TEXCOORD0 semantic 0x9 fmt 8(F16) comps 3 offsets 0xc/0x10; TEXCOORD1 semantic 0x3 fmt 8 comps 3 offset +6; COLOR semantic 0x6 fmt 4(U8N) comps 4 offset +4; 0x10000 -> semantic 0xe fmt 8 comps 2; BLENDWEIGHTS semantic 0x5 fmt 4 comps 4; BLENDINDICES semantic 0x4 fmt 0(U8) comps 4; attribute entry layout [i*8+0]=stream, [i*8+2]=offset, [i*8+4]=format, [i*8+5]=componentCount, [i*8+6]=resourceIndex; gxm_abi.cpp NID map: 0x65DD0C84=sceGxmSetUniformDataF, 0x31FF8ABD=sceGxmSetVertexProgram, 0xA949A803=GetProgramFromId, 0x633CAA54=ProgramFindParameterBySemantic, 0x5C79D59A=ProgramParameterGetResourceIndex. Ghidra full analysis project P5D_FULL at C:\dev\ghidra_projects_new (built via analyzeHeadless -import eboot_true.elf) + P5DDecompOne.java gives fast decompiles; output C:\dev\p5d_build\ghidra_out\ubomgr2.txt. rea timeout also solvable via REA_GHIDRA_STARTUP_TIMEOUT_MS. Build+link OK (binary contains [ABIUFD]); 62M decisive run started out62m_m1045uniform.txt (real vertices + real uniforms + real shaders). NEXT: the RT capture/window should show the GAME'S REAL PICTURE.
 
 LOOKUP: FUN_811efe6a, sceGxmSetUniformDataF, 0x65DD0C84, 0x812B13B0, [ABIUFD], FUN_811EF610, semantics POSITION=0xb TEXCOORD0=0x9 TEXCOORD1=0x3 COLOR=0x6 BLENDWEIGHTS=0x5 BLENDINDICES=0x4, P5D_FULL, ubomgr2.txt, out62m_m1045uniform.txt -> §18.4508 [relevant: vertex UBO missing], §18.4507 [relevant: UBO capture]
+### 18.4510 PORT M965: 纹理数据通路（TextureInit 编码 + 绑定捕获 + 上传）——page1 黑屏的最后一环
+
+1) M964 决战运行结果（`out62m_m1045uniform.txt`）：
+```
+[ABIUBO] frag ubo=85B85100
+[ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000)
+[ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIVP] SetVertexProgram obj=8540C000
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIUFD] 0 条        ← **page1 该 pass 不调用 SetUniformDataF**
+RT STATS: mean=0.00 max=0
+```
+**结论**：page1 是全屏背景 pass，顶点数据本身已是 NDC（(-1,-1,1)/(3,-1,1)），VS 直接透传；
+真正决定画面的是**片元纹理**——此前所有纹理单元都是 dummy（`[TEXBIND] real=0 dummy=16`）→ 全黑。
+
+2) 纹理 API 签名（`gxm_abi.cpp` guest ABI）：
+```c
+int sceGxmTextureInitLinear(SceGxmTexture *texture, const void *data, SceGxmTextureFormat texFormat,
+                            unsigned int width, unsigned int height, unsigned int mipCount);  // 6 参数
+int sceGxmTextureInitTiled(...);                  // 同形
+int sceGxmSetFragmentTexture(SceGxmContext *context, unsigned int textureIndex, const SceGxmTexture *texture);
+int sceGxmPrecomputedFragmentStateSetTexture(SceGxmPrecomputedFragmentState *state, unsigned int index, const SceGxmTexture *texture);
+int sceGxmSetVertexTexture / PrecomputedVertexStateSetTexture;   // 同形
+```
+
+3) SceGxmTexture 16B 控制块编码（Vita3K 位域；旧 host `tex_init` 公式）：
+```cpp
+unsigned tp = (typeMask >> 29) & 7;
+w0 = (fmt & 0x80000000u) | (((mip-1u) & 0xFu) << 17);
+w1 = (fmt & 0x1F000000u) | (typeMask & 0xE0000000u);
+if (tp == 1u || tp == 2u) w1 |= (lh & 0xFu) | ((lw & 0xFu) << 12);   // swizzled: log2
+else                      w1 |= ((h-1u) & 0xFFFu) | (((w-1u) & 0xFFFu) << 12);
+w2 = data & 0xFFFFFFFCu;
+w3 = ((fmt >> 12) & 0x7u) << 28;
+// typeMask: linear=0x60000000, tiled=0x80000000, swizzled=0x20000000, strided=0xC0000000, cube=0x40000000
+```
+
+4) 实现（18.4510，`recomp_harness.cpp`）：
+```cpp
+// (a) 文件级编码器
+static void abi_tex_encode(unsigned char* t, unsigned typeMask, unsigned data, unsigned fmt,
+                           unsigned w, unsigned h, unsigned mip);
+// (b) TextureInit*
+if (strncmp(name,"sceGxmTextureInit",17)==0) {
+    _tex=s->r[0]; _data=s->r[1]; _fmt=s->r[2]; _w=s->r[3]; _h=_stk[0]; _mip=_stk[1];
+    uint32_t _mask=...按名字（Tiled/Swizzled/Strided/Cube/Linear）;
+    abi_tex_encode(GP(_tex), _mask,_data,_fmt,_w,_h,_mip);
+    printf("[ABITEXI] tex=%08X data=%08X fmt=%08X %ux%u mip=%u");
+    return 0;
+}
+// (c) 绑定捕获
+if (strstr(name,"SetFragmentTexture")||strstr(name,"PrecomputedFragmentStateSetTexture")||vertex 变体) {
+    _unit=s->r[1]; _ct=s->r[2]; memcpy(_frag_tex[_unit]或_vert_tex[_unit], GP(_ct), 16);
+    printf("[ABITEXB] frag unit=%u ctrl=%08X w=%08X %08X");
+    return 0;
+}
+// (d) draw 时上传
+for (_u=0..15) if (_frag_tex[_u] 非零)
+    upload_gxm_control_resolved(_u, _frag_tex[_u]);   // printf("[ABITEX] unit=%u rc=%d w0/w1/data")
+```
+5) 编译链接成功（含 `[ABITEXI]/[ABITEXB]/[ABITEX]`）；已启动 62M 决战运行 v2：`out62m_m1046tex.txt`
+   （真实顶点 + 真实纹理 + 真实 uniform + 真实着色器）。
+NEXT：
+- RT 截图出现背景图/文字/UI ⇒ **真实画面成功**；
+- 仍黑 ⇒ 查 `[ABITEX] rc`（纹理解析失败？）、swizzle/tiled 解码、fragment shader 的 uniform 需求。
+验证：`out62m_m1045uniform.txt`（uniform 试验）、`out62m_m1046tex.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M965 texture data path - implemented real sceGxmTextureInit* control-block encoding (16 bytes: w0=(fmt&0x80000000)|(((mip-1)&0xF)<<17); w1=(fmt&0x1F000000)|(typeMask&0xE0000000), for swizzled tp==1||2 w1|=(lh&0xF)|((lw&0xF)<<12) else w1|=((h-1)&0xFFF)|(((w-1)&0xFFF)<<12); w2=data&0xFFFFFFFC; w3=((fmt>>12)&7)<<28; typeMask linear=0x60000000 tiled=0x80000000 swizzled=0x20000000 strided=0xC0000000 cube=0x40000000), SetFragmentTexture/PrecomputedFragmentStateSetTexture/vertex-variant binding capture into _frag_tex[16][16]/_vert_tex[16][16], and draw-time upload_gxm_control_resolved(unit,_frag_tex[unit]) printing [ABITEX] with rc/w0/w1/data; [ABITEXI] prints texture init, [ABITEXB] prints bindings. Texture API signatures: sceGxmTextureInitLinear/Tiled(texture,data,texFormat,width,height,mipCount) 6 args; sceGxmSetFragmentTexture(context,textureIndex,texture); sceGxmPrecomputedFragmentStateSetTexture(state,index,texture); vertex variants same shape. Also confirmed M964's uniform run: page1's pass does NOT call sceGxmSetUniformDataF ([ABIUFD] 0 lines) because it is a full-screen background pass with NDC vertex data ((-1,-1,1)/(3,-1,1)), so the picture depends on the FRAGMENT TEXTURE (previously all dummy -> black). Evidence out62m_m1045uniform.txt: [ABIUBO] frag ubo=85B85100; [ABIUBO] upload frag ubo first=(0,0,0,0); [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIVP] SetVertexProgram obj=8540C000; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; [ABIUFD] 0; RT STATS mean=0.00 max=0. Build+link OK (binary contains [ABITEXI]/[ABITEXB]/[ABITEX]); 62M decisive run v2 started out62m_m1046tex.txt (real vertices + real textures + real uniforms + real shaders). NEXT: if the RT capture shows game picture elements the REAL PICTURE succeeded; if still black check the [ABITEX] rc (resolve failure), swizzle/tiled decoding, and whether the fragment shader needs uniforms.
+
+LOOKUP: sceGxmTextureInitLinear, abi_tex_encode, SceGxmTexture control block, typeMask 0x60000000/0x80000000/0x20000000, [ABITEXI], [ABITEXB], [ABITEX], upload_gxm_control_resolved, out62m_m1045uniform.txt, out62m_m1046tex.txt -> §18.4509 [relevant: SetUniformDataF], §18.4507 [relevant: UBO capture]

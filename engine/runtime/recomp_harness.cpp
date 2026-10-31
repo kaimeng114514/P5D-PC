@@ -55,6 +55,23 @@ static void abi_decode_attr(const unsigned char* p, unsigned int fmt, unsigned i
     else { float f=0.f; std::memcpy(&f,p+c*4u,4); out[c]=f; }
   }
 }
+// 18.4510 M965: REAL SceGxmTexture control-block encoder (Vita3K gxm/types.h bitfields;
+// same formula as the old eboot_probe host tex_init). 16 bytes = {w0,w1,w2,w3}.
+static void abi_tex_encode(unsigned char* t, unsigned int typeMask, unsigned int data,
+                           unsigned int fmt, unsigned int w, unsigned int h, unsigned int mip) {
+  if (!t) return;
+  if (!w) w = 1; if (!h) h = 1; if (!mip) mip = 1;
+  unsigned int tp = (typeMask >> 29) & 7u;
+  unsigned int w0 = (fmt & 0x80000000u) | (((mip - 1u) & 0xFu) << 17);
+  unsigned int w1 = (fmt & 0x1F000000u) | (typeMask & 0xE0000000u);
+  if (tp == 1u || tp == 2u) { unsigned lw=0,lh=0,ww=w,hh=h; while(ww>1){ww>>=1;lw++;} while(hh>1){hh>>=1;lh++;}
+    w1 |= (lh & 0xFu) | ((lw & 0xFu) << 12); }
+  else { w1 |= ((h - 1u) & 0xFFFu) | (((w - 1u) & 0xFFFu) << 12); }
+  unsigned int w2 = data & 0xFFFFFFFCu;
+  unsigned int w3 = ((fmt >> 12) & 0x7u) << 28;
+  unsigned int words[4] = { w0, w1, w2, w3 };
+  for (int i = 0; i < 4; ++i) std::memcpy(t + i * 4, &words[i], 4);
+}
 static int g_loadclear_env = 0;
 static int g_hostthreads = 0;
 static volatile int g_shutdown = 0;
@@ -982,6 +999,7 @@ namespace p5d { namespace vulkan { void begin_scene_pass(unsigned int colorData,
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 namespace p5d { namespace vulkan { void update_uniform_buffer(const float* local_to_world, const float* view_proj); } }   // 18.4496 M951
 namespace p5d { namespace vulkan { void update_uniform_buffer_raw(const void* data, unsigned int bytes); void update_fragment_uniform_buffer_raw(const void* data, unsigned int bytes); } }   // 18.4507 M962
+namespace p5d { namespace vulkan { int32_t upload_gxm_control_resolved(unsigned int unit, const void* control16); } }   // 18.4510 M965
 namespace p5d { namespace vulkan { int upload_vertex_stream(const void* data, unsigned int bytes, unsigned int vertex_count); } }   // 18.4498 M953
 static void job_probes(uint32_t pcv, RecState* s) {
   { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
@@ -1501,6 +1519,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       static std::map<uint32_t, uint32_t> _stm2va;
       static uint32_t _cur_vobj = 0;
       static uint32_t _cur_v_ubo = 0, _cur_f_ubo = 0, _pend_vout = 0, _pend_fout = 0;   // 18.4507 M962
+      static unsigned char _frag_tex[16][16]; static int _frag_tex_n = 0;   // 18.4510 M965: bound fragment textures
+      static unsigned char _vert_tex[16][16]; static int _vert_tex_n = 0;
       if (_abi_man_st < 0) { _abi_man_st = 0;
         const char* _d = getenv("P5D_SPV_DIR"); _abi_spvdir = _d ? _d : "C:/dev/p5d_build/spv_all";
         std::string _mp = _abi_spvdir + "/gxp_manifest.txt";
@@ -1772,6 +1792,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
             }
             if (!_ok) break;
           }
+          // 18.4510 M965: resolve+upload all bound fragment textures (engine ctrl blocks -> backend VkImages)
+          for (int _u = 0; _u < 16; ++_u) {
+            bool _nz = false; for (int _k = 0; _k < 16; ++_k) if (_frag_tex[_u][_k]) { _nz = true; break; }
+            if (!_nz) continue;
+            int _trc = p5d::vulkan::upload_gxm_control_resolved((unsigned)_u, _frag_tex[_u]);
+            static int _tn=0; if (_tn++<12) { printf("[ABITEX] unit=%u rc=%d w0=%08X w1=%08X data=%08X n=%u\n", (unsigned)_u, _trc,
+              ((uint32_t*)_frag_tex[_u])[0], ((uint32_t*)_frag_tex[_u])[1], ((uint32_t*)_frag_tex[_u])[2], g_main_n); fflush(stdout); } }
           // 18.4507 M962: upload the engine-written default uniform buffers (real VS was receiving zeros)
           if (_cur_v_ubo) { uint8_t* _src = GP(_cur_v_ubo); if (_src) { p5d::vulkan::update_uniform_buffer_raw(_src, 0x1000u);
             static int _un=0; if (_un++<8) { printf("[ABIUBO] upload vert ubo=%08X first=(%.3f,%.3f,%.3f,%.3f) n=%u\n", _cur_v_ubo,
@@ -1785,6 +1812,35 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
               _vc, (unsigned)_av.size(), _rr, g_main_n, _vtx[0],_vtx[1],_vtx[2],_vtx[3], _vtx[32],_vtx[33],_vtx[34],_vtx[35]); fflush(stdout); }
           } else { static int _fn=0; if (_fn++<6) { printf("[ABIVTX] FAIL vc=%u attrs=%u cur_obj=%08X streams=%zu n=%u\n", _vc,(unsigned)_av.size(),_cur_vobj,_stm2va.size(),g_main_n); fflush(stdout); } }
         }
+      }
+      // 18.4510 M965: REAL sceGxmTextureInit* - encode the SceGxmTexture control block (16B)
+      if (strncmp(_ge->name, "sceGxmTextureInit", 17) == 0) {
+        uint32_t _tex = s->r[0], _data = s->r[1], _fmt = s->r[2], _w = s->r[3];
+        uint32_t _hh = _stk[0], _mip = _stk[1];
+        uint32_t _mask = 0x60000000u;   // linear
+        if (strstr(_ge->name, "Tiled")) _mask = 0x80000000u;
+        else if (strstr(_ge->name, "Swizzled")) _mask = 0x20000000u;
+        else if (strstr(_ge->name, "Strided")) _mask = 0xC0000000u;
+        else if (strstr(_ge->name, "Cube")) _mask = 0x40000000u;
+        uint8_t* _q = GP(_tex);
+        if (_q) { abi_tex_encode(_q, _mask, _data, _fmt, _w, _hh, _mip);
+          static int _n=0; if (_n++<12) { printf("[ABITEXI] tex=%08X data=%08X fmt=%08X %ux%u mip=%u mask=%08X n=%u\n",
+            _tex, _data, _fmt, _w, _hh, _mip, _mask, g_main_n); fflush(stdout); } }
+        s->r[0] = 0; return s->r[14];
+      }
+      // 18.4510 M965: capture bound texture control blocks (SetFragmentTexture / PrecomputedFragmentStateSetTexture
+      // and the vertex variants all use (obj, textureIndex, const SceGxmTexture*))
+      if (strstr(_ge->name, "SetFragmentTexture") || strstr(_ge->name, "PrecomputedFragmentStateSetTexture") ||
+          strstr(_ge->name, "SetVertexTexture") || strstr(_ge->name, "PrecomputedVertexStateSetTexture")) {
+        const bool _tfrag = strstr(_ge->name, "FragmentTexture") != nullptr || strstr(_ge->name, "FragmentStateSetTexture") != nullptr;
+        uint32_t _unit = s->r[1], _ct = s->r[2];
+        uint8_t* _q = GP(_ct);
+        if (_q && _unit < 16u) {
+          std::memcpy(_tfrag ? _frag_tex[_unit] : _vert_tex[_unit], _q, 16);
+          if (_tfrag) _frag_tex_n++;
+          static int _n=0; if (_n++<12) { printf("[ABITEXB] %s unit=%u ctrl=%08X w=%08X %08X n=%u\n", _tfrag?"frag":"vert",
+            _unit, _ct, ((uint32_t*)_q)[0], ((uint32_t*)_q)[1], g_main_n); fflush(stdout); } }
+        s->r[0] = 0; return s->r[14];
       }
       // 18.4509 M964: REAL sceGxmSetUniformDataF - the engine writes ALL uniforms through this call
       // (FUN_811EFE6A -> sceGxmSetUniformDataF). Our ABI table body was a STUB, so the reserved UBO stayed zero.
