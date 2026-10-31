@@ -971,6 +971,30 @@
 | M953 | §18.4498: ★★★★★★ **找到"内置 VS + 红 FS 仍黑"的原因：真实管线的顶点输入布局与测试三角形不匹配——`get_or_create_real_pipeline` 的 `vi` 是「单 binding stride=128（8×vec4），location 0..7 全部 R32G32B32A32」，而 `create_vertex_buffer` 里的 `test_triangle` 只有 28 字节步长 → 按 stride 128 读到的 vertex 1/2 全是垃圾 → 三角形退化/出屏**。证据（`out62m_m1035redz.txt`）：
 | M954 | §18.4499: ★★★★★★★★★★ **【GPU 渲染链路彻底打通——第一帧真实渲染画面（红色三角形）】`upload_vertex_stream`（128B 步长测试三角形）+ passthrough VS + 红 FS → RT 截图从全黑变为"黑底红色三角形"（nonblack=65,280 px，bbox=(240,136)-(719,406)，颜色 red (224..255,0,0)）；全链路 = 顶点上传 → 真实 Vulkan 管线（stride 128/loc0..7）→ 顶点着色器 → 光栅化 → 片元着色器 → RT(8D300000) → RT→swapchain 拷贝 → `vkQueuePresentKHR result=0` 全部工作！** 证据（`out62m_m1036tri.txt`）：
 | M955 | §18.4500: **实现真实 GXM 顶点流通路（第一版）：捕获 `SceGxmVertexAttribute[]/SceGxmVertexStream[]` 与 `SetVertexStream` 的 guest VA，在 draw 时按 128 字节步长布局解包并 `upload_vertex_stream`**。依据（Vita SDK 签名，来自 `gxm_abi.cpp` 的 guest ABI 注释）：
+| M956 | §18.4501: **真实顶点流诊断结果：page1 的绘制序列 = `sceGxmSetVertexStream(ctx, 0, 0x8E500000)` → 索引绘制 `sceGxmDraw(ctx, prim=0, indexType=0, indexData=0x8E600000, indexCount=?)`；但 `CreateVertexProgram` 解析出 `attrN=0`（属性表为空）导致解包未触发（`[ABIVTX]` 0 条）**。`out62m_m1037vtx.txt` 证据：
+```
+[ABIVFMT] obj=8540C000 attrN=0 streamN=1 n=1717   ← 每个顶点程序都解析出 0 属性
+[ABIVFMT]  strm0 stride=12 idx=0
+[ABIVFMT]  strm0 stride=18 idx=0
+[ABIVFMT]  strm0 stride=26 idx=0
+[ABIVFMT]  strm0 stride=20 idx=0
+[ABIVFMT]  strm0 stride=28 idx=0                 ← 流 stride 合理（12/18/26/28），streamN=1 正确
+[ABIVS] sceGxmPrecomputedDrawSetVertexStream idx=0 va=90039980 n=6893703
+[ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59454976     ← page1 真实顶点流
+[GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r1=00000000 r2=00000000 r3=8E600000
+[ABIVTX] 0 条（未解包）
+```
+分析：
+1) `_stk[0]`（streams）解析出的 stride 12/18/26/28 与 `_stk[1]`（streamCount=1）均**正确** → 7 参数栈映射无误；
+2) `attributes`（r2）/`attributeCount`（r3）解析为 0 → 需打印**原始参数**确认（r2/r3 是否真是 attributes/count，或实际顺序不同/指针不可翻译）；
+3) page1 用 **非 Precomputed 的 `sceGxmSetVertexStream`**（context,0,0x8E500000）+ **索引绘制**（indexData=0x8E600000）；
+4) GXMABI 日志上限（前 4000 行）导致 page1 的 SetVertexProgram/SetUniformF/Texture 等调用不可见 → 无法确认当前 program/属性来源。
+**诊断增强（18.4501）**：
+- `[ABIVARG]`：CreateVertexProgram 的 `r0..r3 / stk0..stk2` 原始值 + `GP(r2)`/`GP(stk0)` 可翻译性 + 前 8 个字（验证 attributes/count 到底在哪）；
+- `[GXMABI]` 的 always 打印扩展到 `SetVertexProgram/SetFragmentProgram/SetUniform/SetVertexStream/SetTexture/PrecomputedDrawSetParams/SetDefaultUniformBuffer/TextureInit`（上限 1200 行）→ 拿到 page1 完整状态序列。
+编译链接成功（含 `[ABIVARG]`）；已启动 62M 诊断运行（`out62m_m1038vtxdiag.txt`）。
+NEXT：按 `[ABIVARG]` 修正 attributes 解析；若该引擎确实用 attrCount=0，则改从 **GXP program 内的属性参数表**获取格式/分量数（offset/stride 仍用 SceGxmVertexStream），并在 `sceGxmSetVertexProgram`/`SetVertexStream` 时记录当前 program；draw 时按索引缓冲（0x8E600000）取真实顶点数解包。 |
+| §18.4501 | Real vertex stream diagnostic: page1's draw sequence = sceGxmSetVertexStream(ctx, 0, 0x8E500000) then an indexed draw sceGxmDraw(ctx, prim=0, indexType=0, indexData=0x8E600000, indexCount=?); but CreateVertexProgram parsing gives attrN=0 (empty attribute array) so unpacking never fires ([ABIVTX] 0 lines). Evidence (out62m_m1037vtx.txt): [ABIVFMT] obj=8540C000 attrN=0 streamN=1 n=1717 (every vertex program parses to 0 attributes); [ABIVFMT] strm0 stride=12/18/26/20/28 idx=0 (stream strides 12/18/26/28 are plausible, streamN=1 correct); [ABIVS] sceGxmPrecomputedDrawSetVertexStream idx=0 va=90039980 n=6893703; [ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59454976 (page1 real vertex stream); [GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r1=0 r2=0 r3=8E600000; [ABIVTX] 0 lines (no unpacking). Analysis: (1) _stk[0] (streams) parses strides 12/18/26/28 and _stk[1] (streamCount=1) correctly, so the 7-arg stack mapping is right; (2) attributes (r2)/attributeCount (r3) parse to 0 -> need to print the raw arguments to confirm whether r2/r3 really are attributes/count or the order differs/the pointer is untranslatable; (3) page1 uses the non-Precomputed sceGxmSetVertexStream(context,0,0x8E500000) + an indexed draw (indexData=0x8E600000); (4) the GXMABI log cap (first 4000 lines) hides page1's SetVertexProgram/SetUniformF/Texture calls, so we cannot confirm where the current program/attributes come from. DIAGNOSTIC ENHANCEMENTS 18.4501: [ABIVARG] prints CreateVertexProgram raw r0..r3/stk0..stk2 + GP(r2)/GP(stk0) translatability + first 8 words (to verify where attributes/count really are); the [GXMABI] always-logging is extended to SetVertexProgram/SetFragmentProgram/SetUniform/SetVertexStream/SetTexture/PrecomputedDrawSetParams/SetDefaultUniformBuffer/TextureInit (cap 1200 lines) to capture page1's full state sequence. Build+link OK (binary contains [ABIVARG]); 62M diagnostic run started (out62m_m1038vtxdiag.txt). NEXT: fix the attributes parsing per [ABIVARG]; if this engine really passes attrCount=0 then take the formats/component counts from the GXP program's attribute parameter table (offsets/strides still from SceGxmVertexStream) and record the current program at sceGxmSetVertexProgram/SetVertexStream; at draw time use the index buffer (0x8E600000) to get the real vertex count for unpacking. |
 ```
 int sceGxmShaderPatcherCreateVertexProgram(SceGxmShaderPatcher *shaderPatcher, SceGxmShaderPatcherId programId,
     const SceGxmVertexAttribute *attributes, unsigned int attributeCount,
@@ -489274,3 +489298,43 @@ NEXT：读 `[ABIVFMT]`（真实属性格式/流 stride）与 `[ABIVTX]`（解包
 ANTI-FORGETTING ENTRY. Keywords: M955 implemented the first version of the real GXM vertex stream path: capture SceGxmVertexAttribute[]/SceGxmVertexStream[] (CreateVertexProgram r2/r3 + _stk[0]/_stk[1]) and SetVertexStream guest VAs, unpack at draw time into the 128-byte-stride layout and upload_vertex_stream. Vita SDK signatures from gxm_abi.cpp guest ABI comments: sceGxmShaderPatcherCreateVertexProgram(shaderPatcher, programId, attributes, attributeCount, streams, streamCount, vertexProgram); sceGxmSetVertexStream(context, streamIndex, streamData); sceGxmPrecomputedDrawSetVertexStream(precomputedDraw, streamIndex, streamData). Struct layouts: SceGxmVertexAttribute (8B) +0 u16 streamIndex, +2 u16 offset, +4 u8 format, +5 u8 componentCount, +6 u8 regSet; SceGxmVertexStream (4B) +0 u16 stride, +2 u16 streamIndex. Implementation 18.4500 in recomp_harness.cpp: abi_decode_attr(src,fmt,comps,out) with 0=UBYTE/255, 1=BYTE/127, 2=USHORT/65535, 3=SHORT/32767, 4=FLOAT, 5=HALF, 6=FIXED/65536; CreateVertexProgram branch stores _vobj2attrs[_nextobj]/_vobj2strms[_nextobj] and prints [ABIVFMT] (object, attrN/streamN, each attr stream/off/fmt/comps, each strm stride/idx); PrecomputedVertexStateInit/PrecomputedDrawInit set _cur_vobj=obj; *SetVertexStream capture _stm2va[s->r[1]]=s->r[2] printing [ABIVS]; at sceGxmDraw: _vc=_stk[0] (indexCount), look up _vobj2attrs[_cur_vobj], for each attr find stride via _vobj2strms and guest VA via _stm2va, for each vertex read GP(streamVA + v*stride + attr.offset), decode, write to _vtx[v*32 + i*4] (loc i -> offset i*16), upload_vertex_stream(_vtx.data(), _vc*128u, _vc), print [ABIVTX] with vc/attrs/rc/first two vertices. Build+link OK (binary contains [ABIVFMT]/[ABIVS]/[ABIVTX]); 62M diagnostic run started out62m_m1037vtx.txt (real shaders + red FS). NEXT: read [ABIVFMT] (real attribute formats/stream strides) and [ABIVTX] (unpacked result/first two vertices); if unpacking is correct add real uniforms (USSE mapped region/default UBO; M952 z>w lesson: real MVP matrices must be uploaded) then textures; otherwise fix layout/format mapping from the logs.
 
 LOOKUP: sceGxmShaderPatcherCreateVertexProgram, SceGxmVertexAttribute, SceGxmVertexStream, sceGxmSetVertexStream, sceGxmPrecomputedDrawSetVertexStream, abi_decode_attr, [ABIVFMT], [ABIVS], [ABIVTX], out62m_m1037vtx.txt -> §18.4499 [relevant: first rendered frame], §18.4498 [relevant: vertex layout stride 128]
+### 18.4501 PORT M956: 真实顶点流诊断（attrN=0 问题）+ page1 绘制序列确认
+
+1) `out62m_m1037vtx.txt` 关键日志：
+```
+[ABIVFMT] obj=8540C000 attrN=0 streamN=1 n=1717
+[ABIVFMT]  strm0 stride=12 idx=0
+[ABIVFMT]  strm0 stride=18 idx=0
+[ABIVFMT]  strm0 stride=26 idx=0
+[ABIVFMT]  strm0 stride=20 idx=0
+[ABIVFMT]  strm0 stride=28 idx=0
+[ABIVS] sceGxmPrecomputedDrawSetVertexStream idx=0 va=90039980 n=6893703
+[ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59454976
+[GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r1=00000000 r2=00000000 r3=8E600000
+[ABIVTX] 0
+```
+2) 结论：
+- 流表解析**正确**（stride 12/18/26/28、streamCount=1）；
+- 属性表解析为 0 个 → 需原始参数确认；
+- page1 用 **非 Precomputed 的 `sceGxmSetVertexStream`** + **索引绘制**（indexData=0x8E600000, prim=0=TRIANGLES, indexType=0=UINT16）；
+- GXMABI 日志上限隐藏 page1 的 program/uniform/texture 设置调用。
+3) 诊断增强（18.4501）：
+```cpp
+// (a) CreateVertexProgram 原始参数
+printf("[ABIVARG] obj=%08X r0=%08X r1=%08X r2=%08X r3=%08X stk0=%08X stk1=%08X stk2=%08X gpr2=%d\n", ...);
+printf("[ABIVARG]  r2words: %08X ...");
+printf("[ABIVARG]  stk0words: %08X ...");
+// (b) GXMABI always 打印扩展到 SetVertexProgram/SetFragmentProgram/SetUniform/
+//     SetVertexStream/SetTexture/PrecomputedDrawSetParams/SetDefaultUniformBuffer/TextureInit（上限 1200 行）
+```
+4) 编译链接成功（含 `[ABIVARG]`）；已启动 62M 诊断运行：`out62m_m1038vtxdiag.txt`。
+NEXT：
+- 按 `[ABIVARG]` 修正 attributes 解析；
+- 若 attrCount 确实=0 → 从 **GXP program 内部属性参数表**取 format/componentCount（offset/stride 用 SceGxmVertexStream）；
+- `sceGxmSetVertexProgram`/`SetVertexStream` 记录当前 program；
+- draw 时按 index buffer（0x8E600000）取真实顶点数解包。
+验证：`out62m_m1037vtx.txt`、`out62m_m1038vtxdiag.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M956 real vertex stream diagnostic - page1's draw sequence is sceGxmSetVertexStream(ctx,0,0x8E500000) then an indexed draw sceGxmDraw(ctx,prim=0,indexType=0,indexData=0x8E600000,indexCount=?) but CreateVertexProgram parses attrN=0 (empty attribute array) so unpacking never fires ([ABIVTX] 0). Evidence out62m_m1037vtx.txt: [ABIVFMT] obj=8540C000 attrN=0 streamN=1 n=1717; [ABIVFMT] strm0 stride=12/18/26/20/28 idx=0; [ABIVS] sceGxmPrecomputedDrawSetVertexStream idx=0 va=90039980 n=6893703; [ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59454976; [GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r1=0 r2=0 r3=8E600000; [ABIVTX] 0. Analysis: _stk[0] (streams) parses strides 12/18/26/28 and _stk[1] (streamCount=1) correctly so the 7-arg stack mapping is right; attributes (r2)/attributeCount (r3) parse to 0 so raw args must be printed; page1 uses the non-Precomputed sceGxmSetVertexStream(context,0,0x8E500000) plus an indexed draw (indexData=0x8E600000); the GXMABI log cap (first 4000 lines) hides page1's SetVertexProgram/SetUniformF/Texture calls. DIAGNOSTIC ENHANCEMENTS 18.4501: [ABIVARG] prints CreateVertexProgram raw r0..r3/stk0..stk2 + GP(r2)/GP(stk0) translatability + first 8 words; [GXMABI] always-logging extended to SetVertexProgram/SetFragmentProgram/SetUniform/SetVertexStream/SetTexture/PrecomputedDrawSetParams/SetDefaultUniformBuffer/TextureInit (cap 1200). Build+link OK (binary contains [ABIVARG]); 62M diagnostic run started out62m_m1038vtxdiag.txt. NEXT: fix attributes parsing per [ABIVARG]; if the engine really passes attrCount=0 take formats/component counts from the GXP program attribute parameter table (offsets/strides still from SceGxmVertexStream), record the current program at sceGxmSetVertexProgram/SetVertexStream, and at draw time use the index buffer (0x8E600000) to get the real vertex count for unpacking.
+
+LOOKUP: [ABIVFMT], [ABIVS], [ABIVARG], sceGxmSetVertexStream, indexData 0x8E600000, 0x8E500000, out62m_m1038vtxdiag.txt -> §18.4500 [relevant: vertex capture implementation], §18.4499 [relevant: first rendered frame]

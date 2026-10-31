@@ -1618,6 +1618,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
               static int _n2=0; if (_n2++<12) printf("[ABIPGOBJ] %s obj=%08X spv=%s n=%u\n", _frag?"frag":"vert", _nextobj, _it->second.c_str(), g_main_n);
               if (!_frag) {   // 18.4500 M955: parse SceGxmVertexAttribute[] / SceGxmVertexStream[]
                 uint32_t _ap = s->r[2], _ac = s->r[3], _sp2 = _stk[0], _sc = _stk[1];
+                { static int _an=0; if (_an++<24) { printf("[ABIVARG] obj=%08X r0=%08X r1=%08X r2=%08X r3=%08X stk0=%08X stk1=%08X stk2=%08X gpr2=%d n=%u\n",
+                    _nextobj, s->r[0], s->r[1], s->r[2], s->r[3], _stk[0], _stk[1], _stk[2], (int)(GP(_ap)!=nullptr), g_main_n);
+                  uint8_t* _zq = GP(_ap); if (_zq) { printf("[ABIVARG]  r2words:"); for (int _z=0;_z<8;++_z) { uint32_t _ww=0; std::memcpy(&_ww,_zq+_z*4u,4); printf(" %08X",_ww); } printf("\n"); }
+                  _zq = GP(_sp2); if (_zq) { printf("[ABIVARG]  stk0words:"); for (int _z=0;_z<8;++_z) { uint32_t _ww=0; std::memcpy(&_ww,_zq+_z*4u,4); printf(" %08X",_ww); } printf("\n"); }
+                  fflush(stdout); } }
                 std::vector<AbiVAttr> _av; std::vector<AbiVStream> _sv;
                 for (uint32_t _i = 0; _i < _ac && _i < 16u; ++_i) { uint8_t* _q2 = GP(_ap + _i*8u); if (!_q2) break;
                   uint16_t _st=0,_of=0; std::memcpy(&_st,_q2,2); std::memcpy(&_of,_q2+2,2);
@@ -1681,7 +1686,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       { static int _gxrv=0; if (_rv != 0u && _gxrv++ < 80) { printf("[GXMRV] blk=%08X va=%08X nid=%08X name=%s rv=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X\n", g_cur_block, stub_va, _ge->nid, _ge->name, _rv, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14]); fflush(stdout); } }
       { int _always = 0;
         if (strstr(_ge->name, "BeginScene") || strstr(_ge->name, "EndScene") || strstr(_ge->name, "DisplayQueueAddEntry") || strstr(_ge->name, "Present")) { if (g_gxmabi_scene_n++ < 800) _always = 1; }
-        else if (strstr(_ge->name, "Draw")) { if (g_gxmabi_draw_n++ < 40) _always = 1; }
+        else if (strstr(_ge->name, "Draw")) { if (g_gxmabi_draw_n++ < 400) _always = 1; }
+        else if (strstr(_ge->name, "SetVertexProgram") || strstr(_ge->name, "SetFragmentProgram") || strstr(_ge->name, "SetUniform") || strstr(_ge->name, "SetVertexStream") || strstr(_ge->name, "SetTexture") || strstr(_ge->name, "PrecomputedDrawSetParams") || strstr(_ge->name, "SetDefaultUniformBuffer") || strstr(_ge->name, "TextureInit")) { if (g_gxmabi_draw_n++ < 1200) _always = 1; }
         if (_always || g_gxmabi_n++ < 4000) { printf("[GXMABI] %s va=%08X r0=%08X r1=%08X r2=%08X r3=%08X ret=%08X lr=%08X blk=%08X sp=%08X\n", _ge->name, stub_va, s->r[0], s->r[1], s->r[2], s->r[3], _rv, s->r[14], g_cur_block, s->r[13]); fflush(stdout); } }
       s->r[0] = _rv; return s->r[14];
     }
