@@ -687,6 +687,7 @@ static uint32_t hle_malloc_ret(uint32_t p) {
     for (int _k=0;_k<16;++_k) printf(" %08X", g_pc_ring[(g_pc_ring_n - 16u + (uint32_t)_k) & 63u]); printf("\n"); fflush(stdout); }
   return p;
 }
+namespace p5d { namespace vulkan { void set_texsrc_addr(unsigned int addr); } }   // 18.4514 M969
 static uint32_t hle_malloc(uint32_t n) {
   std::lock_guard<std::mutex> _hlk(g_hle_mtx);
   tl_last_malloc_n = n;   // 18.4241: host-thread model - allocator must be thread-safe
@@ -727,6 +728,63 @@ static uint32_t hle_malloc(uint32_t n) {
 }
 extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); }   // 18.4474 M929: guest allocator for GXM ABI out-params (UBO)
 
+// 18.4514 M969: offline-decoded CRI movie frames -> guest texture source (old host P5D_TEXSRC=AUTO path).
+// The engine's own CRI decode is not emulated; we feed pre-decoded NV12 sequences into a guest BGRA scratch
+// buffer and set_texsrc_addr it, so the backend uploads the real movie frame as the sampled texture.
+static uint32_t g_movie_va = 0;
+static FILE* g_movie_fp = nullptr;
+static long g_movie_frame = 0, g_movie_frames = 0;
+static unsigned g_movie_w = 960, g_movie_h = 544;
+static std::vector<uint8_t> g_movie_nv12;
+static void movie_maybe_init(void) {
+  if (g_movie_fp) return;
+  const char* _ev = getenv("P5D_MOVIE_FILE");
+  const char* _path = (_ev && *_ev) ? _ev : "C:/dev/p5d_movies/title_c_p5d001_nv12.raw";
+  const char* _wh = getenv("P5D_MOVIE_WH");
+  if (_wh && *_wh) { unsigned a=0,b=0; if (std::sscanf(_wh,"%ux%u",&a,&b)==2 && a && b) { g_movie_w=a; g_movie_h=b; } }
+  g_movie_fp = fopen(_path, "rb");
+  if (!g_movie_fp) { printf("[MOVIE] open FAIL %s\n", _path); fflush(stdout); return; }
+  fseek(g_movie_fp, 0, SEEK_END); long _sz = ftell(g_movie_fp); fseek(g_movie_fp, 0, SEEK_SET);
+  size_t _fsz = (size_t)g_movie_w * g_movie_h * 3u / 2u;
+  g_movie_frames = _fsz ? (long)(_sz / (long)_fsz) : 0;
+  g_movie_va = hle_malloc((uint32_t)(g_movie_w * g_movie_h * 4u));
+  g_movie_nv12.resize(_fsz);
+  printf("[MOVIE] file=%s %ux%u frames=%ld scratch=%08X\n", _path, g_movie_w, g_movie_h, g_movie_frames, g_movie_va);
+  fflush(stdout);
+}
+// BT.601 limited-range NV12 -> BGRA into the guest scratch buffer, then set it as the texture source.
+static void movie_advance_frame(void) {
+  movie_maybe_init();
+  if (!g_movie_fp || !g_movie_va || g_movie_frames <= 0) return;
+  size_t _fsz = (size_t)g_movie_w * g_movie_h * 3u / 2u;
+  if (g_movie_frame >= g_movie_frames) g_movie_frame = 0;
+  if (fseek(g_movie_fp, (long)(g_movie_frame * (long)_fsz), SEEK_SET) != 0) return;
+  if (fread(g_movie_nv12.data(), 1, _fsz, g_movie_fp) != _fsz) return;
+  uint8_t* _dst = GP(g_movie_va);
+  const uint8_t* _y = g_movie_nv12.data();
+  const uint8_t* _uv = _y + (size_t)g_movie_w * g_movie_h;
+  if (_dst) {
+    for (unsigned _yy = 0; _yy < g_movie_h; ++_yy) {
+      for (unsigned _xx = 0; _xx < g_movie_w; ++_xx) {
+        int Y = (int)_y[(size_t)_yy * g_movie_w + _xx] - 16;
+        int _ci = (int)((_yy >> 1) * g_movie_w) + (int)((_xx >> 1) * 2);
+        int U = (int)_uv[_ci] - 128, V = (int)_uv[_ci + 1] - 128;
+        if (Y < 0) Y = 0;
+        int r = (298 * Y + 409 * V + 128) >> 8;
+        int g = (298 * Y - 100 * U - 208 * V + 128) >> 8;
+        int b = (298 * Y + 516 * U + 128) >> 8;
+        uint8_t* _p = _dst + ((size_t)_yy * g_movie_w + _xx) * 4u;
+        _p[0] = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
+        _p[1] = (uint8_t)(g < 0 ? 0 : (g > 255 ? 255 : g));
+        _p[2] = (uint8_t)(r < 0 ? 0 : (r > 255 ? 255 : r));
+        _p[3] = 255;
+      }
+    }
+    p5d::vulkan::set_texsrc_addr(g_movie_va);
+    static int _mn = 0; if (_mn++ < 12) { printf("[MOVIE] frame=%ld/%ld -> scratch=%08X set_texsrc_addr\n", g_movie_frame, g_movie_frames, g_movie_va); fflush(stdout); }
+  }
+  ++g_movie_frame;
+}
 static std::map<uint32_t,uint32_t> g_prog_header_by_id;   // 18.4259: SceGxmShaderPatcher register map (id -> GXP program header VA)
 static uint32_t g_prog_id_ctr = 0;
 static uint32_t g_fprog_last = 0, g_vprog_last = 0, g_last_rt = 0;
@@ -1624,6 +1682,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         uint32_t _data = 0; { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
         p5d::vulkan::end_scene_pass();
         if (_dq && _data) {
+          movie_advance_frame();   // 18.4514 M969: feed the offline-decoded movie frame as the texture source
           p5d::vulkan::present_frame(_data);
           static int _rtcap_done = 0;
           static int _disp_n = 0;

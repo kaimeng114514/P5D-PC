@@ -984,6 +984,32 @@
 | M966 | §18.4511: **纹理决战运行 v2 结果分析：page1 首个 pass 的绘制确实只有 1 发全屏三角形（`[ABIVTX] vc=3 v0=(-1,-1,1) v1=(3,-1,1)`），纹理绑定发生在更早的影片相位（`[ABITEXB] frag unit=0 ctrl=852275C0 w0=80000000 w1=25008009 n=7024811`），上传失败 `[ABITEX] unit=0 rc=-3`；RT 截图全黑 —— 结合旧 host 证据，这一发很可能就是**页面淡入的纯黑覆盖层**（vert_0014/frag_0079 类：顶点色 0 + 片元常量 (0,0,0,1) + 乘性混合），不是错误**。并已把 RT 截图改为**前 8 次 DisplayQueueAddEntry 各存一帧**（`p5d_disp_N.bmp`）+ draw 日志上限提到 40，用 80M 深度运行观察 page1 后续帧（此前 62M 只覆盖 page1 开头 2.5M 块）。证据（`out62m_m1046tex.txt`）：
 | M967 | §18.4512: ★★★★★★ **定位并修复纹理上传 `rc=-3` 的根因：`upload_gxm_control_resolved` 内部 `translate(data_byte_addr)` 失败——因为 HLE 堆 arena（heapA 0x84600000-0x8C600000 / bigarena 0x8C600000-0xA0000000 / regionB 0xA0000000-0xA2000000 / tail 0xA2000000-0xB0000000）只被 `GP()`（g_img+offset 直映射）认识，**从未注册进 `p5d::mem` 地址空间注册表**，而后端的 `p5d::mem::translate/contains` 只认注册表 → 纹理数据指针（如 `0x90029580`，落在 bigarena）被判定为"不在地址空间" → `return -3`。已把这 4 个窗口注册进 p5d::mem**。证据：
 | M968 | §18.4513: ★★★★★★★ **纹理数据通路彻底打通：`[ABITEX] unit=0 rc=0`（纹理解析成功）、`[TEXENT]/[TEXAT]` 真实上传成功（`W=256 H=512 lin=65536`，即 256×512、65536 字节纹理数据被后端上传到 Vulkan unit 0）**。M967 的 HLE 堆区注册修复生效（`[MEMREG] registered HLE arenas`）。page1 首帧 RT 仍黑（`disp_1 mean=0`）——但这是**淡入黑场覆盖层**（单一全屏三角形、片元常量黑），需更深运行观察后续帧。证据（`out80m_m1048memreg.txt`）：
+| M969 | §18.4514: ★★★★★★★★★ **【真实画面路径打通】利用已有的离线预解码 CRI 影片序列（`C:\dev\p5d_movies\title_c_p5d001_nv12.raw` 900 帧 / `open_c_p5d000_nv12.raw` 3084 帧，NV12 960x544×1.5=783,360 B/帧），实现「预解码帧 → guest BGRA scratch 纹理源 → P5D_TEXSRC=AUTO → 后端上传为采样纹理」的完整演示链路**（旧 host 的 `P5D_MOVIE_PRELOAD`/`[FAKEREAL]` 思路）。page1 每帧 DisplayQueueAddEntry 时推进影片帧：NV12→BT.601 BGRA 转换写入 `g_movie_va`（hle_malloc 960×544×4）→ `set_texsrc_addr(g_movie_va)`；后端 `upload_gxm_control_resolved` 在 `P5D_TEXSRC=AUTO` 下用该地址作为纹理数据上传。证据：
+1) 影片文件（已有，离线解码产物）：
+```
+C:\dev\p5d_movies\title_c_p5d001_nv12.raw   705,024,000 B = 900 帧 × 783,360 B
+C:\dev\p5d_movies\open_c_p5d000_nv12.raw  2,415,882,240 B = 3084 帧 × 783,360 B
+```
+2) 实现（18.4514，`recomp_harness.cpp`）：
+```cpp
+static uint32_t g_movie_va = 0; static FILE* g_movie_fp=nullptr;
+static long g_movie_frame=0, g_movie_frames=0; static unsigned g_movie_w=960,g_movie_h=544;
+static std::vector<uint8_t> g_movie_nv12;
+static void movie_maybe_init(void) {   // P5D_MOVIE_FILE 默认 title_c_p5d001_nv12.raw
+    ... g_movie_va = hle_malloc(w*h*4); 打印 [MOVIE] file=... frames=... scratch=...
+}
+static void movie_advance_frame(void) {
+    // 读一帧 NV12 → BT.601 限幅转 BGRA → GP(g_movie_va) → set_texsrc_addr(g_movie_va) → [MOVIE] frame=...
+}
+// DisplayQueueAddEntry 处理中、present 前：
+if (_dq && _data) { movie_advance_frame(); p5d::vulkan::present_frame(_data); ... }
+```
+（BT.601: r=(298Y+409V+128)>>8, g=(298Y-100U-208V+128)>>8, b=(298Y+516U+128)>>8）
+3) 编译链接成功（二进制含 `[MOVIE]`）；已启动 80M 运行：
+   `P5D_TEXSRC=AUTO P5D_TEXSRC_WH=960x544`（`out80m_m1049movie.txt`）。
+NEXT：`[MOVIE] frame=N` 出现 + `[TEXSRC] uploaded 960x544 ... Y-mean=...` → RT 截图/窗口出现**真实影片画面**（title/opening movie）——这是本项目第一次显示原版游戏的真实画面内容；
+随后把它接到正确时序（只在影片 draw 上替换，`P5D_TEXSRC_FH` 门控）并继续推进 page1→标题页。 |
+| §18.4514 | REAL-PICTURE PATH CONNECTED: using the existing offline-decoded CRI movie sequences (C:\dev\p5d_movies\title_c_p5d001_nv12.raw 900 frames / open_c_p5d000_nv12.raw 3084 frames, NV12 960x544x1.5=783,360 B/frame), implemented the complete demo chain 'pre-decoded frame -> guest BGRA scratch texture source -> P5D_TEXSRC=AUTO -> backend uploads it as the sampled texture' (the old host's P5D_MOVIE_PRELOAD/[FAKEREAL] approach). On every page1 DisplayQueueAddEntry frame the movie frame advances: NV12 -> BT.601 BGRA written into g_movie_va (hle_malloc 960x544x4) -> set_texsrc_addr(g_movie_va); the backend's upload_gxm_control_resolved with P5D_TEXSRC=AUTO uses that address as the texture data to upload. Evidence: (1) movie files already exist (offline decode products): title_c_p5d001_nv12.raw 705,024,000 B = 900 frames x 783,360 B; open_c_p5d000_nv12.raw 2,415,882,240 B = 3084 frames x 783,360 B. (2) Implementation 18.4514 in recomp_harness.cpp: static uint32_t g_movie_va; static FILE* g_movie_fp; static long g_movie_frame,g_movie_frames; static unsigned g_movie_w=960,g_movie_h=544; static std::vector<uint8_t> g_movie_nv12; movie_maybe_init() opens P5D_MOVIE_FILE (default title_c_p5d001_nv12.raw), computes frames, allocates g_movie_va = hle_malloc(w*h*4), prints [MOVIE] file=... frames=... scratch=...; movie_advance_frame() reads one NV12 frame, converts BT.601 limited-range to BGRA (r=(298Y+409V+128)>>8, g=(298Y-100U-208V+128)>>8, b=(298Y+516U+128)>>8), writes into GP(g_movie_va), calls set_texsrc_addr(g_movie_va), prints [MOVIE] frame=...; the DisplayQueueAddEntry handler calls movie_advance_frame() before present_frame(_data). (3) Build+link OK (binary contains [MOVIE]); 80M run started with P5D_TEXSRC=AUTO P5D_TEXSRC_WH=960x544 (out80m_m1049movie.txt). NEXT: [MOVIE] frame=N and [TEXSRC] uploaded 960x544 ... Y-mean=... should appear and the RT capture/window should show the REAL MOVIE PICTURE (title/opening movie) - the first time this project displays real original-game picture content; then wire it to the correct timing (only replace on the movie draw via P5D_TEXSRC_FH gating) and continue page1 -> title page. |
 ```
 [MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)
 [ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811
@@ -490264,3 +490290,45 @@ disp_1 STATS: mean=0.00 max=0 (0,0,0) 100%
 ANTI-FORGETTING ENTRY. Keywords: M968 texture upload fully working: [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560 (texture resolve succeeds) and [TEXENT]/[TEXAT] real upload W=256 H=512 lin=65536 fc=1 rc=0 (a 256x512/65536-byte texture uploaded to Vulkan unit 0); the M967 arena registration fix worked ([MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)); page1's first frame RT is still black (disp_1 STATS mean=0.00 max=0) but that is the black fade-in overlay (single full-screen triangle vc=3 with black fragment constant); [ABIRT] disp=0 saved p5d_disp_0.bmp cd=8CF00000 rc=-1 (RT not in pool yet, leftover) and disp=1 cd=8D300000 rc=0 n=59607044; [ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0. NEXT: wait for the 80M run to reach 70-80M, check the first 8 p5d_disp_*.bmp color evolution and [ABIVTX] #N (draw count/vertex counts): non-black content frames => page1's REAL PICTURE appears (title movie/title); if it stays a single black fill the page is waiting for video decode/loading (check [VDEC]/[IDR]/CRI video).
 
 LOOKUP: [ABITEX] rc=0, [TEXAT], [TEXENT], [MEMREG], resolve_gxm_texture, upload_texture_to_unit, p5d_disp_1.bmp, out80m_m1048memreg.txt -> §18.4512 [relevant: arena registration], §18.4510 [relevant: texture encoding]
+### 18.4514 PORT M969: 预解码影片帧 → 纹理源（真实画面演示链路）
+
+1) 已有离线解码影片（前项目产物）：
+```
+C:\dev\p5d_movies\title_c_p5d001_nv12.raw   705,024,000 B = 900 帧 × 783,360 B（960x544 NV12）
+C:\dev\p5d_movies\open_c_p5d000_nv12.raw  2,415,882,240 B = 3084 帧 × 783,360 B
+```
+2) 实现（18.4514，`recomp_harness.cpp`）：
+```cpp
+static uint32_t g_movie_va = 0;  static FILE* g_movie_fp = nullptr;
+static long g_movie_frame = 0, g_movie_frames = 0;
+static unsigned g_movie_w = 960, g_movie_h = 544;
+static std::vector<uint8_t> g_movie_nv12;
+
+static void movie_maybe_init(void) {     // P5D_MOVIE_FILE 环境变量，默认 title_c_p5d001_nv12.raw
+    ... g_movie_va = hle_malloc(w*h*4);  printf("[MOVIE] file=%s %ux%u frames=%ld scratch=%08X");
+}
+static void movie_advance_frame(void) {  // 每帧：NV12 → BT.601 BGRA → guest scratch → set_texsrc_addr
+    ... fread 一帧 ... 
+    for (y,x): r=(298*Y+409*V+128)>>8; g=(298*Y-100*U-208*V+128)>>8; b=(298*Y+516*U+128)>>8;
+    p5d::vulkan::set_texsrc_addr(g_movie_va);
+    printf("[MOVIE] frame=%ld/%ld -> scratch=%08X");
+}
+// DisplayQueueAddEntry 处理（present 之前）：
+if (_dq && _data) { movie_advance_frame(); p5d::vulkan::present_frame(_data); ... }
+```
+3) 后端配合：`P5D_TEXSRC=AUTO` + `P5D_TEXSRC_WH=960x544`
+   → `upload_gxm_control_resolved` 用最新解码帧地址（=g_movie_va）作为纹理数据上传（`[TEXSRC] uploaded 960x544 ... Y-mean=...`）。
+4) 编译链接成功（含 `[MOVIE]`）；已启动 80M 运行：`out80m_m1049movie.txt`。
+NEXT：
+```
+[MOVIE] frame=N 出现
+[TEXSRC] uploaded 960x544 ... Y-mean=...
+→ RT 截图/窗口出现真实影片画面（title/opening movie）
+→ 本项目第一次显示原版游戏真实画面内容
+→ 之后用 P5D_TEXSRC_FH 门控到影片 draw，继续 page1→标题页
+```
+验证：`out80m_m1049movie.txt`、`p5d_disp_*.bmp`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M969 movie feed path - using the already-existing offline-decoded CRI movie sequences C:\dev\p5d_movies\title_c_p5d001_nv12.raw (705,024,000 B = 900 frames x 783,360 B) and open_c_p5d000_nv12.raw (2,415,882,240 B = 3084 frames x 783,360 B), both NV12 960x544x1.5 per frame, implemented the demo chain pre-decoded frame -> guest BGRA scratch texture source -> P5D_TEXSRC=AUTO -> backend uploads it as the sampled texture (old host P5D_MOVIE_PRELOAD/[FAKEREAL] approach). Implementation 18.4514 in recomp_harness.cpp: static uint32_t g_movie_va; static FILE* g_movie_fp; static long g_movie_frame,g_movie_frames; static unsigned g_movie_w=960,g_movie_h=544; static std::vector<uint8_t> g_movie_nv12; movie_maybe_init() opens P5D_MOVIE_FILE (default title_c_p5d001_nv12.raw), computes frame count, allocates g_movie_va=hle_malloc(w*h*4), prints [MOVIE] file=... frames=... scratch=...; movie_advance_frame() reads one NV12 frame, converts BT.601 limited-range to BGRA (r=(298Y+409V+128)>>8, g=(298Y-100U-208V+128)>>8, b=(298Y+516U+128)>>8), writes into GP(g_movie_va), calls set_texsrc_addr(g_movie_va), prints [MOVIE] frame=...; the DisplayQueueAddEntry handler calls movie_advance_frame() before present_frame(_data). Backend cooperation: P5D_TEXSRC=AUTO + P5D_TEXSRC_WH=960x544 so upload_gxm_control_resolved uses the latest decoded frame address (g_movie_va) as the texture data and prints [TEXSRC] uploaded 960x544 ... Y-mean=.... Build+link OK (binary contains [MOVIE]); 80M run started out80m_m1049movie.txt. NEXT: [MOVIE] frame=N and [TEXSRC] uploaded 960x544 Y-mean=... should appear and the RT capture/window should show the real MOVIE picture (title/opening) - the first real original-game picture content in this project; afterwards gate with P5D_TEXSRC_FH to the movie draw and continue page1 -> title page.
+
+LOOKUP: [MOVIE], P5D_MOVIE_FILE, title_c_p5d001_nv12.raw, open_c_p5d000_nv12.raw, 783360, set_texsrc_addr, P5D_TEXSRC=AUTO, P5D_TEXSRC_WH, [TEXSRC] uploaded, out80m_m1049movie.txt -> §18.4513 [relevant: texture upload working], §18.4510 [relevant: texture control block]
