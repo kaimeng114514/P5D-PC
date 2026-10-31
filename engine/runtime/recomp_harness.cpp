@@ -1535,6 +1535,148 @@ static uint64_t hle_gxp_hash(uint32_t gxpva) {   // 18.4482 M937: FNV-1a64 over 
   for (uint32_t i = 0; i < sz; ++i) { h ^= (uint64_t)g[i]; h *= 1099511628211ull; }
   return h;
 }
+
+// ============================================================================
+// 18.4523 M978: SceVideodecUser HLE for the AOT harness (9 imports at
+// 0x812B2120..0x812B21A0).  Semantics ported from the old host
+// (C:\dev\p5dsrc\src\loader\eboot_probe.cpp n_avc_* + Vita3K SceVideodecUser):
+//   InitLibrary/TermLibrary/Flush/Stop/Delete -> trivial state machine
+//   QueryDecoderMemSize -> aligned(w*h*3/2*ref)
+//   DecodeAvailableSize -> w*h*3/2 (783360 for 960x544)
+//   CreateDecoder -> fake handle in ctrl+0, remember query w/h
+//   Decode -> feed a pre-decoded NV12 frame into the app-provided
+//             SceAvcdecPicture output buffers, numOfOutput=1, info.pts from AU.
+// ============================================================================
+static int g_vdec_on = -1;
+static FILE* g_vdec_fp = nullptr;
+static long g_vdec_frames = 0, g_vdec_frame = 0;
+static unsigned g_vdec_w = 960, g_vdec_h = 544;
+static std::vector<unsigned char> g_vdec_buf;
+static unsigned g_avc_qw = 960, g_avc_qh = 544;
+static unsigned g_avc_hid = 1;
+static std::map<unsigned, unsigned> g_avc_handle;
+static bool g_avc_stopped = false;
+static unsigned g_avc_lw = 960, g_avc_lh = 544, g_avc_lpU = 0, g_avc_lpL = 0;
+static inline unsigned gv_rd32(unsigned va) { unsigned v = 0; uint8_t* p = GP(va); if (p) std::memcpy(&v, p, 4); return v; }
+static inline void gv_wr32(unsigned va, unsigned v) { uint8_t* p = GP(va); if (p) std::memcpy(p, &v, 4); }
+static uint32_t p5d_vdec_hle(uint32_t stub_va, RecState* s) {
+  if (g_vdec_on < 0) { g_vdec_on = (getenv("P5D_VDEC") != nullptr) ? 1 : 0; }
+  if (!g_vdec_on) return 0xFFFFFFFFu;
+  if (stub_va < 0x812B2120u || stub_va > 0x812B21A0u) return 0xFFFFFFFFu;
+  const uint32_t r0 = s->r[0], r1 = s->r[1], r2 = s->r[2], r3 = s->r[3];
+  const uint32_t sp0 = gv_rd32(s->r[13] + 0u);
+  switch (stub_va) {
+    case 0x812B21A0u: {   // sceVideodecInitLibrary(type=0x1001, ...)
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] InitLibrary r0=%08X r1=%08X n=%u\n", r0, r1, g_main_n); fflush(stdout); }
+      s->r[0] = 0; return s->r[14];
+    }
+    case 0x812B2130u: {   // sceVideodecTermLibrary
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] TermLibrary n=%u\n", g_main_n); fflush(stdout); }
+      s->r[0] = 0; return s->r[14];
+    }
+    case 0x812B2170u: {   // sceAvcdecQueryDecoderMemSize(type, qinfo, dinfo)
+      unsigned qw = r1 ? gv_rd32(r1) : 0, qh = r1 ? gv_rd32(r1 + 4) : 0, ref = r1 ? gv_rd32(r1 + 8) : 1;
+      if (!qw || !qh) { qw = 960; qh = 544; }
+      if (!ref) ref = 1;
+      g_avc_qw = qw; g_avc_qh = qh;
+      unsigned long long one = (unsigned long long)qw * qh * 3ull / 2ull;
+      unsigned long long sz = ((one * ref) + 0x3FFFFull) & ~0x3FFFFull;
+      if (r2) gv_wr32(r2, (unsigned)sz);
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] QueryMem %ux%u ref=%u -> 0x%llX n=%u\n", qw, qh, ref, sz, g_main_n); fflush(stdout); }
+      s->r[0] = 0; return s->r[14];
+    }
+    case 0x812B2190u: {   // sceAvcdecCreateDecoder(type, ctrl, query)
+      unsigned hid = g_avc_hid++;
+      if (r1) gv_wr32(r1, hid);
+      g_avc_handle[r1] = hid;
+      if (r2) { g_avc_qw = gv_rd32(r2); g_avc_qh = gv_rd32(r2 + 4); if (!g_avc_qw || !g_avc_qh) { g_avc_qw = 960; g_avc_qh = 544; } }
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] CreateDecoder ctrl=%08X %ux%u hid=%u n=%u\n", r1, g_avc_qw, g_avc_qh, hid, g_main_n); fflush(stdout); }
+      s->r[0] = 0; return s->r[14];
+    }
+    case 0x812B2140u: {   // sceAvcdecDecodeAvailableSize(ctrl)
+      unsigned w = g_avc_qw ? g_avc_qw : 960, hh = g_avc_qh ? g_avc_qh : 544;
+      unsigned bs = w * hh * 3u / 2u;
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] AvailSize ctrl=%08X -> 0x%X (%ux%u) n=%u\n", r0, bs, w, hh, g_main_n); fflush(stdout); }
+      s->r[0] = bs; return s->r[14];
+    }
+    case 0x812B2120u: {   // sceAvcdecDecodeFlush(ctrl)
+      g_avc_stopped = true;
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] Flush ctrl=%08X n=%u\n", r0, g_main_n); fflush(stdout); }
+      s->r[0] = 0; return s->r[14];
+    }
+    case 0x812B2160u: {   // sceAvcdecDecodeStop(ctrl, pic)
+      unsigned arr = r1 ? gv_rd32(r1 + 8u) : 0, pp = arr ? gv_rd32(arr) : 0, out = 0;
+      if (!g_avc_stopped) {
+        if (pp) { gv_wr32(pp + 0x14u, g_avc_lw); gv_wr32(pp + 0x18u, g_avc_lh); gv_wr32(pp + 0x5Cu, g_avc_lpU); gv_wr32(pp + 0x60u, g_avc_lpL); }
+        out = 1;
+      }
+      if (r1) gv_wr32(r1, out);
+      g_avc_stopped = true;
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] Stop ctrl=%08X pic=%08X pp=%08X out=%u n=%u\n", r0, r1, pp, out, g_main_n); fflush(stdout); }
+      s->r[0] = 0; return s->r[14];
+    }
+    case 0x812B2150u: {   // sceAvcdecDeleteDecoder(ctrl)
+      g_avc_handle.erase(r0); g_avc_stopped = false;
+      static int _n = 0; if (_n++ < 8) { printf("[AVDEC] Delete ctrl=%08X n=%u\n", r0, g_main_n); fflush(stdout); }
+      s->r[0] = 0; return s->r[14];
+    }
+    case 0x812B2180u: {   // sceAvcdecDecode(ctrl, au, pic)
+      // init NV12 frame source
+      if (!g_vdec_fp) {
+        const char* _env = getenv("P5D_VDEC_RAW");
+        const char* _path = (_env && *_env) ? _env : "C:/dev/p5d_movies/title_c_p5d001_nv12.raw";
+        g_vdec_fp = fopen(_path, "rb");
+        if (g_vdec_fp) {
+          fseek(g_vdec_fp, 0, SEEK_END); long _sz = ftell(g_vdec_fp); fseek(g_vdec_fp, 0, SEEK_SET);
+          size_t _fsz = (size_t)g_vdec_w * g_vdec_h * 3u / 2u;
+          g_vdec_frames = _fsz ? (long)(_sz / (long)_fsz) : 0;
+          const char* _st = getenv("P5D_VDEC_START"); if (_st && *_st) g_vdec_frame = atol(_st);
+          printf("[AVDEC] raw=%s frames=%ld start=%ld\n", _path, g_vdec_frames, g_vdec_frame); fflush(stdout);
+        } else { printf("[AVDEC] raw open FAIL %s\n", _path); fflush(stdout); }
+      }
+      unsigned arr = r2 ? gv_rd32(r2 + 8u) : 0;
+      unsigned pp = arr ? gv_rd32(arr) : 0;
+      if (pp) {
+        unsigned pw = gv_rd32(pp + 0x0Cu), ph = gv_rd32(pp + 0x10u);
+        unsigned b0 = gv_rd32(pp + 0x3Cu), b1 = gv_rd32(pp + 0x40u);
+        if ((!pw || !ph) && r2) { pw = 960; ph = 544; }
+        size_t ysz = (size_t)pw * ph, uvsz = ysz / 2;
+        if (g_vdec_fp && g_vdec_frames > 0 && ysz) {
+          if (g_vdec_frame >= g_vdec_frames) g_vdec_frame = 0;
+          if (g_vdec_buf.size() < ysz + uvsz) g_vdec_buf.resize(ysz + uvsz);
+          fseek(g_vdec_fp, (long)(g_vdec_frame * (long)(ysz + uvsz)), SEEK_SET);
+          size_t got = fread(g_vdec_buf.data(), 1, ysz + uvsz, g_vdec_fp);
+          uint8_t* q0 = b0 ? GP(b0) : nullptr;
+          uint8_t* q1 = b1 ? GP(b1) : nullptr;
+          if (q0) { if (got >= ysz) std::memcpy(q0, g_vdec_buf.data(), ysz); else std::memset(q0, 0x10, ysz); }
+          if (q1) { if (got >= ysz + uvsz) std::memcpy(q1, g_vdec_buf.data() + ysz, uvsz); else std::memset(q1, 0x80, uvsz); }
+          else if (q0 && got >= ysz + uvsz) std::memcpy(q0 + ysz, g_vdec_buf.data() + ysz, uvsz);
+          // publish the picture
+          if (r2) gv_wr32(r2, 1u);                       // ArrayPicture.numOfOutput = 1
+          gv_wr32(pp + 0x14u, pw); gv_wr32(pp + 0x18u, ph);   // frame.horizontalSize / verticalSize
+          // info: numUnitsInTick=1, timeScale=90000, fixedFrameRateFlag=1, pts from AU
+          gv_wr32(pp + 0x44u, 1u);
+          gv_wr32(pp + 0x48u, 90000u);
+          { uint8_t* _b = GP(pp + 0x4Cu); if (_b) *_b = 1; }
+          unsigned pu = r1 ? gv_rd32(r1 + 0u) : 0, pl = r1 ? gv_rd32(r1 + 4u) : 0;
+          gv_wr32(pp + 0x5Cu, pu); gv_wr32(pp + 0x60u, pl);
+          g_avc_lw = pw; g_avc_lh = ph; g_avc_lpU = pu; g_avc_lpL = pl;
+          static int _n = 0; if (_n++ < 10) {
+            printf("[AVDEC] Decode#%u frame=%ld ctrl=%08X pic=%08X pp=%08X %ux%u b0=%08X b1=%08X n=%u\n",
+                   _n, g_vdec_frame, r0, r2, pp, pw, ph, b0, b1, g_main_n); fflush(stdout); }
+          ++g_vdec_frame;
+        } else {
+          static int _n = 0; if (_n++ < 10) { printf("[AVDEC] Decode (no raw) ctrl=%08X pic=%08X pp=%08X\n", r0, r2, pp); fflush(stdout); }
+        }
+      }
+      g_avc_stopped = false;
+      s->r[0] = 0; return s->r[14];
+    }
+    default: break;
+  }
+  return 0xFFFFFFFFu;
+}
+
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   if (g_ngs_env < 0) { const char* _ge = getenv("P5D_NGS"); g_ngs_env = (_ge && atoi(_ge) != 0) ? 1 : 0; }
   if (g_main_n < 4000u) { static std::set<uint32_t> _seen; static int _n = 0;
@@ -1543,6 +1685,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (_p) { int _ok = 1; for (int _k = 0; _k < 60; ++_k) { char _c = (char)_p[_k]; if (!_c) break; if (_c < 32 || _c > 126) { _ok = 0; break; } _sa[_k] = _c; } if (!_ok) _sa[0] = 0; }
       printf("[EARLYHLE] n=%u va=%08X r0=%08X r1=%08X r2=%08X r3=%08X str0=%s lr=%08X\n", g_main_n, stub_va, s->r[0], s->r[1], s->r[2], s->r[3], _sa, s->r[14]); fflush(stdout); } }
   hw_check(stub_va);
+  { uint32_t _vd = p5d_vdec_hle(stub_va, s); if (_vd != 0xFFFFFFFFu) return _vd; }   // 18.4523 M978
   g_cur_hle_stub = stub_va;   // 18.4241: diagnostics for host-thread BADMEM
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);

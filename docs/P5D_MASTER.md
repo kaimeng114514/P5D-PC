@@ -993,6 +993,59 @@
 | M975 | §18.4520: **用户反馈「全屏打游戏时弹窗打扰」→ 已实现三项降低干扰/离屏取证能力（本轮只做代码+文档，不启动窗口、不做桌面截屏）**：
 | M976 | §18.4521: **实现「引擎自绘影片」通路：当 draw 绑定的片元纹理控制块声明尺寸 = 960×544（影片纹理）时，把预解码 BGRA 影片帧通过 `upload_gxm_control_to_unit(unit, ctrl16, hostPixels, bytes)` 直接上传为该单元内容 → 原版片元着色器自己采样并绘制影片帧（不再依赖宿主全屏 blit 演示层）**。开关 `P5D_MOVIE_ENGINE=1`；日志 `[ABIMOVTEX]`。实现位置：harness 的 draw 时纹理上传块之前（18.4521）：
 | M977 | §18.4522: ★★★★★★★ **【page1 视频解码真凶定位】引擎在 page1 开头调用硬件视频解码 HLE（当前为通用空桩返回 0）→ 影片内容永远不出现；同时确认 3 张 960×544 影片纹理、墙钟动画、离屏取证全部就绪**。证据（`out80m_m1054engmov.txt`）：
+| M978 | §18.4523: ★★★★★★★★ **实现 `SceVideodecUser` HLE（AOT harness 版）：9 个视频解码 API（stub 0x812B2120–0x812B21A0）从"无名空桩"变为真实假解码——把预解码 NV12 影片帧写入 app 提供的 `SceAvcdecPicture` 输出缓冲，并按 Vita3K 语义回填 `numOfOutput`/frame 尺寸/`info.pts`，让 CRI 认为解码成功并发布帧 → 引擎自己的影片纹理与绘制路径将拿到真实画面（"原版代码自己画"的关键打通）**。实现依据：旧 host `eboot_probe.cpp` 的 `n_avc_*` 实现（h145k80~k949 经验）+ Vita3K `SceVideodecUser.cpp` 权威语义。实现（18.4523，`recomp_harness.cpp`，文件级 `p5d_vdec_hle()`，在 hle_call 入口按 stub VA 分派）：
+```cpp
+// 状态
+static int g_vdec_on=-1; static FILE* g_vdec_fp=nullptr; static long g_vdec_frames=0,g_vdec_frame=0;
+static unsigned g_avc_qw=960,g_avc_qh=544,g_avc_hid=1; static std::map<unsigned,unsigned> g_avc_handle;
+static bool g_avc_stopped=false; static unsigned g_avc_lw=960,g_avc_lh=544,g_avc_lpU=0,g_avc_lpL=0;
+static inline unsigned gv_rd32(unsigned va);  static inline void gv_wr32(unsigned va,unsigned v);
+static uint32_t p5d_vdec_hle(uint32_t stub_va, RecState* s) {
+  if (g_vdec_on<0) g_vdec_on=(getenv("P5D_VDEC")!=nullptr)?1:0;
+  if (!g_vdec_on) return 0xFFFFFFFFu;
+  if (stub_va<0x812B2120u||stub_va>0x812B21A0u) return 0xFFFFFFFFu;
+  switch (stub_va) {
+    case 0x812B21A0u: /*sceVideodecInitLibrary*/ return s->r[14] (r0=0);
+    case 0x812B2130u: /*sceVideodecTermLibrary*/ ...
+    case 0x812B2170u: /*sceAvcdecQueryDecoderMemSize(type,qinfo,dinfo)*/
+        qw=rd(qinfo),qh=rd(qinfo+4),ref=rd(qinfo+8)||1;
+        sz=((u64)qw*qh*3/2*ref + 0x3FFFF) & ~0x3FFFF;  wr32(dinfo,sz); g_avc_qw=qw; g_avc_qh=qh;
+    case 0x812B2190u: /*sceAvcdecCreateDecoder(type,ctrl,query)*/
+        hid=g_avc_hid++; wr32(ctrl,hid); g_avc_handle[ctrl]=hid; qw=rd(query),qh=rd(query+4);
+    case 0x812B2140u: /*sceAvcdecDecodeAvailableSize(ctrl)*/
+        return g_avc_qw*g_avc_qh*3/2;              // 960x544 -> 783360 (0xBF400)
+    case 0x812B2120u: /*sceAvcdecDecodeFlush*/ g_avc_stopped=true;
+    case 0x812B2160u: /*sceAvcdecDecodeStop(ctrl,pic)*/
+        arr=rd(pic+8); pp=arr?rd(arr):0; out=!g_avc_stopped;
+        if(out&&pp){ wr32(pp+0x14,lw); wr32(pp+0x18,lh); wr32(pp+0x5C,lpU); wr32(pp+0x60,lpL);} wr32(pic,out); g_avc_stopped=true;
+    case 0x812B2150u: /*sceAvcdecDeleteDecoder(ctrl)*/ handle.erase(ctrl); g_avc_stopped=false;
+    case 0x812B2180u: /*sceAvcdecDecode(ctrl,au,pic)*/
+        // 数据源：P5D_VDEC_RAW（默认 title_c_p5d001_nv12.raw），P5D_VDEC_START 起始帧
+        arr=rd(pic+8); pp=arr?rd(arr):0;
+        pw=rd(pp+0x0C); ph=rd(pp+0x10); b0=rd(pp+0x3C); b1=rd(pp+0x40);   // SceAvcdecPicture.frame.pPicture[0]/[1]
+        // 读一帧 NV12（960x544*3/2=783360）→ Y 写 b0、UV 写 b1（或连续写 b0+Y）
+        // 发布：wr32(pic,1)  // ArrayPicture.numOfOutput=1
+        //       wr32(pp+0x14,pw); wr32(pp+0x18,ph);            // frame.horizontalSize/verticalSize
+        //       wr32(pp+0x44,1); wr32(pp+0x48,90000);           // info.numUnitsInTick=1 / timeScale=90000
+        //       info.fixedFrameRateFlag@0x4C=1；info.pts.upper@0x5C / lower@0x60 = AU 的 pts（au+0/au+4）
+        //       ++g_vdec_frame
+  }
+  return 0xFFFFFFFFu;   // 未处理 -> 继续原有分派
+}
+// hle_call 入口：{ uint32_t _vd = p5d_vdec_hle(stub_va, s); if (_vd != 0xFFFFFFFFu) return _vd; }
+```
+结构权威（`refs/vita-headers/include/psp2/videodec.h` + 旧 host 经验）：
+```
+SceAvcdecArrayPicture{ u32 numOfOutput@0; u32 numOfElm@4; SceAvcdecPicture** pPicture@8 }
+SceAvcdecPicture{ u32 size@0; SceAvcdecFrame frame@4; SceAvcdecInfo info@0x44 }              // 0x64
+SceAvcdecFrame{ pixelType@0 pitch@4 frameWidth@8 frameHeight@0xC horiz@0x10 vert@0x14 ... pPicture[2]@0x38,0x3C } // frame 基址 → 以 Picture 为基址: W@0xC H@0x10 pPic[0]@0x3C pPic[1]@0x40
+SceAvcdecInfo{ numUnitsInTick@0 timeScale@4 fixedFrameRateFlag@8 ... pts.upper@0x18 pts.lower@0x1C }  // 以 Picture 为基址: 0x44/0x48/0x4C/0x5C/0x60
+```
+编译成功（Idle 优先级）：二进制含 `[AVDEC]` ×12 / `P5D_VDEC` ×3。
+**已启动验证运行**（用户已关闭游戏，窗口正常显示）：`P5D_VDEC=1 P5D_VDEC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw P5D_VDEC_START=0`（`out80m_m1055vdec.txt`）。
+预期：page1 开头（n≈59.5M）出现 `[AVDEC] InitLibrary/QueryMem/CreateDecoder/AvailSize/Decode` → 引擎 CRI 拿到真实帧 → 引擎自己的 draw 采样到影片内容 → RT 截图（`p5d_disp_*.bmp`）出现画面。
+NEXT：读 `[AVDEC] Decode#N`（帧推进）、`[VDEC]`/CRI 日志、RT 截图；若引擎仍不画影片 → 对照旧 host 的 `[AUCHK]`/`[TEXMEAN]` 经验排查 AU 大小/输出缓冲/pixelType。 |
+| §18.4523 | Implemented the SceVideodecUser HLE for the AOT harness: the 9 video-decode APIs (stubs 0x812B2120-0x812B21A0) changed from nameless stubs into a real fake decoder - write pre-decoded NV12 movie frames into the app-provided SceAvcdecPicture output buffers and fill numOfOutput/frame size/info.pts per Vita3K semantics, so CRI believes the decode succeeded and publishes the frame -> the engine's own movie textures and render path receive real pictures (the key step for 'the original code draws it itself'). Implementation basis: the old host eboot_probe.cpp n_avc_* handlers (h145k80~k949 experience) + Vita3K SceVideodecUser.cpp authoritative semantics. Implementation 18.4523 in recomp_harness.cpp: file-scope p5d_vdec_hle() dispatched at the top of hle_call by stub VA. State: g_vdec_on(-1 uninit; P5D_VDEC enables), g_vdec_fp/g_vdec_frames/g_vdec_frame, g_avc_qw=960,qh=544, g_avc_hid=1, g_avc_handle map, g_avc_stopped, g_avc_lw/lh/lpU/lpL, helpers gv_rd32/gv_wr32 via GP. Dispatch: 0x812B21A0 InitLibrary -> r0=0; 0x812B2130 TermLibrary; 0x812B2170 QueryDecoderMemSize(type,qinfo,dinfo): qw=rd(qinfo),qh=rd(qinfo+4),ref=rd(qinfo+8)||1; sz=((u64)qw*qh*3/2*ref + 0x3FFFF) & ~0x3FFFF; wr32(dinfo,sz); g_avc_qw=qw; g_avc_qh=qh; 0x812B2190 CreateDecoder(type,ctrl,query): hid=g_avc_hid++; wr32(ctrl,hid); g_avc_handle[ctrl]=hid; qw=rd(query),qh=rd(query+4); 0x812B2140 DecodeAvailableSize(ctrl) -> g_avc_qw*g_avc_qh*3/2 (960x544 -> 783360/0xBF400); 0x812B2120 Flush -> g_avc_stopped=true; 0x812B2160 Stop(ctrl,pic): arr=rd(pic+8); pp=arr?rd(arr):0; out=!g_avc_stopped; if(out&&pp){wr32(pp+0x14,lw);wr32(pp+0x18,lh);wr32(pp+0x5C,lpU);wr32(pp+0x60,lpL);} wr32(pic,out); g_avc_stopped=true; 0x812B2150 Delete: handle.erase(ctrl); g_avc_stopped=false; 0x812B2180 Decode(ctrl,au,pic): data source P5D_VDEC_RAW (default title_c_p5d001_nv12.raw) with P5D_VDEC_START start frame; arr=rd(pic+8); pp=arr?rd(arr):0; pw=rd(pp+0x0C); ph=rd(pp+0x10); b0=rd(pp+0x3C); b1=rd(pp+0x40); read one NV12 frame (960x544*3/2=783360) -> Y to b0, UV to b1 (or contiguous b0+Y); publish wr32(pic,1) (ArrayPicture.numOfOutput=1); wr32(pp+0x14,pw); wr32(pp+0x18,ph) (frame.horizontalSize/verticalSize); wr32(pp+0x44,1); wr32(pp+0x48,90000) (info.numUnitsInTick=1/timeScale=90000); info.fixedFrameRateFlag@0x4C=1; info.pts.upper@0x5C/lower@0x60 = AU pts (au+0/au+4); ++g_vdec_frame. Structures: SceAvcdecArrayPicture{numOfOutput@0,numOfElm@4,pPicture@8}; SceAvcdecPicture{size@0, frame@4, info@0x44} (0x64); SceAvcdecFrame{pixelType@0,pitch@4,W@8,H@0xC,horiz@0x10,vert@0x14,...,pPicture[2]@0x38,0x3C} -> relative to Picture base: W@0xC H@0x10 pPic[0]@0x3C pPic[1]@0x40; SceAvcdecInfo{numUnitsInTick@0,timeScale@4,fixedFrameRateFlag@8,...,pts.upper@0x18,pts.lower@0x1C} -> relative to Picture base 0x44/0x48/0x4C/0x5C/0x60. Compiled OK (Idle priority); binary contains [AVDEC] x12 / P5D_VDEC x3. Verification run started (user closed the game so the window is visible): P5D_VDEC=1 P5D_VDEC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw P5D_VDEC_START=0 (out80m_m1055vdec.txt). Expected: at page1 start (n≈59.5M) [AVDEC] InitLibrary/QueryMem/CreateDecoder/AvailSize/Decode -> CRI gets real frames -> the engine's own draws sample movie content -> RT captures (p5d_disp_*.bmp) show the picture. NEXT: read [AVDEC] Decode#N (frame advance), [VDEC]/CRI logs, RT captures; if the engine still does not draw the movie, use the old host's [AUCHK]/[TEXMEAN] experience to check AU size/output buffers/pixelType. |
 1) 引擎自己创建 **3 张 960×544 影片纹理**（`[ABITEXI]`，n≈6.147M）：
 ```
 [ABITEXI] tex=851CBB98 data=96900000 fmt=0C000000 960x544 mip=0 mask=60000000 n=6147163
@@ -490968,3 +491021,64 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M977 page1 video-decode root cause - the engine calls SceVideodecUser HLE at page1 start and our AOT harness has nameless generic stubs returning 0, so the decoder never produces frames and the movie textures stay empty. Evidence out80m_m1054engmov.txt: engine creates 3x 960x544 movie textures at n≈6.147M ([ABITEXI] tex=851CBB98 data=96900000 fmt=0C000000 960x544 n=6147163; tex=851CBC48 data=96F00000 n=6148516; tex=851CBCF8 data=97600000 n=6149862); at page1 start [H57M] va=812B21A0 pc=812B21A0 lr=812A8D84 a0=00001001 a1=848562D8 a2=00000001 n=59562930 = sceVideodecInitLibrary (NID F1AF65A3) and [H57M] va=812B2170 pc=812B2170 lr=812A8CC4 a0=00001001 a1=84856354 a2=84856350 n=59563748 = sceAvcdecQueryDecoderMemSize (NID 97E95EDB). Full import table C:\dev\p5dsrc\docs\eboot_imports_with_nid.json (410 imports with stub_vaddr/module/func_nid); SceVideodecUser stub VAs 0x812B2120-0x812B21A0: 25F31020 DecodeFlush, 3A5F4924 TermLibrary, 441673E3 DecodeAvailableSize, 8A0E359E DeleteDecoder, 9648D853 DecodeStop, 97E95EDB QueryDecoderMemSize, D6190A06 Decode, E82BB69B CreateDecoder, F1AF65A3 InitLibrary. Wall-clock animation works ([MOVIE] clock=wall start=300 -> frame=300/900 -> frame=367/900). Offscreen evidence byte-exact: p5d_moviecap_0.bmp 960x544 mean=15.31 max=255 converts to a PNG whose sha256 prefix 312f3f63e81c52ea equals movie_frame_300.png decoded directly from NV12; evidence file C:\dev\p5d_build\evidence_offscreen_movie_frame300.png. [ABIMOVTEX] 0 means the engine's movie-texture binding follows its own decode-output path, not our captured Set* texture APIs, so engine-drawn movie requires implementing the SceVideodecUser HLE (fake decode writing pre-decoded NV12 into the app-provided SceAvcdecPicture output buffers). Old-project knowledge (h145k80~k93): sceAvcdecDecode is called from our 0x812AA2A8 with r0=ctrl,r1=au,r2=pic; pp=SceAvcdecPicture on the app stack at sp+0x160; output buffer pointers are provided by the app in pp->frame.pPicture[0]; writing an NV12 frame into that buffer makes CRI publish it as the decode result. NEXT: in hle_call match the 9 SceVideodecUser stub VAs (0x812B2120..0x812B21A0); InitLibrary/TermLibrary/CreateDecoder/DeleteDecoder/Flush/Stop -> 0 + fake handle; QueryDecoderMemSize -> 0x200000; DecodeAvailableSize -> AU size (>= r7); Decode -> success + write pre-decoded NV12 into the app SceAvcdecPicture output buffers (Y/UV planes + pitch); then verify RT captures (p5d_disp_*.bmp) show movie content = original code draws it; then sync [IDR]/[VDEC] with the decoded frame index.
 
 LOOKUP: SceVideodecUser, 0x812B2120, 0x812B2170, 0x812B21A0, F1AF65A3, 97E95EDB, D6190A06, eboot_imports_with_nid.json, [H57M], 960x544 movie textures, p5d_moviecap_0.bmp, 312f3f63e81c52ea, evidence_offscreen_movie_frame300.png, P5D_MOVIE_CLOCK=wall, P5D_MOVIE_CAPTURE -> §18.4521 [relevant: engine-drawn movie], §18.4519 [relevant: real title picture]
+### 18.4523 PORT M978: SceVideodecUser HLE（假解码 → 引擎自己的绘制路径）
+
+1) 背景：M977 已定位 page1 开头引擎调用视频解码 HLE（`0x812B21A0` InitLibrary、`0x812B2170` QueryMem），
+   而 AOT harness 里这些是**无名空桩（返回 0）** → 解码器内存 0、永不产出帧 → 影片全黑。
+
+2) 实现（18.4523，`recomp_harness.cpp`）：文件级 `p5d_vdec_hle()`，在 `hle_call` 入口按 stub VA 分派。
+   9 个 API 的语义按 **Vita3K SceVideodecUser.cpp + 旧 host eboot_probe.cpp n_avc_*（h145k80~k949）**：
+```
+0x812B21A0 sceVideodecInitLibrary            -> r0=0
+0x812B2130 sceVideodecTermLibrary            -> r0=0
+0x812B2170 sceAvcdecQueryDecoderMemSize      -> dinfo=aligned(qw*qh*3/2*ref,0x40000)
+0x812B2190 sceAvcdecCreateDecoder            -> ctrl=hid; 记录 query 分辨率
+0x812B2140 sceAvcdecDecodeAvailableSize      -> qw*qh*3/2 (=783360 for 960x544)
+0x812B2120 sceAvcdecDecodeFlush              -> is_stopped=true
+0x812B2160 sceAvcdecDecodeStop               -> pic.numOfOutput=(!stopped); 回填尺寸/pts
+0x812B2150 sceAvcdecDeleteDecoder            -> erase handle
+0x812B2180 sceAvcdecDecode                   -> 写预解码 NV12 帧进 app 输出缓冲 + numOfOutput=1
+```
+3) `sceAvcdecDecode` 关键实现：
+```cpp
+arr=rd(pic+8); pp=arr?rd(arr):0;                    // SceAvcdecArrayPicture -> SceAvcdecPicture*
+pw=rd(pp+0x0C); ph=rd(pp+0x10);                     // frameWidth/frameHeight
+b0=rd(pp+0x3C); b1=rd(pp+0x40);                     // frame.pPicture[0]/[1]（app 提供）
+// 读一帧 NV12（默认 title_c_p5d001_nv12.raw，P5D_VDEC_RAW 可换；P5D_VDEC_START 起始帧）
+// Y -> b0；UV -> b1（若 b1==0 则连续写 b0+Y）
+wr32(pic, 1);                                        // ArrayPicture.numOfOutput = 1
+wr32(pp+0x14,pw); wr32(pp+0x18,ph);                  // frame.horizontalSize/verticalSize
+wr32(pp+0x44,1); wr32(pp+0x48,90000);                // info.numUnitsInTick=1 / timeScale=90000
+info.fixedFrameRateFlag@0x4C=1；info.pts.upper@0x5C/lower@0x60 = AU 的 pts（au+0/au+4）
+++g_vdec_frame;
+```
+4) 结构权威（`refs/vita-headers/include/psp2/videodec.h`，均带 VITASDK_BUILD_ASSERT_EQ）：
+```
+SceAvcdecArrayPicture{ u32 numOfOutput@0; u32 numOfElm@4; SceAvcdecPicture** pPicture@8 }
+SceAvcdecPicture{ u32 size@0; SceAvcdecFrame frame@4; SceAvcdecInfo info@0x44 }               // 0x64
+SceAvcdecFrame{ pixelType@0 pitch@4 frameWidth@8 frameHeight@0xC horiz@0x10 vert@0x14 ... pPicture[2]@0x38,0x3C }
+   （以 Picture 为基址：W@0xC H@0x10 pPic[0]@0x3C pPic[1]@0x40）
+SceAvcdecInfo{ numUnitsInTick@0 timeScale@4 fixedFrameRateFlag@8 ... pts.upper@0x18 pts.lower@0x1C }
+   （以 Picture 为基址：0x44 / 0x48 / 0x4C / 0x5C / 0x60）
+```
+5) 编译：Idle 优先级，exit=0；二进制含 `[AVDEC]`×12、`P5D_VDEC`×3。
+6) 验证运行（用户已关闭游戏 → 窗口正常显示）：
+```
+P5D_VDEC=1
+P5D_VDEC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw
+P5D_VDEC_START=0
+→ out80m_m1055vdec.txt
+```
+预期：n≈59.5M 出现 `[AVDEC] InitLibrary/QueryMem/CreateDecoder/AvailSize/Decode#N`
+→ CRI 发布真实帧 → 引擎自己的 draw 采样到影片 → `p5d_disp_*.bmp` 出现画面。
+NEXT：
+```
+① 读 [AVDEC] Decode#N 与 [VDEC] 日志，确认解码帧推进
+② 读 RT 截图：出现影片内容 = 原版代码自绘成功
+③ 若引擎仍不画：对照旧 host [AUCHK]/[TEXMEAN] 排查 AU 大小/输出缓冲/pixelType
+```
+验证：编译日志、`out80m_m1055vdec.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M978 SceVideodecUser HLE for the AOT harness - the 9 video-decode APIs (stubs 0x812B2120-0x812B21A0) changed from nameless stubs into a real fake decoder: write pre-decoded NV12 movie frames into the app-provided SceAvcdecPicture output buffers and fill numOfOutput/frame size/info.pts per Vita3K semantics so CRI publishes the frame. Basis: old host eboot_probe.cpp n_avc_* handlers (h145k80~k949) + Vita3K SceVideodecUser.cpp. Implementation 18.4523 in recomp_harness.cpp: file-scope p5d_vdec_hle(stub_va, s) dispatched at the top of hle_call; state g_vdec_on/g_vdec_fp/g_vdec_frames/g_vdec_frame/g_avc_qw/g_avc_qh/g_avc_hid/g_avc_handle/g_avc_stopped/g_avc_lw/lh/lpU/lpL; helpers gv_rd32/gv_wr32 via GP. Dispatch details: InitLibrary -> r0=0; QueryMem(type,qinfo,dinfo): qw=rd(qinfo),qh=rd(qinfo+4),ref=rd(qinfo+8)||1; sz=((u64)qw*qh*3/2*ref+0x3FFFF)&~0x3FFFF; wr32(dinfo,sz); CreateDecoder(type,ctrl,query): hid=g_avc_hid++; wr32(ctrl,hid); g_avc_handle[ctrl]=hid; qw/qh=rd(query/query+4); DecodeAvailableSize -> qw*qh*3/2 (783360/0xBF400); Flush -> g_avc_stopped=true; Stop(ctrl,pic): arr=rd(pic+8); pp=arr?rd(arr):0; out=!g_avc_stopped; if(out&&pp){wr32(pp+0x14,lw);wr32(pp+0x18,lh);wr32(pp+0x5C,lpU);wr32(pp+0x60,lpL);} wr32(pic,out); g_avc_stopped=true; Delete -> erase; Decode(ctrl,au,pic): source P5D_VDEC_RAW (default title_c_p5d001_nv12.raw) with P5D_VDEC_START; arr=rd(pic+8); pp=arr?rd(arr):0; pw=rd(pp+0xC); ph=rd(pp+0x10); b0=rd(pp+0x3C); b1=rd(pp+0x40); read one NV12 frame (783360 B); Y->b0, UV->b1 (or contiguous b0+Y); wr32(pic,1) numOfOutput=1; wr32(pp+0x14,pw); wr32(pp+0x18,ph); wr32(pp+0x44,1); wr32(pp+0x48,90000); info.fixedFrameRateFlag@0x4C=1; pts.upper@0x5C/lower@0x60=AU pts (au+0/au+4); ++g_vdec_frame. Structures: SceAvcdecArrayPicture{numOfOutput@0,numOfElm@4,pPicture@8}; SceAvcdecPicture{size@0,frame@4,info@0x44}(0x64); SceAvcdecFrame{pixelType@0,pitch@4,W@8,H@0xC,horiz@0x10,vert@0x14,...,pPicture[2]@0x38,0x3C}->relative Picture base W@0xC H@0x10 pPic[0]@0x3C pPic[1]@0x40; SceAvcdecInfo{numUnitsInTick@0,timeScale@4,fixedFrameRateFlag@8,...,pts.upper@0x18,pts.lower@0x1C}->relative Picture base 0x44/0x48/0x4C/0x5C/0x60. Compiled OK (Idle priority); binary contains [AVDEC] x12 / P5D_VDEC x3. Verification run started with visible window (user closed the game): P5D_VDEC=1 P5D_VDEC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw P5D_VDEC_START=0 -> out80m_m1055vdec.txt. Expected at n≈59.5M: [AVDEC] InitLibrary/QueryMem/CreateDecoder/AvailSize/Decode#N -> CRI publishes real frames -> the engine's own draws sample movie content -> p5d_disp_*.bmp shows the picture. NEXT: read [AVDEC] Decode#N and [VDEC] logs to confirm frame advance; read RT captures (movie content = original code drawn); if the engine still does not draw, use the old host's [AUCHK]/[TEXMEAN] experience to check AU size/output buffers/pixelType.
+
+LOOKUP: SceVideodecUser HLE, p5d_vdec_hle, 0x812B2120, 0x812B2130, 0x812B2140, 0x812B2150, 0x812B2160, 0x812B2170, 0x812B2180, 0x812B2190, 0x812B21A0, [AVDEC], P5D_VDEC, P5D_VDEC_RAW, P5D_VDEC_START, SceAvcdecPicture pp+0x3C/0x40, numUnitsInTick=1 timeScale=90000, out80m_m1055vdec.txt -> §18.4522 [relevant: video decode root cause], §18.4521 [relevant: engine-drawn movie]
