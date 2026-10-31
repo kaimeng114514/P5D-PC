@@ -1623,6 +1623,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
                     _nextobj, s->r[0], s->r[1], s->r[2], s->r[3], _stk[0], _stk[1], _stk[2], (int)(GP(_ap)!=nullptr), g_main_n);
                   uint8_t* _zq = GP(_ap); if (_zq) { printf("[ABIVARG]  r2words:"); for (int _z=0;_z<8;++_z) { uint32_t _ww=0; std::memcpy(&_ww,_zq+_z*4u,4); printf(" %08X",_ww); } printf("\n"); }
                   _zq = GP(_sp2); if (_zq) { printf("[ABIVARG]  stk0words:"); for (int _z=0;_z<8;++_z) { uint32_t _ww=0; std::memcpy(&_ww,_zq+_z*4u,4); printf(" %08X",_ww); } printf("\n"); }
+                  _zq = GP(_ap - 0x40u); if (_zq) { printf("[ABIVARG]  r2-0x40:"); for (int _z=0;_z<24;++_z) { uint32_t _ww=0; std::memcpy(&_ww,_zq+_z*4u,4); printf(" %08X",_ww); } printf("\n"); }
+                  // candidate SceGxmVertexAttribute[] at r2-0x48 (prior-host hint): 8B entries
+                  _zq = GP(_ap - 0x48u); if (_zq) { printf("[ABIVARG]  attrCand@r2-0x48:"); for (int _z=0;_z<6;++_z) { uint16_t _st=0,_of=0; std::memcpy(&_st,_zq+_z*8u,2); std::memcpy(&_of,_zq+_z*8u+2,2); printf(" {%u,%u,fmt=%u,cmp=%u}", _st, _of, _zq[_z*8u+4], _zq[_z*8u+5]); } printf("\n"); }
                   fflush(stdout); } }
                 std::vector<AbiVAttr> _av; std::vector<AbiVStream> _sv;
                 for (uint32_t _i = 0; _i < _ac && _i < 16u; ++_i) { uint8_t* _q2 = GP(_ap + _i*8u); if (!_q2) break;
@@ -1647,6 +1650,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
                       const char* _nm = "?";
                       uint8_t* _np = GP((uint32_t)(_pbase + _i*16u + _no)); if (_np) _nm = (const char*)_np;
                       uint32_t _tsz = (_typ==0)?4u:((_typ==1||_typ==3)?2u:((_typ==2)?4u:((_typ==4||_typ==5)?1u:2u)));
+                      static int _pn_raw=0; if (_pn_raw++<40) { printf("[ABIGXPP]  P[%u] name=%-14s w0=%04X cat=%u typ=%u cmp=%u res=%u arr=%u\n", (unsigned)_i, _nm, _w0, _cat, _typ, _cmp, _res, _arr); }
                       if (_cat==0u && _cmp>=1u && _cmp<=4u && _tsz) {
                         AbiVAttr _a{}; _a.stream=0u; _a.offset=_off;
                         _a.fmt = (_typ==0)?4u:((_typ==1||_typ==3)?5u:((_typ==2)?6u:((_typ==4)?0u:((_typ==5)?1u:((_typ==6)?2u:3u)))));

@@ -973,6 +973,28 @@
 | M955 | §18.4500: **实现真实 GXM 顶点流通路（第一版）：捕获 `SceGxmVertexAttribute[]/SceGxmVertexStream[]` 与 `SetVertexStream` 的 guest VA，在 draw 时按 128 字节步长布局解包并 `upload_vertex_stream`**。依据（Vita SDK 签名，来自 `gxm_abi.cpp` 的 guest ABI 注释）：
 | M956 | §18.4501: **真实顶点流诊断结果：page1 的绘制序列 = `sceGxmSetVertexStream(ctx, 0, 0x8E500000)` → 索引绘制 `sceGxmDraw(ctx, prim=0, indexType=0, indexData=0x8E600000, indexCount=?)`；但 `CreateVertexProgram` 解析出 `attrN=0`（属性表为空）导致解包未触发（`[ABIVTX]` 0 条）**。`out62m_m1037vtx.txt` 证据：
 | M957 | §18.4502: **确认 `CreateVertexProgram` 的原始参数：`r2=attributes(0x84856114)`、`r3=attributeCount=0`、`stk0=streams(0x848560F0)`、`stk1=streamCount=1`、`stk2=out`——引擎确实传 `attributeCount=0`；属性布局必须从 GXP program 的 `SceGxmProgramParameter` 表隐式推导（GXP 参数表：+0x24 pcount、+0x28 param offset、参数 16B：+0 name偏移、+4 u16 flags(cat=0 ATTRIBUTE,type,comp)、+8 array、+0xC resource index）。已实现：GXP 参数表解析 → 隐式 packed 布局（offset 累加）→ 128B 解包；同时索引绘制用 index buffer 求 max(index)+1 作顶点数；非 Precomputed 路径用 `sceGxmSetVertexProgram` 记录当前 program**。`out62m_m1038vtxdiag.txt` 证据：
+| M958 | §18.4503: **GXP 参数表解析第一版结果：`pcount=1..6`、`pbase=0xE0/0xF0/0x138/0x1E8/0x1F8` 都能读到，但**没有任何 `cat==0` 的 ATTRIBUTE 项**（`[ABIGXPP]` 只打印出 pcount 行，没有 ATTR 行）→ 说明属性不在 GXP 参数表的 category 0 里（或 category/type 位域解读有误）。已加更深诊断：GXP 参数表原始 16B 项（name/w0 hex/cat/typ/cmp/res/arr）+ `r2-0x40` 内存窗口 + `r2-0x48` 处 8 字节 `SceGxmVertexAttribute` 候选解析（旧 host VATTR 的提示）**。`out62m_m1039vtx2.txt` 证据：
+```
+[ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717
+[ABIGXPP] gxp=8153D318 pcount=2 pbase=F0
+[ABIGXPP] gxp=8153C910 pcount=5 pbase=1F8
+[ABIGXPP] gxp=8153CBA0 pcount=6 pbase=190
+[ABIGXPP] gxp=84B544C8 pcount=3 pbase=1E8
+（无 ATTR 行 = 没有 cat==0 的属性项）
+[ABIVTX] 0 / [ABIIDX] 0 / [ABIVP] 0   ← page1 未到（该 run 只到 n=28.9M，尚未执行 page1）
+```
+- 关键观察：GXP 参数表 **pcount 很小（1~6）**，更像"uniform/常量参数"数量，说明**顶点属性确实不在参数表里**（Vita GXM 的顶点属性绑定由 CPU 侧 `SceGxmVertexAttribute[]` 提供；本引擎传 0 个 → 属性定义必在别处：可能是 **SceGxmVertexProgram 内部扩展区/GXP 的 attribute 容器**，或旧 host 发现的 `r2-0x48` 数组）；
+- 旧 host `eboot_probe.cpp` 的 VATTR 提示：从 `r2-0x48` 起按 **8 字节/项** 读取 `{u16 streamIndex, u16 offset, u8 format, u8 componentCount, u8 regSet}`，且用 `r3` 作项数——与该引擎的内存布局吻合。
+**诊断增强（18.4503）**：
+1. GXP 参数原始项打印（前 40 项）：
+```cpp
+printf("[ABIGXPP]  P[%u] name=%-14s w0=%04X cat=%u typ=%u cmp=%u res=%u arr=%u\n", _i, _nm, _w0, _cat, _typ, _cmp, _res, _arr);
+```
+2. `r2-0x40` 起 24 个 u32 的内存窗口（`[ABIVARG]  r2-0x40:`）；
+3. `r2-0x48` 起 6 个 8 字节 `SceGxmVertexAttribute` 候选（`[ABIVARG]  attrCand@r2-0x48: {stream,off,fmt,cmp} ...`）。
+编译链接成功；已启动 62M 诊断运行（`out62m_m1040gxpp.txt`）。
+NEXT：按原始项/内存窗口确认属性表真实位置；若在 `r2-0x48` → 直接按 8B 项解析并在 CreateVertexProgram 时保存；重新解包 → 真实几何出现。 |
+| §18.4503 | GXP parameter table parsing v1 result: pcount=1..6 and pbase=0xE0/0xF0/0x138/0x1E8/0x1F8 are all readable, but there is NOT a single cat==0 ATTRIBUTE entry ([ABIGXPP] only printed the pcount lines, no ATTR lines) -> the attributes are not in the GXP parameter table's category 0 (or the category/type bitfield interpretation is wrong). Added deeper diagnostics: raw 16B GXP parameter entries (name/w0 hex/cat/typ/cmp/res/arr) + an r2-0x40 memory window + an 8-byte SceGxmVertexAttribute[] candidate parse at r2-0x48 (the old host's VATTR hint). Evidence (out62m_m1039vtx2.txt): [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717; gxp=8153D318 pcount=2 pbase=F0; gxp=8153C910 pcount=5 pbase=1F8; gxp=8153CBA0 pcount=6 pbase=190; gxp=84B544C8 pcount=3 pbase=1E8 (no ATTR lines = no cat==0 attribute entries); [ABIVTX] 0 / [ABIIDX] 0 / [ABIVP] 0 (page1 not reached; this run only got to n=28.9M). Key observation: the GXP parameter table has a very small pcount (1..6), looking more like the uniform/constant parameter count, which indicates the vertex attributes really are not in the parameter table (Vita GXM's vertex attribute binding is provided by the CPU-side SceGxmVertexAttribute[]; this engine passes 0 of them -> the attribute definitions must live elsewhere: possibly a SceGxmVertexProgram internal extension area / a GXP attribute container, or the r2-0x48 array found by the old host). Old host hint (eboot_probe.cpp VATTR): read 8-byte entries starting at r2-0x48 as {u16 streamIndex, u16 offset, u8 format, u8 componentCount, u8 regSet} with r3 as the entry count (matches this engine's memory layout). DIAGNOSTIC ENHANCEMENTS 18.4503: (1) raw GXP parameter print (first 40): printf('[ABIGXPP]  P[%u] name=%-14s w0=%04X cat=%u typ=%u cmp=%u res=%u arr=%u\n', _i, _nm, _w0, _cat, _typ, _cmp, _res, _arr); (2) r2-0x40 24-u32 memory window ([ABIVARG] r2-0x40:); (3) 6 SceGxmVertexAttribute candidates at r2-0x48 ([ABIVARG] attrCand@r2-0x48: {stream,off,fmt,cmp}). Build+link OK; 62M diagnostic run started (out62m_m1040gxpp.txt). NEXT: from the raw entries/memory window confirm where the attribute table really is; if at r2-0x48 parse the 8B entries and save them at CreateVertexProgram; re-unpack -> real geometry appears. |
 ```
 [ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000000 stk0=848560F0 stk1=00000001 stk2=84B33484 gpr2=1 n=1717
 [ABIVARG]  r2words: 00000000 00000000 00000000 00000000 00000000 00000000 811C4414 00000000
@@ -489405,3 +489427,40 @@ NEXT：`[ABIGXPP]` 属性表合理性（位置 FLOAT×3=12B 等）+ `[ABIVTX]` �
 ANTI-FORGETTING ENTRY. Keywords: M957 CreateVertexProgram really passes attributeCount=0 (r2=attributes 0x84856114, r3=0, stk0=streams 0x848560F0, stk1=streamCount 1, stk2=out) so the attribute layout must be derived implicitly from the GXP program's SceGxmProgramParameter table: SceGxmProgram +0x24 parameter_count, +0x28 parameter_table_offset; entry (16B): +0 int name_offset, +4 u16 flags (cat=w0&0xF, type=(w0>>4)&0xF, comp=(w0>>8)&0xF), +8 u32 array_size, +0xC u32 resource_index; category 0=ATTRIBUTE; type 0=FLOAT(4B),1=HALF(2B),2=FIXED(4B),3=PACKED_HALF(2B),4=U8(1B),5=S8(1B),6=U16(2B),7=S16(2B). Evidence out62m_m1038vtxdiag.txt: [ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000000 stk0=848560F0 stk1=00000001 stk2=84B33484 gpr2=1 n=1717; r2words all zero; stk0words 0000000C 00000000 (streams[0]={stride=12,index=0}); obj=8540C080 stk0words 00000012 (stride=18); obj=8540C100 stk0words 0000001A (stride=26). Implementation 18.4502 in recomp_harness.cpp: (a) RegisterProgram sets _pid2gxp[_nextid]=GXP VA; (b) at CreateVertexProgram when _av.empty() parse the GXP parameter table (pc=g+0x24, po=g+0x28, pbase=0x28+po, 16B entries, category==0 -> attr{stream=0, offset=accumulated, fmt=mapped, comps}, _off += _cmp*typeSize) printing [ABIGXPP] gxp=... pcount=... ATTR[i] name=... typ=... comp=... -> implicit off=...; (c) sceGxmSetVertexProgram records _cur_vobj printing [ABIVP]; (d) indexed draws compute _vc=max(index)+1 from the index buffer (u16 if indexType==0 else u32) printing [ABIIDX]; (e) unpack via _vobj2attrs[_cur_vobj] + SceGxmVertexStream.stride -> upload_vertex_stream(vc*128, vc) printing [ABIVTX]. Build+link OK (binary contains [ABIGXPP]/[ABIIDX]/[ABIVP]); 62M run started out62m_m1039vtx2.txt (real shaders + red FS). NEXT: check that [ABIGXPP] attribute tables look plausible (position FLOATx3=12B etc.) and [ABIVTX] unpacking succeeds, which should put real geometry into the RT painted red; then switch to the real FS to observe the real picture.
 
 LOOKUP: [ABIVARG], gxp_containers.py, SceGxmProgramParameter, +0x24 parameter_count, +0x28 parameter_offset, [ABIGXPP], [ABIIDX], [ABIVP], out62m_m1039vtx2.txt -> §18.4501 [relevant: attrN=0 diagnosis], §18.4500 [relevant: first vertex capture]
+### 18.4503 PORT M958: GXP 参数表无 ATTRIBUTE 项 → 更深诊断（原始项 + r2 内存窗口 + r2-0x48 候选）
+
+1) `out62m_m1039vtx2.txt`：
+```
+[ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717
+[ABIGXPP] gxp=8153D318 pcount=2 pbase=F0
+[ABIGXPP] gxp=8153C910 pcount=5 pbase=1F8
+[ABIGXPP] gxp=8153CBA0 pcount=6 pbase=190
+[ABIGXPP] gxp=84B544C8 pcount=3 pbase=1E8
+[ABIVTX] 0 / [ABIIDX] 0 / [ABIVP] 0
+```
+（无 ATTR 行 = GXP 参数表中无 cat==0 项；run 只到 n=28.9M 未到 page1）
+
+2) 分析：
+- GXP 参数表 pcount 仅 1~6 → 更像 uniform/常量参数数量；**顶点属性确实不在 GXP 参数表里**；
+- Vita GXM 顶点属性绑定由 CPU 侧 `SceGxmVertexAttribute[]` 提供，但本引擎传 0 个 → 属性定义在别处：
+  可能是 SceGxmVertexProgram 内部扩展区 / GXP attribute 容器 / 旧 host 发现的 `r2-0x48` 数组；
+- 旧 host VATTR 提示：`r2-0x48` 起 8 字节/项 `{u16 streamIndex, u16 offset, u8 format, u8 componentCount, u8 regSet}`，`r3` 为项数。
+
+3) 诊断增强（18.4503）：
+```cpp
+// (a) GXP 参数原始项（前 40）
+printf("[ABIGXPP]  P[%u] name=%-14s w0=%04X cat=%u typ=%u cmp=%u res=%u arr=%u\n", ...);
+// (b) r2-0x40 内存窗口（24 个 u32）
+printf("[ABIVARG]  r2-0x40: ...");
+// (c) r2-0x48 处 8B VertexAttribute 候选（6 项）
+printf("[ABIVARG]  attrCand@r2-0x48: {%u,%u,fmt=%u,cmp=%u} ...");
+```
+4) 编译链接成功；已启动 62M 诊断运行：`out62m_m1040gxpp.txt`。
+NEXT：按原始项/内存窗口确认属性表位置：
+- 若在 `r2-0x48` → 按 8B 项解析保存 → 重新解包 → **真实几何出现**；
+- 若在 GXP 其他容器 → 找容器偏移（+0x90 container_count/+0x94 offset 已知）。
+验证：`out62m_m1039vtx2.txt`、`out62m_m1040gxpp.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M958 GXP parameter table parsing v1 shows pcount=1..6 (pbase=0xE0/0xF0/0x138/0x1E8/0x1F8) but NO cat==0 ATTRIBUTE entries, so the vertex attributes are not in the GXP parameter table category 0. Evidence out62m_m1039vtx2.txt: [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717; gxp=8153D318 pcount=2 pbase=F0; gxp=8153C910 pcount=5 pbase=1F8; gxp=8153CBA0 pcount=6 pbase=190; gxp=84B544C8 pcount=3 pbase=1E8; no ATTR lines; [ABIVTX] 0/[ABIIDX] 0/[ABIVP] 0 (run only reached n=28.9M, page1 not executed). The small pcount looks like uniform/constant parameters, so the attributes must live elsewhere: a SceGxmVertexProgram internal extension area / GXP attribute container / the r2-0x48 array found by the old host. Old host VATTR hint (eboot_probe.cpp): 8-byte entries starting at r2-0x48 = {u16 streamIndex, u16 offset, u8 format, u8 componentCount, u8 regSet}, with r3 as the entry count. DIAGNOSTIC ENHANCEMENTS 18.4503: (1) raw GXP parameter entries print (first 40) printf('[ABIGXPP] P[%u] name=%-14s w0=%04X cat=%u typ=%u cmp=%u res=%u arr=%u'); (2) r2-0x40 24-u32 memory window ([ABIVARG] r2-0x40:); (3) 6 SceGxmVertexAttribute candidates at r2-0x48 ([ABIVARG] attrCand@r2-0x48: {stream,off,fmt,cmp}). Build+link OK; 62M diagnostic run started out62m_m1040gxpp.txt. NEXT: from the raw entries/memory window confirm where the attribute table really is; if at r2-0x48 parse the 8B entries and save them at CreateVertexProgram; re-unpack so real geometry appears.
+
+LOOKUP: [ABIGXPP], [ABIVARG], r2-0x48, SceGxmVertexAttribute, gxp_containers.py, out62m_m1040gxpp.txt -> §18.4502 [relevant: GXP implicit layout], §18.4501 [relevant: attrN=0]
