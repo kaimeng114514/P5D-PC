@@ -749,6 +749,8 @@ static void movie_maybe_init(void) {
   fseek(g_movie_fp, 0, SEEK_END); long _sz = ftell(g_movie_fp); fseek(g_movie_fp, 0, SEEK_SET);
   size_t _fsz = (size_t)g_movie_w * g_movie_h * 3u / 2u;
   g_movie_frames = _fsz ? (long)(_sz / (long)_fsz) : 0;
+  { const char* _ms = getenv("P5D_MOVIE_START"); if (_ms && *_ms) { long _v = atol(_ms); if (_v >= 0 && _v < g_movie_frames) { g_movie_frame = _v;
+      printf("[MOVIE] P5D_MOVIE_START -> frame=%ld\n", g_movie_frame); fflush(stdout); } } }
   g_movie_va = hle_malloc((uint32_t)(g_movie_w * g_movie_h * 4u));
   g_movie_nv12.resize(_fsz);
   printf("[MOVIE] file=%s %ux%u frames=%ld scratch=%08X\n", _path, g_movie_w, g_movie_h, g_movie_frames, g_movie_va);
@@ -763,6 +765,14 @@ static void movie_advance_frame(void) {
   if (fseek(g_movie_fp, (long)(g_movie_frame * (long)_fsz), SEEK_SET) != 0) return;
   if (fread(g_movie_nv12.data(), 1, _fsz, g_movie_fp) != _fsz) return;
   uint8_t* _dst = GP(g_movie_va);
+  { const char* _mt = getenv("P5D_MOVIE_TEST");   // 18.4517 M972: diagnostic solid colour
+    if (_mt && std::strncmp(_mt, "solid:", 6) == 0 && _dst) {
+      unsigned _rgb = (unsigned)std::strtoul(_mt + 6, nullptr, 16);
+      unsigned char _b = (unsigned char)(_rgb & 0xFF), _g = (unsigned char)((_rgb >> 8) & 0xFF), _r = (unsigned char)((_rgb >> 16) & 0xFF);
+      for (size_t _i = 0; _i < (size_t)g_movie_w * g_movie_h; ++_i) { _dst[_i*4+0]=_b; _dst[_i*4+1]=_g; _dst[_i*4+2]=_r; _dst[_i*4+3]=255; }
+      p5d_movie_set_frame(_dst, (int)g_movie_w, (int)g_movie_h);
+      static int _sn=0; if (_sn++ < 4) { printf("[MOVIE] solid test color=%06X set_frame\n", _rgb); fflush(stdout); }
+      ++g_movie_frame; return; } }
   const uint8_t* _y = g_movie_nv12.data();
   const uint8_t* _uv = _y + (size_t)g_movie_w * g_movie_h;
   if (_dst) {

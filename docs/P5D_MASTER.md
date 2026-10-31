@@ -987,6 +987,46 @@
 | M969 | §18.4514: ★★★★★★★★★ **【真实画面路径打通】利用已有的离线预解码 CRI 影片序列（`C:\dev\p5d_movies\title_c_p5d001_nv12.raw` 900 帧 / `open_c_p5d000_nv12.raw` 3084 帧，NV12 960x544×1.5=783,360 B/帧），实现「预解码帧 → guest BGRA scratch 纹理源 → P5D_TEXSRC=AUTO → 后端上传为采样纹理」的完整演示链路**（旧 host 的 `P5D_MOVIE_PRELOAD`/`[FAKEREAL]` 思路）。page1 每帧 DisplayQueueAddEntry 时推进影片帧：NV12→BT.601 BGRA 转换写入 `g_movie_va`（hle_malloc 960×544×4）→ `set_texsrc_addr(g_movie_va)`；后端 `upload_gxm_control_resolved` 在 `P5D_TEXSRC=AUTO` 下用该地址作为纹理数据上传。证据：
 | M970 | §18.4515: **影片喂入 run 结果：`[MOVIE]` 帧推进与 `set_texsrc_addr` 已执行（`file=title_c_p5d001_nv12.raw 900 frames scratch=99C67790`、`frame=0/900`、`frame=1/900`），但纹理上传仍是应用自己的 256×512（`[TEXAT] #1 unit=0 W=256 H=512 lin=65536 rc=0`），AUTO 覆盖未生效——根因是后端 `upload_gxm_control_resolved` 的 **TEXSRC 门控**：`P5D_TEXSRC_MOVIEONLY` 默认=1，只有 guest 真正 openMovie 之后（`p5d::vulkan::g_movie_opened`）才允许覆盖；另外 `P5D_TEXSRC=AUTO` 模式只上传 **Y 平面（灰度）**（`[TEXSRC] uploaded ... Y-mean=...`）。已改用后端成熟的 **`P5D_TEXSRC=NV12` 模式**（直接读预解码 NV12 文件、BT.601 转彩色 RGBA、按引擎帧推进、自动/强制影片源）重跑**。证据（`out80m_m1049movie.txt`）：
 | M971 | §18.4516: **NV12 彩色模式已生效（`[TEXSRC] mode=3`、`[TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544`、`[TEXSRC-NV12] shown frame=1`、`[TEXSRC-SYNC] mode=draw div=1.000`）——后端成功读取预解码 title 影片并转换/上传了第 1 帧；但 page1 首帧 RT 仍是黑（该 draw 的片元输出为黑/淡入层），所以再加**宿主影片层**：每帧调用 `p5d_movie_set_frame(BGRA,960,544)`，present 时后端把 `g_movie_img` **全屏 blit** 到交换链（`[MOVIEBLIT]`），从而窗口必然显示真实影片帧；并在 present 后用 `save_screenshot("p5d_swap_N.bmp")` 抓交换链做证据**。证据：
+| M972 | §18.4517: ★★★★★★★★ **【窗口真实显示通路验证】`recomp_harness` 窗口（"P5D Native Port"，hwnd=8070000，976×583）经 Windows 屏幕捕获实测显示 **白色画面（mean=248.6、max=255，带黑边 letterbox）**——说明：①窗口/交换链/显示通路真实工作；②但交换链内容与我们 RT 截图（黑色）不同。同时发现：从 NV12 影片文件直接提取的 **title 影片第 0/1 帧本身就是黑色**（frame0 mean=0.0 max=4），所以白色**不是**影片帧内容 → 白色来自交换链 clear/未初始化 movie image blit/呈现图不匹配之一。`[MOVIEBLIT] 960x544 -> 960x544` 在 stderr 中已出现（影片层 blit 确实执行）**。证据：
+1) 屏幕捕获（`p5d_screen_cap.png`，`C:\dev\tmp\recomp_split`）：
+```
+window "P5D Native Port" hwnd=8070000 rect=(26,26) 976x583
+SCREEN STATS: mean=248.6 max=255 top=(16,16,16)=31051 即 白色为主 + 黑边
+```
+2) NV12 影片帧抽样（直接解码验证）：
+```
+movie_frame_0.png   mean=0.0 max=4      ← title 影片首帧=黑
+movie_frame_1.png   mean=0.0 max=4
+movie_frame_5.png   mean=3.9 max=255
+movie_frame_30.png  mean=10.0 max=255
+movie_frame_100.png mean=0.0 max=0
+movie_frame_300.png mean=15.5 max=255
+movie_frame_600.png mean=14.1 max=255
+movie_frame_899.png mean=0.0 max=0
+```
+3) `err80m_m1051moviefs.txt`：
+```
+[VAL] validation=0 debug_utils=1
+[MOVIEBLIT] 960x544 -> 960x544 全屏 blit     ← 影片层 blit 已执行
+```
+4) swapchain 截图（`save_screenshot`）仍黑（`p5d_swap_0/1.bmp` mean=0，max=0/50）——`save_screenshot` 读的不是被 present 的交换链图像。
+**实现（18.4517，`recomp_harness.cpp`）**：
+```cpp
+// P5D_MOVIE_START=<n>：影片起始帧（跳过黑场，直接看 title 内容）
+{ const char* _ms=getenv("P5D_MOVIE_START"); if(_ms&&*_ms){ long _v=atol(_ms); if(_v>=0&&_v<g_movie_frames) g_movie_frame=_v; } }
+// P5D_MOVIE_TEST=solid:RRGGBB：影片层纯色测试（判断 blit 是否真正上屏）
+if (_mt && strncmp(_mt,"solid:",6)==0 && _dst) {
+    unsigned _rgb=strtoul(_mt+6,nullptr,16);
+    for (i< w*h) { _dst[i*4+0]=b; _dst[i*4+1]=g; _dst[i*4+2]=r; _dst[i*4+3]=255; }
+    p5d_movie_set_frame(_dst,w,h); return;
+}
+```
+已启动诊断运行：`P5D_MOVIE_TEST=solid:FF0000` → `out80m_m1052solid.txt`（若窗口变红 ⇒ 宿主影片层上屏成功，白色是交换链 clear/其它层；随后用 `P5D_MOVIE_START=300` 显示真实 title 画面）。
+NEXT：
+① 捕获该运行窗口颜色 → 判定影片层通路；
+② 用 `P5D_MOVIE_START=300/600` 显示 title 真实画面并截图；
+③ 查白色来源（交换链 clear 颜色 / 未初始化 movie image `vkCmdBlitImage`）。 |
+| §18.4517 | Window display path verified: the recomp_harness window ("P5D Native Port", hwnd=8070000, 976x583) captured via Windows screen capture shows a WHITE picture (mean=248.6, max=255, with black letterbox edges) - so the window/swapchain/display path really works, but the swapchain content differs from our RT capture (black). Also found: the title movie frames 0/1 extracted directly from the NV12 file are themselves black (frame0 mean=0.0 max=4), so the white is NOT movie-frame content -> the white comes from one of: swapchain clear color / uninitialized movie image blit / presented-image mismatch. [MOVIEBLIT] 960x544 -> 960x544 already appears in stderr (the movie-layer blit really executes). Evidence: (1) screen capture p5d_screen_cap.png: window "P5D Native Port" hwnd=8070000 rect=(26,26) 976x583; SCREEN STATS mean=248.6 max=255 top=(16,16,16)=31051 i.e. mostly white + black edges. (2) NV12 frame sampling: movie_frame_0.png mean=0.0 max=4 (title movie first frame = black); frame_1 mean=0.0 max=4; frame_5 mean=3.9 max=255; frame_30 mean=10.0 max=255; frame_100 mean=0.0 max=0; frame_300 mean=15.5 max=255; frame_600 mean=14.1 max=255; frame_899 mean=0.0 max=0. (3) err80m_m1051moviefs.txt: [VAL] validation=0 debug_utils=1; [MOVIEBLIT] 960x544 -> 960x544 fullscreen blit (movie layer blit executed). (4) swapchain save_screenshot BMPs still black (p5d_swap_0/1.bmp mean=0 max=0/50) - save_screenshot does not read the actually-presented swapchain image. Implementation 18.4517 in recomp_harness.cpp: P5D_MOVIE_START=<n> sets the initial movie frame (skip black lead-in) in movie_maybe_init; P5D_MOVIE_TEST=solid:RRGGBB fills the BGRA scratch with a solid colour and calls p5d_movie_set_frame (diagnostic for whether the movie layer really reaches the screen). Diagnostic run started with P5D_MOVIE_TEST=solid:FF0000 -> out80m_m1052solid.txt (if the window turns red the host movie layer reaches the screen and the white is the swapchain clear/another layer; then P5D_MOVIE_START=300 shows the real title picture). NEXT: (1) capture the window colour of that run to decide the movie-layer path; (2) use P5D_MOVIE_START=300/600 to show the real title picture and capture it; (3) find the white source (swapchain clear colour / uninitialized movie image vkCmdBlitImage). |
 1) `out80m_m1050nv12.txt`：
 ```
 [TEXSRC] mode=3 src=0x0 960x544
@@ -490499,3 +490539,61 @@ p5d_swap_*.bmp 非黑
 ANTI-FORGETTING ENTRY. Keywords: M971 NV12 color mode works ([TEXSRC] mode=3, [TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544, [TEXSRC-NV12] shown frame=1, [TEXSRC-SYNC] mode=draw div=1.000) but page1's first RT frame is still black (fade layer), so added a HOST MOVIE LAYER: every frame calls p5d_movie_set_frame(BGRA,960,544) and present_frame blits g_movie_img fullscreen onto the swapchain ([MOVIEBLIT]); after present save_screenshot('p5d_swap_N.bmp') captures the swapchain. Evidence out80m_m1050nv12.txt: [TEXSRC] mode=3 src=0x0 960x544; [TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544 seq=0 auto=0; [TEXSRC-NV12] shown frame=1; [TEXSRC-SYNC] mode=draw div=1.000 start=0; [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580; [ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; [ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0; disp_1 STATS mean=0.00 max=0. Backend present_frame movie blit: if(g_movie_ready && g_movie_img && g_movie_w>0 && g_movie_h>0){ VkImageBlit bl{}; ...; vkCmdBlitImage(cmd,g_movie_img,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,dst,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&bl,VK_FILTER_LINEAR); fprintf(stderr,'[MOVIEBLIT] %dx%d -> %ux%u'); }. Implementation 18.4516 in recomp_harness.cpp: extern "C" void p5d_movie_set_frame(const void* bgra, int w, int h) (backend is extern "C"); call it in movie_advance_frame after BGRA conversion; after present in DisplayQueueAddEntry handler do static int _sc=0; if(_sc<8){ char _fn[64]; snprintf(_fn,sizeof(_fn),'p5d_swap_%d.bmp',_sc); int _src=p5d::vulkan::save_screenshot(_fn); printf('[ABISWAP] saved %s rc=%d n=%u\n',_fn,_src,g_main_n); _sc++; }. The link error undefined reference to p5d::vulkan::p5d_movie_set_frame(void const*,int,int) was fixed with the extern "C" declaration. Build+link OK; 80M run started out80m_m1051moviefs.txt. NEXT: [MOVIEBLIT] 960x544 -> ... plus non-black p5d_swap_*.bmp => the REAL COLOR MOVIE PICTURE (P5D title movie) appears in the window/captures - the first real original-game content; then composite movie layer with engine content properly (TEXSRC only for the movie quad) and continue page1 -> title page.
 
 LOOKUP: p5d_movie_set_frame, extern "C", [MOVIEBLIT], p5d_swap_N.bmp, [ABISWAP], save_screenshot, P5D_TEXSRC=NV12, [TEXSRC-NV12] shown frame, out80m_m1051moviefs.txt -> §18.4515 [relevant: TEXSRC gates], §18.4514 [relevant: movie feed]
+### 18.4517 PORT M972: 窗口显示通路实测（白色画面）+ title 影片首帧确认为黑 + 影片层纯色诊断
+
+1) 屏幕捕获（`p5d_screen_cap.png`）：
+```
+window "P5D Native Port" hwnd=8070000 rect=(26,26) 976x583
+SCREEN STATS: mean=248.6 max=255
+top color buckets: (16,16,16)=31051 → 白色为主 + 黑边 letterbox
+```
+→ **窗口/交换链/显示通路真实工作**（画面确实上屏），但内容 ≠ 我们的 RT 截图（黑）。
+
+2) NV12 影片帧直接解码抽样（`movie_frame_*.png`）：
+```
+frame_0   mean=0.0  max=4      ← title 影片首帧=黑场（所以白色不是影片帧）
+frame_1   mean=0.0  max=4
+frame_5   mean=3.9  max=255
+frame_30  mean=10.0 max=255
+frame_100 mean=0.0  max=0
+frame_300 mean=15.5 max=255
+frame_600 mean=14.1 max=255
+frame_899 mean=0.0  max=0
+```
+
+3) `err80m_m1051moviefs.txt`（stderr）：
+```
+[VAL] validation=0 debug_utils=1
+[MOVIEBLIT] 960x544 -> 960x544 全屏 blit     ← 影片层 blit 确实执行
+```
+
+4) swapchain 截图仍黑（`p5d_swap_0/1.bmp` mean=0, max=0/50）——`save_screenshot` 读的不是真正 present 的交换链图像。
+
+5) 实现（18.4517）：
+```cpp
+// P5D_MOVIE_START=<n>：影片起始帧（跳过黑场）
+{ const char* _ms = getenv("P5D_MOVIE_START"); if (_ms && *_ms) { long _v = atol(_ms);
+    if (_v >= 0 && _v < g_movie_frames) { g_movie_frame = _v; } } }
+// P5D_MOVIE_TEST=solid:RRGGBB：影片层纯色测试
+if (_mt && std::strncmp(_mt, "solid:", 6) == 0 && _dst) {
+    unsigned _rgb = (unsigned)std::strtoul(_mt + 6, nullptr, 16);
+    for (size_t _i = 0; _i < (size_t)g_movie_w * g_movie_h; ++_i) {
+        _dst[_i*4+0] = b; _dst[_i*4+1] = g; _dst[_i*4+2] = r; _dst[_i*4+3] = 255; }
+    p5d_movie_set_frame(_dst, (int)g_movie_w, (int)g_movie_h);
+    return;
+}
+```
+6) 已启动诊断运行：`P5D_MOVIE_TEST=solid:FF0000` → `out80m_m1052solid.txt`
+   - 若窗口变红 ⇒ 宿主影片层上屏成功，白色来自交换链 clear/其它层；
+   - 随后 `P5D_MOVIE_START=300` 显示 title 真实画面。
+NEXT：
+```
+① 捕获该运行窗口颜色 → 判定影片层通路；
+② P5D_MOVIE_START=300/600 显示 title 真实画面并截图；
+③ 查白色来源（交换链 clear 颜色 / 未初始化 movie image vkCmdBlitImage）。
+```
+验证：`p5d_screen_cap.png`、`movie_frame_*.png`、`out80m_m1052solid.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M972 window display path verified - the recomp_harness window ("P5D Native Port", hwnd=8070000, 976x583) captured via Windows screen capture shows a WHITE picture (mean=248.6 max=255 with black letterbox edges): the window/swapchain/display path really works but the swapchain content differs from our RT capture (black). The title movie frames 0/1 extracted directly from the NV12 file are themselves black (frame0 mean=0.0 max=4), so the white is NOT movie content - it comes from swapchain clear color / uninitialized movie image blit / presented-image mismatch. [MOVIEBLIT] 960x544 -> 960x544 appears in stderr (the movie-layer blit executes). Evidence: screen capture p5d_screen_cap.png window "P5D Native Port" hwnd=8070000 rect=(26,26) 976x583, SCREEN STATS mean=248.6 max=255 top=(16,16,16)=31051; NV12 frame sampling movie_frame_0.png mean=0.0 max=4, frame_1 mean=0.0 max=4, frame_5 mean=3.9, frame_30 mean=10.0, frame_100 mean=0.0, frame_300 mean=15.5, frame_600 mean=14.1, frame_899 mean=0.0; err80m_m1051moviefs.txt [VAL] validation=0 debug_utils=1, [MOVIEBLIT] 960x544 -> 960x544 fullscreen blit; swapchain save_screenshot BMPs still black (p5d_swap_0/1.bmp mean=0 max=0/50) because save_screenshot does not read the actually-presented swapchain image. Implementation 18.4517 in recomp_harness.cpp: P5D_MOVIE_START=<n> sets the initial movie frame in movie_maybe_init; P5D_MOVIE_TEST=solid:RRGGBB fills the BGRA scratch with a solid colour and calls p5d_movie_set_frame. Diagnostic run started with P5D_MOVIE_TEST=solid:FF0000 -> out80m_m1052solid.txt. NEXT: (1) capture the window colour of that run to decide the movie-layer path; (2) use P5D_MOVIE_START=300/600 to show the real title picture and capture it; (3) find the white source (swapchain clear colour / uninitialized movie image vkCmdBlitImage).
+
+LOOKUP: p5d_screen_cap.png, P5D Native Port, mean=248.6, movie_frame_0.png, P5D_MOVIE_START, P5D_MOVIE_TEST, solid:FF0000, [MOVIEBLIT], p5d_swap_0.bmp, out80m_m1052solid.txt -> §18.4516 [relevant: host movie layer], §18.4515 [relevant: TEXSRC gates]
