@@ -969,6 +969,35 @@
 | M951 | §18.4496: ★★★★★★ **红 FS + ColorSurfaceInit 验证结果：渲染架构修正生效（`[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544`、`[DRAWST] rp=非空`、viewport 正常 `0,0,960,544`、`[ENDPASS] cd=8D300000`、`[CPYIMG]`、`[PRESENT] result=0`），但 RT 仍全黑 → 定位为：顶点 uniform 全 0（RINIT 零表）导致真实顶点着色器把每个顶点算到 w=0 → 无片元 → 红 FS 也画不出来**。证据（`out62m_m1033rtred.txt`）：
 | M952 | §18.4497: ★★★★★★★★ **重大发现：后端的 `P5D_ZFORCE` 开关注释里记录着上一个项目的"零像素"真凶——顶点变换后 `z > w`（超出 Vulkan 裁剪体 0≤Zc≤Wc），depthClampEnable=FALSE 时整个三角形被裁掉 → 即使管线/绑定/视口全对也一个像素都不写！** 关键原文（`vulkan_backend.cpp` 注释）：
 | M953 | §18.4498: ★★★★★★ **找到"内置 VS + 红 FS 仍黑"的原因：真实管线的顶点输入布局与测试三角形不匹配——`get_or_create_real_pipeline` 的 `vi` 是「单 binding stride=128（8×vec4），location 0..7 全部 R32G32B32A32」，而 `create_vertex_buffer` 里的 `test_triangle` 只有 28 字节步长 → 按 stride 128 读到的 vertex 1/2 全是垃圾 → 三角形退化/出屏**。证据（`out62m_m1035redz.txt`）：
+| M954 | §18.4499: ★★★★★★★★★★ **【GPU 渲染链路彻底打通——第一帧真实渲染画面（红色三角形）】`upload_vertex_stream`（128B 步长测试三角形）+ passthrough VS + 红 FS → RT 截图从全黑变为"黑底红色三角形"（nonblack=65,280 px，bbox=(240,136)-(719,406)，颜色 red (224..255,0,0)）；全链路 = 顶点上传 → 真实 Vulkan 管线（stride 128/loc0..7）→ 顶点着色器 → 光栅化 → 片元着色器 → RT(8D300000) → RT→swapchain 拷贝 → `vkQueuePresentKHR result=0` 全部工作！** 证据（`out62m_m1036tri.txt`）：
+```
+[ABITRI] upload_vertex_stream rc=0 (stride128,3 verts) n=59454976
+err: [REALVS-BUILTIN] passthrough vertex module ready
+err: [REALFS-RED] red diagnostic fragment module ready
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3 vbuf=... rp=0000015f52ea7750 vp=0,0,960,544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+err: [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0
+RT STATS: mean=10.74 max=255 top=[((0,0,0),28516), ((15,0,0),4124)]     ← 出现红色！
+p5d_rt_first.bmp → PNG 目视：黑底红色三角形（见 p5d_rt_first_triangle.png）
+```
+**意义**：这是本项目第一次由**真实 Vulkan 管线 + 着色器 + 光栅化**产出可见像素，并成功 present 到窗口
+（此前所有"全黑"的怀疑点——管线/render pass/视口/裁剪/提交/present——全部被证明正常）。
+**此前黑屏的两个真凶已定位并验证**：
+1. 顶点布局不匹配：真实管线要求 **stride=128（8×vec4，loc0..7）**，而 `create_vertex_buffer` 的内置 `test_triangle` 是 28 字节步长（M953）；
+2. RT 渲染架构：BeginScene 必须走 `begin_scene_pass(RT)`（M947/M950），否则 draw 落在 swapchain 而 display 拷贝空 RT（M946）。
+**下一步（真实游戏内容必需的三个数据通路）**：
+```
+① 真实 GXM 顶点流解包：sceGxmSetVertexStream / PrecomputedDrawSetVertexStream 捕获 guest VA
+   → 按 GXP 程序属性表把每个顶点解包成 128B 步长的 per-location vec4（loc0=pos, loc1=color, loc2=uv...）
+   → upload_vertex_stream；这是"三角形变游戏画面"的第一道关；
+② 真实 uniform：sceGxmSetUniformDataF / SetDefaultUniformBuffer / Precomputed 版本
+   → update_uniform_buffer(_raw)（当前 RINIT 零表导致 MVP 全 0）；
+③ 纹理：sceGxmTextureInit*/SetTexture/PrecomputedFragmentStateSetTexture
+   → 后端 upload_texture_to_unit / RT alias（当前 [TEXBIND] dummy=16）。
+```
+实验证据文件：`p5d_rt_first_triangle.png`（本帧渲染结果）。 |
+| §18.4499 | GPU RENDERING CHAIN FULLY PROVEN - THE FIRST REAL RENDERED FRAME (a red triangle): upload_vertex_stream (128-byte-stride test triangle) + passthrough VS + red FS -> the RT capture changed from all-black to a black background with a red triangle (nonblack=65,280 px, bbox=(240,136)-(719,406), color red (224..255,0,0)); the full chain = vertex upload -> real Vulkan pipeline (stride 128/loc0..7) -> vertex shader -> rasterization -> fragment shader -> RT(8D300000) -> RT->swapchain copy -> vkQueuePresentKHR result=0 all work! Evidence (out62m_m1036tri.txt): [ABITRI] upload_vertex_stream rc=0 (stride128,3 verts) n=59454976; err [REALVS-BUILTIN] passthrough vertex module ready; err [REALFS-RED] red diagnostic fragment module ready; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3 vbuf=... rp=0000015f52ea7750 vp=0,0,960,544; [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS); err [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0; RT STATS mean=10.74 max=255 top=[((0,0,0),28516), ((15,0,0),4124)] (red appears!); p5d_rt_first.bmp -> PNG shows a red triangle on black (see p5d_rt_first_triangle.png). This is the first time the project produced visible pixels through a real Vulkan pipeline + shaders + rasterization and presented them to the window (all previous suspects - pipeline/render pass/viewport/clipping/submission/present - are proven fine). The two real culprits of the earlier black screen are now localized and verified: (1) vertex layout mismatch: the real pipeline requires stride=128 (8 x vec4, loc 0..7) while create_vertex_buffer's built-in test_triangle has a 28-byte stride (M953); (2) the RT render architecture: BeginScene must go through begin_scene_pass(RT) (M947/M950), otherwise draws land on the swapchain while the display copies an empty RT (M946). NEXT (the three data paths required for real game content): (1) real GXM vertex stream unpacking: capture guest VAs from sceGxmSetVertexStream / PrecomputedDrawSetVertexStream and unpack each vertex per the GXP program attribute table into the 128-byte-stride per-location vec4 (loc0=pos, loc1=color, loc2=uv...) then upload_vertex_stream - this is the first gate from a triangle to real game graphics; (2) real uniforms: sceGxmSetUniformDataF / SetDefaultUniformBuffer / Precomputed versions -> update_uniform_buffer(_raw) (currently the RINIT zero table makes MVP all zero); (3) textures: sceGxmTextureInit*/SetTexture/PrecomputedFragmentStateSetTexture -> backend upload_texture_to_unit / RT alias (currently [TEXBIND] dummy=16). Evidence file: p5d_rt_first_triangle.png (this frame's render result). |
 ```
 err: [REALVS-BUILTIN] passthrough vertex module ready
 err: [REALFS-RED] red diagnostic fragment module ready
@@ -489121,3 +489150,46 @@ NEXT：变红 ⇒ 光栅化/管线/呈现彻底打通 → 真实 GXM 顶点流�
 ANTI-FORGETTING ENTRY. Keywords: M953 builtin-VS + red-FS still black because the real pipeline's vertex input layout does not match the test triangle: get_or_create_real_pipeline's vi uses ONE binding with stride=128 (8 x vec4) and locations 0..7 all R32G32B32A32 (offset=_li*16), while create_vertex_buffer's test_triangle has a 28-byte stride -> reading with stride 128 makes vertices 1/2 garbage -> degenerate/off-screen triangle. Evidence out62m_m1035redz.txt: [REALVS-BUILTIN] passthrough vertex module ready; [REALFS-RED] ready; [ZFORCE] 0 (ZFORCE code lives in the old host vertex-unpack path, not reached here); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] vc=3 inrp=1 rp non-null vp=0,0,960,544; RT STATS mean=0.00 max=0 (0,0,0) 100%. Backend comment h141: 'real vertex stream: one binding stride=128 (8*vec4), locations 0..7 all R32G32B32A32; n_draw unpacks vertices on the CPU per program attribute table into per-location vec4 (loc0=position, loc1=color, loc2=texcoord...), missing ones zeroed.' EXPERIMENT 18.4498: before the first real draw upload a layout-correct test triangle: static float _tv[3*32]; positions {-0.5,-0.5,0,1},{0.5,-0.5,0,1},{0,0.5,0,1}; colors {1,0,0,1},{0,1,0,1},{0,0,1,1}; memcpy pos at _tv[_i*32+0], col at _tv[_i*32+4]; p5d::vulkan::upload_vertex_stream(_tv,sizeof(_tv),3u); printf('[ABITRI] upload_vertex_stream rc=%d (stride128,3 verts) n=%u\n',_rr,g_main_n); with P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red (z=0 naturally legal, no ZFORCE). Build+link OK (binary contains [ABITRI]); 62M run started out62m_m1036tri.txt. NEXT: if the RT turns red then rasterization/pipeline/present are fully proven and work moves to real GXM vertex stream unpacking (guest VA data -> 128-byte-stride per-location vec4 per program attribute table) + real uniforms + textures.
 
 LOOKUP: stride=128, VkVertexInputBindingDescription, get_or_create_real_pipeline, upload_vertex_stream, [ABITRI], P5D_DBG_VS_BUILTIN, out62m_m1036tri.txt -> §18.4497 [relevant: z>w clipping discovery], §18.4496 [relevant: identity uniform experiment]
+### 18.4499 PORT M954: ★ 第一帧真实渲染画面（红色三角形）——GPU 渲染链路彻底打通
+
+1) 实验（`P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red` + 128B 步长测试三角形）结果 `out62m_m1036tri.txt`：
+```
+[ABITRI] upload_vertex_stream rc=0 (stride128,3 verts) n=59454976
+err: [REALVS-BUILTIN] passthrough vertex module ready
+err: [REALFS-RED] red diagnostic fragment module ready
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3 vbuf=... rp=0000015f52ea7750 vp=0.0,0.0,960.0,544.0
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+err: [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0
+RT STATS: mean=10.74 max=255 top=[((0,0,0),28516), ((15,0,0),4124)]
+```
+2) 图像分析（`p5d_rt_first_triangle.png`）：
+```
+nonblack px = 65,280
+bbox = (240,136)-(719,406)   （960x544 中心区域）
+bbox 内主色 = red (224..255, 0, 0)
+→ 黑底红色三角形（目视确认）
+```
+3) 结论：**全链路已工作**：
+```
+顶点上传(upload_vertex_stream, stride128) → 真实 Vulkan 管线(loc0..7)
+→ 顶点着色器 → 光栅化 → 片元着色器 → RT(8D300000)
+→ RT→swapchain vkCmdCopyImage → vkQueuePresentKHR result=0 → 窗口
+```
+此前"全黑"的两个真凶（已定位并验证修复）：
+- **顶点布局不匹配**：真实管线 stride=128（8×vec4）、内置 test_triangle 28 字节（M953）；
+- **RT 渲染架构**：BeginScene 必须 `begin_scene_pass(RT)`（M947/M950），否则 draw 在 swapchain、display 却拷空 RT（M946）。
+4) 下一步（真实游戏内容必需的三个数据通路）：
+```
+① 真实 GXM 顶点流解包：sceGxmSetVertexStream / PrecomputedDrawSetVertexStream 捕获 guest VA
+   → 按 GXP 属性表解包成 128B per-location vec4 → upload_vertex_stream；
+② 真实 uniform：sceGxmSetUniformDataF / SetDefaultUniformBuffer / Precomputed*
+   → update_uniform_buffer(_raw)（当前 RINIT 零表 → MVP 全 0）；
+③ 纹理：sceGxmTextureInit*/SetTexture/PrecomputedFragmentStateSetTexture
+   → upload_texture_to_unit / RT alias（当前 [TEXBIND] dummy=16）。
+```
+证据：`p5d_rt_first_triangle.png`、`p5d_rt_first.bmp`、`out62m_m1036tri.txt`。
+
+ANTI-FORGETTING ENTRY. Keywords: M954 FIRST REAL RENDERED FRAME - GPU rendering chain fully proven: upload_vertex_stream (128-byte-stride test triangle) + passthrough VS + red FS produced a black background with a RED TRIANGLE (nonblack=65,280 px, bbox=(240,136)-(719,406), red (224..255,0,0)) and presented it (vkQueuePresentKHR result=0). Evidence out62m_m1036tri.txt: [ABITRI] upload_vertex_stream rc=0 (stride128,3 verts) n=59454976; [REALVS-BUILTIN] ready; [REALFS-RED] ready; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] vc=3 inrp=1 rp non-null vp=0,0,960,544; [PRESENT] #1 result=0; [CPYIMG] cd=8D300000 960x544; RT STATS mean=10.74 max=255 top=[((0,0,0),28516), ((15,0,0),4124)]; PNG p5d_rt_first_triangle.png shows the red triangle. Full chain: vertex upload -> real Vulkan pipeline (stride 128/loc0..7) -> vertex shader -> rasterization -> fragment shader -> RT(8D300000) -> RT->swapchain copy -> present. The two black-screen culprits are localized and verified: (1) vertex layout mismatch - real pipeline requires stride=128 (8 x vec4, loc 0..7) while built-in test_triangle is 28-byte stride (M953); (2) RT render architecture - BeginScene must go through begin_scene_pass(RT) (M947/M950) or draws land on the swapchain while display copies an empty RT (M946). NEXT three data paths for real content: (1) real GXM vertex stream unpacking - capture guest VAs from sceGxmSetVertexStream/PrecomputedDrawSetVertexStream, unpack per GXP attribute table into 128-byte-stride per-location vec4 (loc0=pos, loc1=color, loc2=uv...), then upload_vertex_stream (the first gate from triangle to real graphics); (2) real uniforms - sceGxmSetUniformDataF/SetDefaultUniformBuffer/Precomputed versions -> update_uniform_buffer(_raw) (RINIT zero table currently makes MVP zero); (3) textures - sceGxmTextureInit*/SetTexture/PrecomputedFragmentStateSetTexture -> backend upload_texture_to_unit/RT alias (currently [TEXBIND] dummy=16). Evidence files: p5d_rt_first_triangle.png, p5d_rt_first.bmp, out62m_m1036tri.txt.
+
+LOOKUP: upload_vertex_stream, stride=128, p5d_rt_first_triangle.png, [ABITRI], RT STATS mean=10.74, P5D_DBG_VS_BUILTIN, P5D_REALFS, out62m_m1036tri.txt -> §18.4498 [relevant: vertex layout diagnosis], §18.4492 [relevant: render architecture]
