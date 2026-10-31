@@ -1000,6 +1000,16 @@
 | M982 | §18.4527: ★★★★★★★ **`P5D_JOBFORCE` 生效：page1 初始化 job 被强制完成，job 状态机从 state=2 idx=0 推进到 state=1 idx=1，随后引擎**成功发出场景序列请求 `[SEQREQ] page=1`**（首次拿到完整场景页表！）——这是场景切换机制（S0_LOGO→S1_TITLE→…）的权威证据**。证据（`out80m_m1058jobforce.txt`）：
 | M983 | §18.4528: **场景页函数反编译 + JOBFORCE2 验证 + 关键洞察（强制完成会跳过 worker 实际工作，导致后续对象缺失）**。`out80m_m1059jobforce2.txt`：`[JOBFORCE]` 仍只 1 次、`[JOBFORCE2]` 0 次 → `FUN_8116f8d2` 在 page1 后续从未以"未完成 job"进入；`[SEQREQ] page=1` 出现后到 n=60.7M 无新 draw/present。同时反编译出 **S0–S5 场景页函数本体**（`scenepages2.txt`）：
 | M984 | §18.4529: **异步 job 执行机制反编译：`FUN_8116f9dc` → `FUN_811dab8c` = app 异步 job 队列派发器（作业节点池/优先级队列/互斥量 DAT_816cd9f0，状态 1=入队/2=运行），worker 回调 0x8116fa5d/0x8116fa67，状态查询 `FUN_8116fa38`→`FUN_811daf12`；运行日志确认 **job 消费者线程存在**（`[JOBQ] consumer q=84857A7C thr=40018000` / `q=8489909C thr=40019000`，线程 40011000/40012000/40013000/40014000 entry=811E68C9，信号量 gfdJobCountSema/gfdJobEmptySema/gfdJobEventFlag），但 fiber 模式下消费者不推进 ⇒ 我们提交的 job 永不完成；`P5D_HOSTTHREADS=1` 试验直接卡死在启动早期（无 FRAMEDUMP/PRESENT）⇒ 真实线程模式当前不可用**。证据：
+| M985 | §18.4530: ★★★★★★ **job worker 真实执行点已反编译 + 实现 `P5D_JOBINLINE`（在强制完成前真正调用 worker 回调，让初始化工作真正发生）**。反编译：`FUN_8116f748(node)` = `DAT_815554c0=node; (*(code*)*node)(); DAT_815554c0=0;` → **job 节点的 [0] 字段就是 worker 回调（无参数调用）**；`FUN_8116f75e(node)` = `DAT_815554c0=node; (**(code**)(node+4))();` → **node[1] = 完成回调**，随后从 DAT_815554c4/c8 链表摘除并释放。job 节点（0x1C 字节）布局：`[0]=worker fn, [1]=completion fn, [2]=arg, [3]=FUN_8116f9dc 返回的池节点指针（完成状态）`。init trophy 提交：worker=`0x81184809`（FUN_81184808→FUN_8102d53c/FUN_8102d544 奖杯初始化）、completion=`0x8118483b`；page1 start 的 initDataRead：worker=`0x81184fff`、completion=`LAB_811850da_1`。**实现（18.4530，job_probes）**：当 `P5D_JOBINLINE=1` 且检测到 job 状态机在等未完成 job（state>=2、job+0xC!=0）时，先读 `node[0]`（worker）并 `call_guest_cb(s, worker, 0, 400000)` 真正执行，再让 JOBFORCE 清 `job+0xC` 推进：
+```cpp
+uint32_t _wfn=rd32(job), _cfn=rd32(job+4);
+if (_st>=2 && _js!=0 && _wfn) {
+    static std::set<uint32_t> _done;
+    if (_done.insert(_wfn).second) { printf("[JOBINLINE] job=%08X worker=%08X completion=%08X -> invoke"); call_guest_cb(s,_wfn,0u,400000); } }
+```
+编译成功（Idle 优先级；二进制含 `[JOBINLINE]`×2 / `[JOBFORCE]`×1）；已启动验证运行 `P5D_JOBFORCE=1 P5D_JOBINLINE=1 P5D_VDEC=1 P5D_VDECPROBE=1`（`out80m_m1061jobinline.txt`）。
+NEXT：`[JOBINLINE] worker=81184809 ... returned` → init trophy 真正跑完 → 后续对象注册（`FUN_8116f900(0x81309644/0x81309690)` 可查到）→ 场景页 update 返回 1 → page1 推进（新 draw/present）→ S1_TITLE 画面；若 worker 内还需要 GXM/线程 HLE 数据，继续补齐。 |
+| §18.4530 | The real job-worker execution point is decompiled + P5D_JOBINLINE implemented (actually invoke the worker callback before force-completing, so the initialization work really happens). Decompiled: FUN_8116f748(node) = DAT_815554c0=node; (*(code*)*node)(); DAT_815554c0=0; -> the job node's [0] field is the worker callback (called with no args); FUN_8116f75e(node) = DAT_815554c0=node; (**(code**)(node+4))(); -> node[1] is the completion callback, then the node is unlinked from DAT_815554c4/c8 and freed. Job node (0x1C bytes) layout: [0]=worker fn, [1]=completion fn, [2]=arg, [3]=FUN_8116f9dc-returned pool node pointer (completion state). init trophy submit: worker=0x81184809 (FUN_81184808 -> FUN_8102d53c/FUN_8102d544 trophy init), completion=0x8118483b; page1 start's initDataRead: worker=0x81184fff, completion=LAB_811850da_1. Implementation 18.4530 in job_probes: when P5D_JOBINLINE=1 and the job state machine is waiting on an incomplete job (state>=2, job+0xC!=0), first read node[0] (worker) and call_guest_cb(s, worker, 0, 400000) to really execute it, then let JOBFORCE clear job+0xC to advance: uint32_t _wfn=rd32(job), _cfn=rd32(job+4); if(_st>=2 && _js!=0 && _wfn){ static std::set<uint32_t> _done; if(_done.insert(_wfn).second){ printf('[JOBINLINE] job=%08X worker=%08X completion=%08X -> invoke'); call_guest_cb(s,_wfn,0u,400000); } }. Compiled OK (Idle priority; binary contains [JOBINLINE] x2 / [JOBFORCE] x1); verification run started with P5D_JOBFORCE=1 P5D_JOBINLINE=1 P5D_VDEC=1 P5D_VDECPROBE=1 (out80m_m1061jobinline.txt). NEXT: [JOBINLINE] worker=81184809 ... returned -> init trophy really completes -> the objects register (FUN_8116f900(0x81309644/0x81309690) find them) -> scene page update returns 1 -> page1 advances (new draws/presents) -> S1_TITLE picture; if the worker still needs GXM/thread HLE data, keep filling it in. |
 1) 反编译 `FUN_8116f9dc`（job 节点构造）：
 ```c
 uVar5=*param_2; uVar4=param_2[1]; uVar3=param_2[2]; uVar2=param_2[3];
@@ -491619,3 +491629,57 @@ FUN_8116f7ca(0,"initDataRead",200,0,0,0x81184fff,LAB_811850da_1,iVar3);
 ANTI-FORGETTING ENTRY. Keywords: M984 async job execution mechanism decompiled: FUN_8116f9dc -> FUN_811dab8c = app async job queue dispatcher (job node pool FUN_811d9f4a(DAT_816cda48), priority queues DAT_816cd9c0/DAT_816cd9bc and DAT_816cd9c8/DAT_816cd9c4, mutex DAT_816cd9f0, state 1=queued/2=..., worker callbacks 0x8116fa5d/0x8116fa67, status query FUN_8116fa38->FUN_811daf12). Runtime logs confirm job consumer threads exist: [THR] create tid=40011000 entry=811E68C9; [JOBQ] consumer q(r0)=84857A7C thr=40018000 fib=848463A0; [JOBQ] consumer q(r0)=8489909C thr=40019000 fib=848463A0; [SCREATE] gfdJobCountSema/gfdJobEmptySema; [EFCREATE] gfdJobEventFlag. In fiber mode the consumers do not advance so submitted jobs never complete; P5D_HOSTTHREADS=1 test hung at early boot (out80m_m1060hostthr.txt: 1.7M lines but no [FRAMEDUMP]/[PRESENT]/[JOBQ]) => host-thread mode currently unusable, fiber mode baseline. FUN_8118479c (page1 start) submits a second job: FUN_8116f7ca(0,'initDataRead',200,0,0,0x81184fff,LAB_811850da_1,iVar3). NEXT: in fiber mode the job consumer threads likely block on sema/event waits we do not service/pump; add probes to consumer loop 0x810160E8 and wait points; explicitly wake the job consumers from the main pump or run the worker inline at submission; then page1 start=0x8118479C's 8-step chain advances -> scene update objects appear -> S1_TITLE picture.
 
 LOOKUP: asyncdisp.txt, FUN_8116f9dc, FUN_811dab8c, DAT_816cda48, DAT_816cd9f0, DAT_816cd9c0, DAT_816cd9bc, DAT_816cd9c8, DAT_816cd9c4, 0x8116fa5d, 0x8116fa67, FUN_8116fa38, FUN_811daf12, FUN_8118479c, initDataRead, 0x81184fff, LAB_811850da_1, [JOBQ], gfdJobCountSema, gfdJobEmptySema, gfdJobEventFlag, P5D_HOSTTHREADS, out80m_m1060hostthr.txt -> §18.4528 [relevant: scene pages], §18.4527 [relevant: JOBFORCE]
+### 18.4530 PORT M985: job worker 真实执行点（FUN_8116f748/FUN_8116f75e）+ P5D_JOBINLINE
+
+1) 反编译 job 执行器：
+```c
+// FUN_8116f748(node)：调用 worker（node[0]，无参数）
+DAT_815554c0 = node;
+(*(code *)*node)();
+DAT_815554c0 = 0;
+
+// FUN_8116f75e(node)：调用完成回调（node[1]）→ 从 DAT_815554c4/c8 链表摘除 → 释放
+DAT_815554c0 = node;
+(**(code **)(node + 4))();
+...unlink...
+FUN_8115d43c(...);
+```
+**job 节点布局（0x1C 字节）**：
+```
+[0] = worker 回调函数（无参数）        [1] = completion 回调
+[2] = arg                             [3] = FUN_8116f9dc 返回的池节点指针（完成状态）
+```
+2) init trophy 提交（page1 step0）：
+```
+worker = 0x81184809  → FUN_81184808 → FUN_8102d53c (FUN_8102d554) / FUN_8102d544 (FUN_8102d55e) 奖杯初始化
+completion = 0x8118483b
+```
+page1 start 的第二个 job（initDataRead）：
+```
+worker = 0x81184fff , completion = LAB_811850da_1
+```
+3) 实现 `P5D_JOBINLINE`（18.4530，`recomp_harness.cpp` job_probes）：
+```cpp
+uint32_t _wfn = rd32(job), _cfn = rd32(job+4);
+if (_st>=2u && _js!=0u && _wfn) {
+    static std::set<uint32_t> _done;
+    if (_done.insert(_wfn).second) {
+        printf("[JOBINLINE] job=%08X worker=%08X completion=%08X -> invoke\n",...);
+        call_guest_cb(s, _wfn, 0u, 400000);      // ★ 真正执行 worker（初始化工作）
+        printf("[JOBINLINE] worker=%08X returned\n",_wfn); } }
+```
+（随后原 JOBFORCE 逻辑清 `job+0xC` 让状态机推进。）
+4) 编译成功（Idle 优先级），二进制含 `[JOBINLINE]`×2、`[JOBFORCE]`×1。
+5) 验证运行：`P5D_JOBFORCE=1 P5D_JOBINLINE=1 P5D_VDEC=1 P5D_VDECPROBE=1` → `out80m_m1061jobinline.txt`
+NEXT：
+```
+① [JOBINLINE] worker=81184809 ... returned → init trophy 真正跑完
+② FUN_8116f900(0x81309644/0x81309690) 能查到对象 → 场景页 update 返回 1
+③ page1 推进（新 draw/present）→ S1_TITLE 画面
+④ worker 内部若需其它 HLE（GXM/线程/时间），继续补齐
+```
+验证：`jobrun.txt`（反编译）、`out80m_m1061jobinline.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M985 job worker execution point decompiled + P5D_JOBINLINE implemented. FUN_8116f748(node) = DAT_815554c0=node; (*(code*)*node)(); DAT_815554c0=0; => the job node's [0] field is the worker callback (called with no args). FUN_8116f75e(node) = DAT_815554c0=node; (**(code**)(node+4))(); then unlink from DAT_815554c4/c8 and free => node[1] is the completion callback. Job node (0x1C bytes) layout: [0]=worker fn, [1]=completion fn, [2]=arg, [3]=FUN_8116f9dc-returned pool node pointer (completion state). init trophy submit: worker=0x81184809 (FUN_81184808 -> FUN_8102d53c/FUN_8102d544 trophy init), completion=0x8118483b; page1 start's initDataRead: worker=0x81184fff, completion=LAB_811850da_1. Implementation 18.4530 in job_probes: if P5D_JOBINLINE=1 and state>=2 and job+0xC!=0: _wfn=rd32(job); _cfn=rd32(job+4); if(_wfn){ static std::set<uint32_t> _done; if(_done.insert(_wfn).second){ printf('[JOBINLINE] job=%08X worker=%08X completion=%08X -> invoke'); call_guest_cb(s,_wfn,0u,400000); printf('[JOBINLINE] worker=%08X returned'); } } then the existing JOBFORCE clears job+0xC to advance. Compiled OK (Idle priority; binary contains [JOBINLINE] x2 / [JOBFORCE] x1); verification run P5D_JOBFORCE=1 P5D_JOBINLINE=1 P5D_VDEC=1 P5D_VDECPROBE=1 -> out80m_m1061jobinline.txt. NEXT: [JOBINLINE] worker=81184809 ... returned -> init trophy really completes -> FUN_8116f900(0x81309644/0x81309690) finds the objects -> scene page update returns 1 -> page1 advances (new draws/presents) -> S1_TITLE picture; if the worker needs more HLE (GXM/thread/time) keep filling it in.
+
+LOOKUP: M985, P5D_JOBINLINE, [JOBINLINE], FUN_8116f748, FUN_8116f75e, job node [0]=worker [1]=completion [2]=arg [3]=state, 0x81184809, 0x8118483b, 0x81184fff, LAB_811850da_1, FUN_8102d53c, FUN_8102d544, call_guest_cb, out80m_m1061jobinline.txt -> §18.4529 [relevant: job queue dispatcher], §18.4528 [relevant: scene pages]

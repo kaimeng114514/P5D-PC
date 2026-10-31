@@ -1142,6 +1142,30 @@ static void job_probes(uint32_t pcv, RecState* s) {
         if (_c++ < 12) { printf("[SCENEFN] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X n=%u\n",
             _p, s->r[0], s->r[1], s->r[2], s->r[3], s->r[13], g_main_n); fflush(stdout); } } } }
 
+
+  // 18.4530 M985: P5D_JOBINLINE - before force-completing a stalled async job, actually INVOKE its worker
+  // callback (the 0x1C-byte app job node's [0] field, called with no args by FUN_8116f748) so the real
+  // initialization work (e.g. init trophy -> FUN_8102d53c/FUN_8102d544) does happen and the objects later
+  // scene-page steps poll (FUN_8116f900) really get created.
+  { static int _ji = -1;
+    if (_ji < 0) { const char* _e = getenv("P5D_JOBINLINE"); _ji = (_e && atoi(_e)) ? 1 : 0; }
+    if (_ji && (pcv & ~1u) == 0x81184FFEu && s->r[0]) {
+      uint32_t _so2 = 0, _job2 = 0;
+      { uint8_t* _q = GP(s->r[0] + 8u); if (_q) std::memcpy(&_so2, _q, 4); }
+      if (_so2) { uint8_t* _q = GP(_so2 + 8u); if (_q) std::memcpy(&_job2, _q, 4); }
+      if (_job2) {
+        uint32_t _st2 = 0, _js2 = 0, _wfn = 0, _cfn = 0;
+        { uint8_t* _q = GP(_so2); if (_q) std::memcpy(&_st2, _q, 4); }
+        { uint8_t* _q = GP(_job2 + 0xCu); if (_q) std::memcpy(&_js2, _q, 4); }
+        { uint8_t* _q = GP(_job2); if (_q) std::memcpy(&_wfn, _q, 4); }
+        { uint8_t* _q = GP(_job2 + 4u); if (_q) std::memcpy(&_cfn, _q, 4); }
+        if (_st2 >= 2u && _js2 != 0u && _wfn != 0u) {
+          static std::set<uint32_t> _done;
+          if (_done.insert(_wfn).second) {
+            printf("[JOBINLINE] job=%08X worker=%08X completion=%08X n=%u -> invoke\n", _job2, _wfn, _cfn, g_main_n);
+            fflush(stdout);
+            call_guest_cb(s, _wfn, 0u, 400000);
+            printf("[JOBINLINE] worker=%08X returned n=%u\n", _wfn, g_main_n); fflush(stdout); } } } } }
   // 18.4527 M981: P5D_JOBFORCE - force-complete the app async job the page1 init pipeline is waiting on.
   // Guest FUN_81184ffe is a step state machine: piVar1 = *(u32*)(param_1+8); state=piVar1[0], idx=piVar1[1],
   // job=piVar1[2]; when state==2 it polls FUN_8116f8d2(job) which returns 0 iff *(u32*)(job+0xC)==0.
