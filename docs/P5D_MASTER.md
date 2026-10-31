@@ -972,6 +972,30 @@
 | M954 | §18.4499: ★★★★★★★★★★ **【GPU 渲染链路彻底打通——第一帧真实渲染画面（红色三角形）】`upload_vertex_stream`（128B 步长测试三角形）+ passthrough VS + 红 FS → RT 截图从全黑变为"黑底红色三角形"（nonblack=65,280 px，bbox=(240,136)-(719,406)，颜色 red (224..255,0,0)）；全链路 = 顶点上传 → 真实 Vulkan 管线（stride 128/loc0..7）→ 顶点着色器 → 光栅化 → 片元着色器 → RT(8D300000) → RT→swapchain 拷贝 → `vkQueuePresentKHR result=0` 全部工作！** 证据（`out62m_m1036tri.txt`）：
 | M955 | §18.4500: **实现真实 GXM 顶点流通路（第一版）：捕获 `SceGxmVertexAttribute[]/SceGxmVertexStream[]` 与 `SetVertexStream` 的 guest VA，在 draw 时按 128 字节步长布局解包并 `upload_vertex_stream`**。依据（Vita SDK 签名，来自 `gxm_abi.cpp` 的 guest ABI 注释）：
 | M956 | §18.4501: **真实顶点流诊断结果：page1 的绘制序列 = `sceGxmSetVertexStream(ctx, 0, 0x8E500000)` → 索引绘制 `sceGxmDraw(ctx, prim=0, indexType=0, indexData=0x8E600000, indexCount=?)`；但 `CreateVertexProgram` 解析出 `attrN=0`（属性表为空）导致解包未触发（`[ABIVTX]` 0 条）**。`out62m_m1037vtx.txt` 证据：
+| M957 | §18.4502: **确认 `CreateVertexProgram` 的原始参数：`r2=attributes(0x84856114)`、`r3=attributeCount=0`、`stk0=streams(0x848560F0)`、`stk1=streamCount=1`、`stk2=out`——引擎确实传 `attributeCount=0`；属性布局必须从 GXP program 的 `SceGxmProgramParameter` 表隐式推导（GXP 参数表：+0x24 pcount、+0x28 param offset、参数 16B：+0 name偏移、+4 u16 flags(cat=0 ATTRIBUTE,type,comp)、+8 array、+0xC resource index）。已实现：GXP 参数表解析 → 隐式 packed 布局（offset 累加）→ 128B 解包；同时索引绘制用 index buffer 求 max(index)+1 作顶点数；非 Precomputed 路径用 `sceGxmSetVertexProgram` 记录当前 program**。`out62m_m1038vtxdiag.txt` 证据：
+```
+[ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000000 stk0=848560F0 stk1=00000001 stk2=84B33484 gpr2=1 n=1717
+[ABIVARG]  r2words: 00000000 00000000 00000000 00000000 00000000 00000000 811C4414 00000000
+[ABIVARG]  stk0words: 0000000C 00000000 00000045 00000002 ...
+[ABIVARG] obj=8540C080 ... stk0words: 00000012 00000000 00000006 00000000 ...   ← streams[0]={stride=18,index=0}
+[ABIVARG] obj=8540C100 ... stk0words: 0000001A 00000000 00000008 00000004 ...   ← stride=26
+```
+GXP 参数表结构（来自 `tools/gxp_containers.py` 的验证代码）：
+```
++SceGxmProgram: +0x24 parameter_count, +0x28 parameter_table_offset
+参数项 (16B): +0 int name_offset; +4 u16 flags: cat=w0&0xF, type=(w0>>4)&0xF, comp=(w0>>8)&0xF;
+             +8 u32 array_size; +0xC u32 resource_index(register/SA offset)
+SceGxmParameterCategory: 0=ATTRIBUTE
+SceGxmParameterType: 0=FLOAT(4B), 1=HALF(2B), 2=FIXED(4B), 3=PACKED_HALF(2B), 4=U8(1B), 5=S8(1B), 6=U16(2B), 7=S16(2B)
+```
+实现（18.4502，`recomp_harness.cpp`）：
+1) `_pid2gxp[programId] = GXP VA`（RegisterProgram 时记录）；
+2) CreateVertexProgram 在 `attrN==0` 时解析 GXP 参数表：cat==0 的项 → 隐式属性序列（offset 从 0 累加 `comp*typeSize`），打印 `[ABIGXPP] gxp=... pcount=... ATTR[i] name=... typ=... comp=... -> implicit off=...`；
+3) `sceGxmSetVertexProgram` 记录 `_cur_vobj`（非 Precomputed 路径），打印 `[ABIVP]`；
+4) `sceGxmDraw`：索引绘制时读 index buffer（indexType=0→u16，否则 u32），`_vc = max(index)+1`，打印 `[ABIIDX]`；然后按 `_vobj2attrs[_cur_vobj]` + `SceGxmVertexStream.stride` 解包 → `upload_vertex_stream(vc*128, vc)`，打印 `[ABIVTX]`。
+编译链接成功；已启动 62M 运行（`out62m_m1039vtx2.txt`，真实着色器+红 FS）。
+NEXT：若 `[ABIGXPP]` 属性表合理（如位置 FLOAT×3=12B、颜色/UV 紧随）且 `[ABIVTX]` 解包成功 → RT 出现真实几何（红 FS 涂色）；随后用真实 FS 观察真实画面。 |
+| §18.4502 | Confirmed the CreateVertexProgram raw arguments: r2=attributes(0x84856114), r3=attributeCount=0, stk0=streams(0x848560F0), stk1=streamCount=1, stk2=out - the engine really passes attributeCount=0; the attribute layout must be derived implicitly from the GXP program's SceGxmProgramParameter table (+0x24 pcount, +0x28 parameter offset, 16B entries: +0 name offset, +4 u16 flags(cat=0 ATTRIBUTE,type,comp), +8 array, +0xC resource index). Implemented: GXP parameter table parsing -> implicit packed layout (offsets accumulated) -> 128B unpacking; indexed draws now compute the vertex count as max(index)+1 from the index buffer; the non-Precomputed path records the current program via sceGxmSetVertexProgram. Evidence (out62m_m1038vtxdiag.txt): [ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000000 stk0=848560F0 stk1=00000001 stk2=84B33484 gpr2=1 n=1717; [ABIVARG] r2words: 00000000 ... (attributes array empty since count=0); [ABIVARG] stk0words: 0000000C 00000000 ... (streams[0]={stride=12,index=0}); obj=8540C080 stk0words 00000012 00000000 (stride=18); obj=8540C100 stk0words 0000001A 00000000 (stride=26). GXP parameter table structure (from tools/gxp_containers.py): SceGxmProgram +0x24 parameter_count, +0x28 parameter_table_offset; entry (16B): +0 int name_offset; +4 u16 flags: cat=w0&0xF, type=(w0>>4)&0xF, comp=(w0>>8)&0xF; +8 u32 array_size; +0xC u32 resource_index; category 0=ATTRIBUTE; type 0=FLOAT(4B),1=HALF(2B),2=FIXED(4B),3=PACKED_HALF(2B),4=U8(1B),5=S8(1B),6=U16(2B),7=S16(2B). Implementation 18.4502 in recomp_harness.cpp: (1) _pid2gxp[programId]=GXP VA at RegisterProgram; (2) at CreateVertexProgram when attrN==0 parse the GXP parameter table, category-0 entries form the implicit attribute sequence with offsets accumulated from 0 by comp*typeSize, print [ABIGXPP] gxp=... pcount=... ATTR[i] name=... typ=... comp=... -> implicit off=...; (3) sceGxmSetVertexProgram records _cur_vobj (non-Precomputed path) printing [ABIVP]; (4) sceGxmDraw: for indexed draws read the index buffer (indexType=0 -> u16 else u32), _vc=max(index)+1, print [ABIIDX], then unpack via _vobj2attrs[_cur_vobj] + SceGxmVertexStream.stride -> upload_vertex_stream(vc*128, vc) and print [ABIVTX]. Build+link OK; 62M run started (out62m_m1039vtx2.txt, real shaders+red FS). NEXT: if [ABIGXPP] looks plausible (position FLOATx3=12B, color/UV following) and [ABIVTX] succeeds, real geometry should appear in the RT (painted by the red FS); afterwards use the real FS to observe the real picture. |
 ```
 [ABIVFMT] obj=8540C000 attrN=0 streamN=1 n=1717   ← 每个顶点程序都解析出 0 属性
 [ABIVFMT]  strm0 stride=12 idx=0
@@ -489338,3 +489362,46 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M956 real vertex stream diagnostic - page1's draw sequence is sceGxmSetVertexStream(ctx,0,0x8E500000) then an indexed draw sceGxmDraw(ctx,prim=0,indexType=0,indexData=0x8E600000,indexCount=?) but CreateVertexProgram parses attrN=0 (empty attribute array) so unpacking never fires ([ABIVTX] 0). Evidence out62m_m1037vtx.txt: [ABIVFMT] obj=8540C000 attrN=0 streamN=1 n=1717; [ABIVFMT] strm0 stride=12/18/26/20/28 idx=0; [ABIVS] sceGxmPrecomputedDrawSetVertexStream idx=0 va=90039980 n=6893703; [ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59454976; [GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r1=0 r2=0 r3=8E600000; [ABIVTX] 0. Analysis: _stk[0] (streams) parses strides 12/18/26/28 and _stk[1] (streamCount=1) correctly so the 7-arg stack mapping is right; attributes (r2)/attributeCount (r3) parse to 0 so raw args must be printed; page1 uses the non-Precomputed sceGxmSetVertexStream(context,0,0x8E500000) plus an indexed draw (indexData=0x8E600000); the GXMABI log cap (first 4000 lines) hides page1's SetVertexProgram/SetUniformF/Texture calls. DIAGNOSTIC ENHANCEMENTS 18.4501: [ABIVARG] prints CreateVertexProgram raw r0..r3/stk0..stk2 + GP(r2)/GP(stk0) translatability + first 8 words; [GXMABI] always-logging extended to SetVertexProgram/SetFragmentProgram/SetUniform/SetVertexStream/SetTexture/PrecomputedDrawSetParams/SetDefaultUniformBuffer/TextureInit (cap 1200). Build+link OK (binary contains [ABIVARG]); 62M diagnostic run started out62m_m1038vtxdiag.txt. NEXT: fix attributes parsing per [ABIVARG]; if the engine really passes attrCount=0 take formats/component counts from the GXP program attribute parameter table (offsets/strides still from SceGxmVertexStream), record the current program at sceGxmSetVertexProgram/SetVertexStream, and at draw time use the index buffer (0x8E600000) to get the real vertex count for unpacking.
 
 LOOKUP: [ABIVFMT], [ABIVS], [ABIVARG], sceGxmSetVertexStream, indexData 0x8E600000, 0x8E500000, out62m_m1038vtxdiag.txt -> §18.4500 [relevant: vertex capture implementation], §18.4499 [relevant: first rendered frame]
+### 18.4502 PORT M957: GXP 隐式属性布局 + 索引顶点数（真实顶点解包第二版）
+
+1) `out62m_m1038vtxdiag.txt` 原始参数：
+```
+[ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000000 stk0=848560F0 stk1=00000001 stk2=84B33484 gpr2=1 n=1717
+[ABIVARG]  r2words: 00000000 00000000 00000000 00000000 00000000 00000000 811C4414 00000000
+[ABIVARG]  stk0words: 0000000C 00000000 00000045 00000002 ...
+[ABIVARG] obj=8540C080 ... stk0words: 00000012 00000000 ...   （streams[0]={stride=18,index=0}）
+[ABIVARG] obj=8540C100 ... stk0words: 0000001A 00000000 ...   （stride=26）
+```
+→ `attributeCount` 确实为 0；`streams`/`streamCount` 解析正确。
+
+2) GXP 参数表结构（来自 `tools/gxp_containers.py` 已验证代码）：
+```
+SceGxmProgram: +0x24 u32 parameter_count, +0x28 u32 parameter_table_offset
+参数项 (16B): +0 int name_offset; +4 u16 flags(cat=w0&0xF, type=(w0>>4)&0xF, comp=(w0>>8)&0xF);
+             +8 u32 array_size; +0xC u32 resource_index
+参数类别: 0=ATTRIBUTE；类型: 0=FLOAT(4B),1=HALF(2B),2=FIXED(4B),3=PACKED_HALF(2B),4=U8,5=S8,6=U16,7=S16
+```
+
+3) 实现（18.4502，`recomp_harness.cpp`）：
+```cpp
+// (a) RegisterProgram: _pid2gxp[_nextid] = GXP VA
+// (b) CreateVertexProgram 且 _av.empty(): 解析 GXP 参数表 → 隐式属性
+uint32_t _pc=0,_po=0; memcpy(&_pc,_g+0x24,4); memcpy(&_po,_g+0x28,4);
+uint32_t _pbase=0x28+_po; uint32_t _off=0;
+for (_i=0.._pc) {
+    uint8_t* _p = GP(_pbase + _i*16);
+    int32_t _no = rd32(_p); uint16_t _w0 = rd16(_p+4);
+    uint32_t _cat=_w0&0xF, _typ=(_w0>>4)&0xF, _cmp=(_w0>>8)&0xF;
+    if (_cat==0 && _cmp>=1 && _cmp<=4) { attr{stream=0, offset=_off, fmt=map(_typ), comps=_cmp}; _off += _cmp*typeSize(_typ); }
+}
+// (c) SetVertexProgram -> _cur_vobj
+// (d) 索引绘制：_vc = max(index)+1（读 index buffer，u16/u32）
+// (e) 解包 + upload_vertex_stream(_vc*128, _vc)
+```
+4) 编译链接成功（含 `[ABIGXPP]/[ABIIDX]/[ABIVP]`）；已启动 62M 运行：`out62m_m1039vtx2.txt`。
+NEXT：`[ABIGXPP]` 属性表合理性（位置 FLOAT×3=12B 等）+ `[ABIVTX]` 解包成功 → RT 出现真实几何（红 FS 涂色）→ 切真实 FS 看真实画面。
+验证：`out62m_m1038vtxdiag.txt`、`out62m_m1039vtx2.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M957 CreateVertexProgram really passes attributeCount=0 (r2=attributes 0x84856114, r3=0, stk0=streams 0x848560F0, stk1=streamCount 1, stk2=out) so the attribute layout must be derived implicitly from the GXP program's SceGxmProgramParameter table: SceGxmProgram +0x24 parameter_count, +0x28 parameter_table_offset; entry (16B): +0 int name_offset, +4 u16 flags (cat=w0&0xF, type=(w0>>4)&0xF, comp=(w0>>8)&0xF), +8 u32 array_size, +0xC u32 resource_index; category 0=ATTRIBUTE; type 0=FLOAT(4B),1=HALF(2B),2=FIXED(4B),3=PACKED_HALF(2B),4=U8(1B),5=S8(1B),6=U16(2B),7=S16(2B). Evidence out62m_m1038vtxdiag.txt: [ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000000 stk0=848560F0 stk1=00000001 stk2=84B33484 gpr2=1 n=1717; r2words all zero; stk0words 0000000C 00000000 (streams[0]={stride=12,index=0}); obj=8540C080 stk0words 00000012 (stride=18); obj=8540C100 stk0words 0000001A (stride=26). Implementation 18.4502 in recomp_harness.cpp: (a) RegisterProgram sets _pid2gxp[_nextid]=GXP VA; (b) at CreateVertexProgram when _av.empty() parse the GXP parameter table (pc=g+0x24, po=g+0x28, pbase=0x28+po, 16B entries, category==0 -> attr{stream=0, offset=accumulated, fmt=mapped, comps}, _off += _cmp*typeSize) printing [ABIGXPP] gxp=... pcount=... ATTR[i] name=... typ=... comp=... -> implicit off=...; (c) sceGxmSetVertexProgram records _cur_vobj printing [ABIVP]; (d) indexed draws compute _vc=max(index)+1 from the index buffer (u16 if indexType==0 else u32) printing [ABIIDX]; (e) unpack via _vobj2attrs[_cur_vobj] + SceGxmVertexStream.stride -> upload_vertex_stream(vc*128, vc) printing [ABIVTX]. Build+link OK (binary contains [ABIGXPP]/[ABIIDX]/[ABIVP]); 62M run started out62m_m1039vtx2.txt (real shaders + red FS). NEXT: check that [ABIGXPP] attribute tables look plausible (position FLOATx3=12B etc.) and [ABIVTX] unpacking succeeds, which should put real geometry into the RT painted red; then switch to the real FS to observe the real picture.
+
+LOOKUP: [ABIVARG], gxp_containers.py, SceGxmProgramParameter, +0x24 parameter_count, +0x28 parameter_offset, [ABIGXPP], [ABIIDX], [ABIVP], out62m_m1039vtx2.txt -> §18.4501 [relevant: attrN=0 diagnosis], §18.4500 [relevant: first vertex capture]

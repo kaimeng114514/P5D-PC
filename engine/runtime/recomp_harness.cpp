@@ -1489,6 +1489,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       struct AbiVStream { uint32_t stride, index; };
       static std::map<uint32_t, std::vector<AbiVAttr> > _vobj2attrs;
       static std::map<uint32_t, std::vector<AbiVStream> > _vobj2strms;
+      static std::map<uint32_t, uint32_t> _pid2gxp;   // 18.4502 M957: program id -> GXP guest VA
       static std::map<uint32_t, uint32_t> _stm2va;
       static uint32_t _cur_vobj = 0;
       if (_abi_man_st < 0) { _abi_man_st = 0;
@@ -1607,7 +1608,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (strstr(_ge->name, "ShaderPatcherRegisterProgram")) {
           uint64_t _gh = hle_gxp_hash(s->r[1]); auto _it = _gh ? _abi_man.find(_gh) : _abi_man.end();
           if (_it != _abi_man.end()) { uint8_t* _q = GP(s->r[2]);
-            if (_q) { std::memcpy(_q, &_nextid, 4); _pid2spv[_nextid] = _it->second;
+            if (_q) { std::memcpy(_q, &_nextid, 4); _pid2spv[_nextid] = _it->second; _pid2gxp[_nextid] = s->r[1];
               static int _n=0; if (_n++<12) printf("[ABIPGID] id=%08X hash=%016llX spv=%s n=%u\n", _nextid, (unsigned long long)_gh, _it->second.c_str(), g_main_n);
               _nextid += 0x20u; } } }
         else if (strstr(_ge->name, "ShaderPatcherCreateVertexProgram") || strstr(_ge->name, "ShaderPatcherCreateFragmentProgram")) {
@@ -1630,6 +1631,32 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
                 for (uint32_t _i = 0; _i < _sc && _i < 8u; ++_i) { uint8_t* _q2 = GP(_sp2 + _i*4u); if (!_q2) break;
                   uint16_t _sd=0,_ix=0; std::memcpy(&_sd,_q2,2); std::memcpy(&_ix,_q2+2,2);
                   AbiVStream _v{}; _v.stride=_sd; _v.index=_ix; _sv.push_back(_v); }
+                if (_av.empty()) {   // 18.4502 M957: engine passes attributeCount=0 -> derive implicit packed layout from GXP
+                  auto _gt = _pid2gxp.find(s->r[1]);
+                  uint8_t* _g = (_gt != _pid2gxp.end()) ? GP(_gt->second) : nullptr;
+                  if (_g) {
+                    uint32_t _pc=0,_po=0; std::memcpy(&_pc,_g+0x24,4); std::memcpy(&_po,_g+0x28,4);
+                    uint32_t _pbase = 0x28u + _po; uint32_t _off = 0;
+                    printf("[ABIGXPP] gxp=%08X pcount=%u pbase=%X n=%u\n", _gt->second, _pc, _pbase, g_main_n);
+                    for (uint32_t _i=0; _i<_pc && _i<64u; ++_i) {
+                      uint8_t* _p = GP(_pbase + _i*16u); if (!_p) break;
+                      int32_t _no=0; std::memcpy(&_no,_p,4);
+                      uint16_t _w0=0; std::memcpy(&_w0,_p+4,2);
+                      uint32_t _cat=_w0&0xFu, _typ=(_w0>>4)&0xFu, _cmp=(_w0>>8)&0xFu;
+                      uint32_t _arr=0,_res=0; std::memcpy(&_arr,_p+8,4); std::memcpy(&_res,_p+0xC,4);
+                      const char* _nm = "?";
+                      uint8_t* _np = GP((uint32_t)(_pbase + _i*16u + _no)); if (_np) _nm = (const char*)_np;
+                      uint32_t _tsz = (_typ==0)?4u:((_typ==1||_typ==3)?2u:((_typ==2)?4u:((_typ==4||_typ==5)?1u:2u)));
+                      if (_cat==0u && _cmp>=1u && _cmp<=4u && _tsz) {
+                        AbiVAttr _a{}; _a.stream=0u; _a.offset=_off;
+                        _a.fmt = (_typ==0)?4u:((_typ==1||_typ==3)?5u:((_typ==2)?6u:((_typ==4)?0u:((_typ==5)?1u:((_typ==6)?2u:3u)))));
+                        _a.comps=_cmp; _av.push_back(_a);
+                        printf("[ABIGXPP]  ATTR[%u] name=%s typ=%u comp=%u -> implicit off=%u fmt=%u\n", (unsigned)_i, _nm, _typ, _cmp, _off, _a.fmt);
+                        _off += _cmp*_tsz; }
+                      else if (_cat==0u) { printf("[ABIGXPP]  ATTR[%u] name=%s typ=%u comp=%u (skipped)\n", (unsigned)_i, _nm, _typ, _cmp); }
+                    }
+                  }
+                }
                 _vobj2attrs[_nextobj] = _av; _vobj2strms[_nextobj] = _sv;
                 printf("[ABIVFMT] obj=%08X attrN=%u streamN=%u n=%u\n", _nextobj, (unsigned)_av.size(), (unsigned)_sv.size(), g_main_n);
                 for (size_t _i=0;_i<_av.size() && _i<8;++_i) printf("[ABIVFMT]  attr%zu stream=%u off=%u fmt=%u comps=%u\n", _i, _av[_i].stream, _av[_i].offset, _av[_i].fmt, _av[_i].comps);
@@ -1644,6 +1671,9 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
               static int _n3=0; if (_n3++<10) printf("[ABIOBJ] vert obj=%08X spv=%s\n", _obj, _it->second.c_str()); } }
           else { auto _it = _fobj2spv.find(_obj); if (_it != _fobj2spv.end() && _abi_fspv != _it->second) { _abi_fspv = _it->second;
               static int _n4=0; if (_n4++<10) printf("[ABIOBJ] frag obj=%08X spv=%s\n", _obj, _it->second.c_str()); } } } }
+      // 18.4502 M957: non-precomputed path - remember the current vertex program object
+      if (strstr(_ge->name, "SetVertexProgram")) { _cur_vobj = s->r[1];
+        static int _spn=0; if (_spn++<12) { printf("[ABIVP] SetVertexProgram obj=%08X n=%u\n", s->r[1], g_main_n); fflush(stdout); } }
       // 18.4500 M955: capture stream guest VA (both SetVertexStream and PrecomputedDrawSetVertexStream use (obj,index,data))
       if (strstr(_ge->name, "SetVertexStream")) {
         uint32_t _si = s->r[1], _va = s->r[2]; _stm2va[_si] = _va;
@@ -1651,7 +1681,17 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       }
       // 18.4500 M955: unpack the real GXM vertex streams into the pipeline layout (128B stride, loc0..7 vec4)
       if (strncmp(_ge->name, "sceGxmDraw", 10) == 0) {
-        uint32_t _vc = _stk[0];   // sceGxmDraw(ctx,prim,indexType,indexData,indexCount): indexCount = first stack arg
+        uint32_t _icount = _stk[0];   // sceGxmDraw(ctx,prim,indexType,indexData,indexCount): indexCount = first stack arg
+        uint32_t _vc = _icount;
+        {   // 18.4502 M957: indexed draw -> real vertex count = max(index)+1
+          uint32_t _itype = s->r[2], _idata = s->r[3];
+          if (_icount > 0u && _idata) { uint32_t _mx = 0; bool _any = false;
+            for (uint32_t _k = 0; _k < _icount && _k < 65536u; ++_k) { uint32_t _ix = 0;
+              if (_itype == 0u) { uint16_t _v16 = 0; uint8_t* _q = GP(_idata + _k*2u); if (!_q) break; std::memcpy(&_v16,_q,2); _ix = _v16; }
+              else { uint8_t* _q = GP(_idata + _k*4u); if (!_q) break; std::memcpy(&_ix,_q,4); }
+              if (_ix+1u > _mx) _mx = _ix+1u; _any = true; }
+            if (_any) _vc = _mx;
+            static int _ixn=0; if (_ixn++<8) { printf("[ABIIDX] icount=%u itype=%u idata=%08X maxvc=%u n=%u\n", _icount, _itype, _idata, _vc, g_main_n); fflush(stdout); } } }
         auto _at = _vobj2attrs.find(_cur_vobj);
         if (_at != _vobj2attrs.end() && !_at->second.empty() && _vc > 0u && _vc <= 65536u) {
           const std::vector<AbiVAttr>& _av = _at->second;
