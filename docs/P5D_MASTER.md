@@ -1006,6 +1006,35 @@
 | M988 | §18.4533: ★★★★★★★ **找到 init trophy 永不完成的直接原因：`appOtNode` 的 "netTrophyProc" 状态检查 `FUN_8105a0d4` 永远返回 false（status<4）→ worker 返回 -1 → app job 永不完成**。反编译：
 | M989 | §18.4534: ★★★★★★★★ **`P5D_OTFORCE` 成功打通 job 完成链：状态强制 → worker 返回 0 → `[JOBDONE]` 首次出现 → job 状态机**自然推进**（JOBFORCE 关闭也推进！）**。证据（`out80m_m1063otforce.txt`）：
 | M990 | §18.4535: **page1 的 8 步初始化链全部反编译：它们是 boot 阶段的 "init *" proc 任务（init trophy / init sound / init gamedata / init msgwindow / init mainmenu / …），每个步骤 = 提交一个 app job（worker+completion）**。已查明的步骤与 worker/completion：
+| M991 | §18.4536: ★★★★★★★ **init 各步骤 worker 的完成检查全部反编译 + 实现 `P5D_STEPFORCE`（强制所有步骤完成）**。关键约定（由反编译确认）：**worker 返回负值 = job 完成；返回 0 = 还在等待**（与 trophy worker `FUN_81184808` 的 `return FUN_8102d544()==0 ? 0 : -1` 完全一致，OTForce 让其为 -1 → JOBDONE）。各 worker：
+```
+step1 init sound   worker 0x811848B6: FUN_8115478e() 一次 → FUN_8115487a()；!=0 返回 -1(完成)
+step2 init gamedata worker 0x81184964: 初始化 8108b46c 等 → 检查
+        FUN_810995d4 / 81082954 / 8108ec88 / 8108f6f0 / 8108fec2 / 81094c22 / 810900c2 / 8108b4b2
+        全部 !=0 时返回 -1(完成)
+step3 init msgwindow worker 0x81184A88: FUN_8103189c 一次 → FUN_81031904()；!=0 返回 -1
+step4 init mainmenu worker 0x81184B38: 初始化后检查
+        FUN_810e865c()==0 && FUN_810f0e68()!=0 && FUN_8111952e()!=0 &&
+        FUN_810f6938()!=0 && FUN_810e7280()!=0 && FUN_810e637a()!=0 → 返回 -1
+step5 worker 0x81184CF8: FUN_810499b4() 一次 → FUN_81049a76()；!=0 返回 -1
+```
+**`P5D_STEPFORCE`（18.4536，job_probes）**：在各检查函数 `bl` 之后的 block 直接改 `s->r[0]`：
+```cpp
+switch (pcv & ~1u) {
+  case 0x811848D6u: s->r[0]=1; break;                       // init sound FUN_8115487a done
+  case 0x811849A4u: case 0x811849ACu: case 0x811849B4u: case 0x811849BCu:
+  case 0x811849C4u: case 0x811849CCu: case 0x811849D4u: case 0x811849E0u:
+      s->r[0]=1; break;                                     // init gamedata checks pass
+  case 0x81184AA8u: s->r[0]=1; break;                       // init msgwindow FUN_81031904 done
+  case 0x81184B6Cu: s->r[0]=0; break;                       // init mainmenu FUN_810e865c==0
+  case 0x81184B74u: case 0x81184B7Cu: case 0x81184B88u:
+  case 0x81184B90u: case 0x81184B98u: s->r[0]=1; break;     // mainmenu 其余检查 !=0
+  case 0x81184D1Au: s->r[0]=1; break;                       // step5 FUN_81049a76 done
+  default: break; } }
+```
+编译成功（`P5D_STEPFORCE` 标签在二进制中）；验证运行：`P5D_OTFORCE=1 P5D_STEPFORCE=1`（**不用 JOBFORCE**，测试自然完成链）→ `out80m_m1065stepforce.txt`。
+NEXT：观察 `[JOBDONE2]` 连续出现、`[IDR] state/idx` 递增到 8 → page1 update 对象 0x81309690 就绪 → 场景推进 → 新 draw/present → S1_TITLE 画面；若第 6/7 步仍卡，继续反编译其 worker（0x81184DAA/0x81184E3E/0x81184F78/0x81184C72 附近）并加入 STEPFORCE。 |
+| §18.4536 | All init step workers' completion checks decompiled + P5D_STEPFORCE implemented (force all steps complete). Key convention (confirmed by decompilation): a NEGATIVE worker return means the job is DONE; returning 0 means still pending (consistent with the trophy worker FUN_81184808's return FUN_8102d544()==0 ? 0 : -1; OTForce made it -1 -> JOBDONE). Workers: step1 init sound worker 0x811848B6: FUN_8115478e() once then FUN_8115487a(); !=0 returns -1 (done); step2 init gamedata worker 0x81184964: init calls then checks FUN_810995d4/81082954/8108ec88/8108f6f0/8108fec2/81094c22/810900c2/8108b4b2, returns -1 when all !=0; step3 init msgwindow worker 0x81184A88: FUN_8103189c once then FUN_81031904(); !=0 -> -1; step4 init mainmenu worker 0x81184B38: checks FUN_810e865c()==0 && FUN_810f0e68()!=0 && FUN_8111952e()!=0 && FUN_810f6938()!=0 && FUN_810e7280()!=0 && FUN_810e637a()!=0 -> -1; step5 worker 0x81184CF8: FUN_810499b4 once then FUN_81049a76(); !=0 -> -1. P5D_STEPFORCE (18.4536, job_probes): set s->r[0] right after each check call: switch(pcv&~1u){ case 0x811848D6u: r[0]=1; break; case 0x811849A4u,0x811849ACu,0x811849B4u,0x811849BCu,0x811849C4u,0x811849CCu,0x811849D4u,0x811849E0u: r[0]=1; break; case 0x81184AA8u: r[0]=1; break; case 0x81184B6Cu: r[0]=0; break; case 0x81184B74u,0x81184B7Cu,0x81184B88u,0x81184B90u,0x81184B98u: r[0]=1; break; case 0x81184D1Au: r[0]=1; break; default: break; }. Compiled OK (P5D_STEPFORCE present in binary); verification run P5D_OTFORCE=1 P5D_STEPFORCE=1 (no JOBFORCE) -> out80m_m1065stepforce.txt. NEXT: watch [JOBDONE2] appear repeatedly and [IDR] state/idx increase to 8 -> page1 update object 0x81309690 ready -> scene advances -> new draws/presents -> S1_TITLE picture; if steps 6/7 still stall, decompile their workers (near 0x81184DAA/0x81184E3E/0x81184F78/0x81184C72) and add to STEPFORCE. |
 ```
 step0 0x8118484E "init trophy"    worker=0x81184809 completion=0x8118483B   [已完成：OTFORCE → JOBDONE]
 step1 0x811848FC "init sound"     worker=0x811848B7 completion=0x811848E8
@@ -492038,3 +492067,48 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M990 page1 8 init steps decompiled - they are boot-phase 'init *' proc tasks each submitting one app job. step0 0x8118484E 'init trophy' worker=0x81184809 completion=0x8118483B (done via OTForce -> JOBDONE); step1 0x811848FC 'init sound' worker=0x811848B7 completion=0x811848E8; step2 0x81184A06 'init gamedata' worker=0x81184965 completion=0x811849F2; step3 0x81184ACE 'init msgwindow' worker=0x81184A89 completion=0x81184ABA; step4 0x81184BBE 'init mainmenu' worker=0x81184B39 completion=0x81184BAA; step5..7 0x81184D40/0x81184E40/0x81184F7A/0x81184C74 same pattern. Evidence initsteps.txt: FUN_811848fc: FUN_8116f7ca(param_1,'init sound',200,0,0,0x811848b7,&LAB_811848e8_1,puVar3); FUN_81184a06: 'init gamedata' worker 0x81184965 completion &LAB_811849f2_1; FUN_81184ace: 'init msgwindow' worker 0x81184a89 completion &LAB_81184aba_1; FUN_81184bbe: 'init mainmenu' worker 0x81184b39 completion &LAB_81184baa_1. Probe evidence out80m_m1063otforce.txt: [PROCREG] #12 name='init trophy' cb1=81184809, #13 name='init sound' cb1=811848B7; [PROC] exec p=85B8861C cb0=811848B7 cb1=811848E9 n=1500000; [JOBEXEC] #20 node=85B86A1C worker=81184809 n=59604700; [JOBDONE] #1 node=85B86A1C n=59626301; [IDR] state=1 idx=1 n=59665000. Added probes 18.4535: [INITEXEC] tracks only the init trophy/sound/gamedata/msgwindow/mainmenu/initDataRead workers without cap; [JOBDONE2] prints all completion callbacks after page1 without cap. Compiled OK; verification run P5D_OTFORCE=1 P5D_JOBFORCE=1 + VDEC/probes -> out80m_m1064initjobs.txt. NEXT: [INITEXEC] to see whether init sound/gamedata/msgwindow/mainmenu execute at page1 and whether [JOBDONE2] appears; if a step's worker runs but completion does not fire, decompile that worker's completion check and force it via the OTForce pattern; all 8 steps complete -> page1 update object 0x81309690 ready -> scene advances -> new draws -> S1_TITLE picture.
 
 LOOKUP: M990, initsteps.txt, 0x811848FC init sound, 0x81184A06 init gamedata, 0x81184ACE init msgwindow, 0x81184BBE init mainmenu, worker 0x811848B7, worker 0x81184965, worker 0x81184A89, worker 0x81184B39, [INITEXEC], [JOBDONE2], [PROCREG], out80m_m1064initjobs.txt -> §18.4534 [relevant: JOBDONE natural advance], §18.4533 [relevant: OTFORCE]
+### 18.4536 PORT M991: init 各步骤 worker 完成检查反编译 + STEPFORCE
+
+1) **关键约定**（由反编译确认）：
+```
+worker 返回负值(-1) = job 完成；返回 0 = 还在等待
+（与 trophy worker FUN_81184808: return FUN_8102d544()==0 ? 0 : -1 一致；OTForce 使其 -1 → JOBDONE）
+```
+2) 各 worker 反编译摘要：
+```
+step1 init sound   worker 0x811848B6: FUN_8115478e() 一次 → FUN_8115487a()；!=0 返回 -1
+step2 init gamedata worker 0x81184964: 初始化 8108b46c 等 → 检查
+       FUN_810995d4/81082954/8108ec88/8108f6f0/8108fec2/81094c22/810900c2/8108b4b2
+       全部 !=0 时返回 -1
+step3 init msgwindow worker 0x81184A88: FUN_8103189c 一次 → FUN_81031904()；!=0 返回 -1
+step4 init mainmenu worker 0x81184B38: 初始化后检查
+       FUN_810e865c()==0 && FUN_810f0e68()!=0 && FUN_8111952e()!=0 &&
+       FUN_810f6938()!=0 && FUN_810e7280()!=0 && FUN_810e637a()!=0 → 返回 -1
+step5 worker 0x81184CF8: FUN_810499b4() 一次 → FUN_81049a76()；!=0 返回 -1
+```
+3) **`P5D_STEPFORCE`（18.4536）**：
+```cpp
+switch (pcv & ~1u) {
+  case 0x811848D6u: s->r[0]=1; break;                    // init sound FUN_8115487a done
+  case 0x811849A4u: case 0x811849ACu: case 0x811849B4u: case 0x811849BCu:
+  case 0x811849C4u: case 0x811849CCu: case 0x811849D4u: case 0x811849E0u:
+      s->r[0]=1; break;                                  // init gamedata checks pass
+  case 0x81184AA8u: s->r[0]=1; break;                    // init msgwindow FUN_81031904 done
+  case 0x81184B6Cu: s->r[0]=0; break;                    // init mainmenu FUN_810e865c == 0
+  case 0x81184B74u: case 0x81184B7Cu: case 0x81184B88u:
+  case 0x81184B90u: case 0x81184B98u: s->r[0]=1; break;  // mainmenu 其余检查 !=0
+  case 0x81184D1Au: s->r[0]=1; break;                    // step5 FUN_81049a76 done
+  default: break; }
+```
+4) 编译成功（`P5D_STEPFORCE` 入二进制）；验证运行：`P5D_OTFORCE=1 P5D_STEPFORCE=1`（无 JOBFORCE）→ `out80m_m1065stepforce.txt`
+NEXT：
+```
+① [JOBDONE2] 连续出现、[IDR] state/idx 递增到 8
+② page1 update 对象 0x81309690 就绪 → 场景推进 → 新 draw/present → S1_TITLE 画面
+③ 若第 6/7 步仍卡：反编译 worker 0x81184DAA/0x81184E3E/0x81184F78/0x81184C72 附近并加入 STEPFORCE
+```
+验证：`init_sound.txt`、`init_more.txt`、`out80m_m1065stepforce.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M991 all init step workers' completion checks decompiled + P5D_STEPFORCE implemented. Key convention: worker returning NEGATIVE means job DONE; returning 0 means still pending (consistent with trophy worker FUN_81184808: return FUN_8102d544()==0 ? 0 : -1; OTForce made it -1 -> JOBDONE). Workers: step1 init sound worker 0x811848B6: FUN_8115478e() once then FUN_8115487a(); !=0 returns -1. step2 init gamedata worker 0x81184964: init calls then checks FUN_810995d4/81082954/8108ec88/8108f6f0/8108fec2/81094c22/810900c2/8108b4b2, returns -1 when all !=0. step3 init msgwindow worker 0x81184A88: FUN_8103189c once then FUN_81031904(); !=0 -> -1. step4 init mainmenu worker 0x81184B38: FUN_810e865c()==0 && FUN_810f0e68()!=0 && FUN_8111952e()!=0 && FUN_810f6938()!=0 && FUN_810e7280()!=0 && FUN_810e637a()!=0 -> -1. step5 worker 0x81184CF8: FUN_810499b4 once then FUN_81049a76(); !=0 -> -1. P5D_STEPFORCE (18.4536, job_probes): switch(pcv&~1u){case 0x811848D6u: r[0]=1; break; case 0x811849A4u,0x811849ACu,0x811849B4u,0x811849BCu,0x811849C4u,0x811849CCu,0x811849D4u,0x811849E0u: r[0]=1; break; case 0x81184AA8u: r[0]=1; break; case 0x81184B6Cu: r[0]=0; break; case 0x81184B74u,0x81184B7Cu,0x81184B88u,0x81184B90u,0x81184B98u: r[0]=1; break; case 0x81184D1Au: r[0]=1; break; default: break; }. Compiled OK (P5D_STEPFORCE in binary); verification run P5D_OTFORCE=1 P5D_STEPFORCE=1 (no JOBFORCE) -> out80m_m1065stepforce.txt. NEXT: watch [JOBDONE2] appear repeatedly and [IDR] state/idx increase to 8 -> page1 update object 0x81309690 ready -> scene advances -> new draws/presents -> S1_TITLE picture; if steps 6/7 still stall decompile their workers (near 0x81184DAA/0x81184E3E/0x81184F78/0x81184C72) and add to STEPFORCE.
+
+LOOKUP: M991, P5D_STEPFORCE, [JOBDONE2], [INITEXEC], init sound worker 0x811848B6, FUN_8115487a, init gamedata worker 0x81184964, FUN_8108b4b2, init msgwindow worker 0x81184A88, FUN_81031904, init mainmenu worker 0x81184B38, FUN_810e865c, FUN_810f0e68, FUN_8111952e, FUN_810f6938, FUN_810e7280, FUN_810e637a, step5 worker 0x81184CF8, FUN_81049a76, 0x811848D6, 0x81184AA8, 0x81184D1A, init_sound.txt, init_more.txt, out80m_m1065stepforce.txt -> §18.4535 [relevant: 8 init steps], §18.4534 [relevant: JOBDONE]

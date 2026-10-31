@@ -1144,6 +1144,32 @@ static void job_probes(uint32_t pcv, RecState* s) {
 
 
 
+
+  // 18.4536 M991: P5D_STEPFORCE - force the page1 init-step workers' completion checks.
+  // Worker completion convention (from decompilation): a NEGATIVE return means "job finished";
+  // returning 0 means "still pending". The step workers call subsystem check functions and return
+  // 0 unless the checks pass. We patch the register right after each check call:
+  //   init sound   (0x811848B6): after bl 0x8115487a   @0x811848D6 -> r0=1
+  //   init gamedata(0x81184964): after 7 checks + FUN_8108b4b2 -> r0=1 at 0x811849A4/AC/B4/BC/C4/CC/D4/E0
+  //   init msgwindow(0x81184A88): after bl 0x81031904 @0x81184AA8 -> r0=1
+  //   init mainmenu (0x81184B38): after FUN_810e865c @0x81184B6C -> r0=0, others -> r0=1
+  //   step5 worker (0x81184CF8): after bl 0x81049a76 @0x81184D1A -> r0=1
+  { static int _sf = -1;
+    if (_sf < 0) { const char* _e = getenv("P5D_STEPFORCE"); _sf = (_e && atoi(_e)) ? 1 : 0; }
+    if (_sf) {
+      const uint32_t _p = pcv & ~1u;
+      switch (_p) {
+        case 0x811848D6u: s->r[0] = 1u; break;   // init sound: FUN_8115487a done
+        case 0x811849A4u: case 0x811849ACu: case 0x811849B4u: case 0x811849BCu:
+        case 0x811849C4u: case 0x811849CCu: case 0x811849D4u: case 0x811849E0u:
+          s->r[0] = 1u; break;                   // init gamedata checks pass
+        case 0x81184AA8u: s->r[0] = 1u; break;   // init msgwindow: FUN_81031904 done
+        case 0x81184B6Cu: s->r[0] = 0u; break;   // init mainmenu: FUN_810e865c == 0
+        case 0x81184B74u: case 0x81184B7Cu: case 0x81184B88u:
+        case 0x81184B90u: case 0x81184B98u:
+          s->r[0] = 1u; break;                   // init mainmenu: others != 0
+        case 0x81184D1Au: s->r[0] = 1u; break;   // step5 worker: FUN_81049a76 done
+        default: break; } } }
   // 18.4533 M988: P5D_OTFORCE - force the appOtNode "netTrophyProc" status check to succeed.
   // FUN_8105a0d4() returns 3 < **(int**)(DAT_8132f984 + 0x34); DAT_8132f984 is the low-level job
   // node submitted by FUN_8105a0ee("netTrophyProc"). Our HLE never advances that status, so the
