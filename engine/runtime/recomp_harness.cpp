@@ -1344,6 +1344,14 @@ static void canhle_check(uint32_t dst, uint32_t n, const char* k) {
       break; } }
 }
 static uint32_t canary_retry_pc(RecState* s);   // M831 (defined near fiber_load)
+static uint64_t hle_gxp_hash(uint32_t gxpva) {   // 18.4482 M937: FNV-1a64 over SceGxmProgram bytes
+  uint8_t* g = GP(gxpva); if (!g) return 0;
+  uint32_t mg = 0, sz = 0; std::memcpy(&mg, g, 4); std::memcpy(&sz, g + 8, 4);
+  if (mg != 0x00505847u || sz < 0x18u || sz > 0x40000u) return 0;
+  uint64_t h = 0xcbf29ce484222325ull;
+  for (uint32_t i = 0; i < sz; ++i) { h ^= (uint64_t)g[i]; h *= 1099511628211ull; }
+  return h;
+}
 extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   if (g_ngs_env < 0) { const char* _ge = getenv("P5D_NGS"); g_ngs_env = (_ge && atoi(_ge) != 0) ? 1 : 0; }
   if (g_main_n < 4000u) { static std::set<uint32_t> _seen; static int _n = 0;
@@ -1462,6 +1470,29 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         static int _pn = 0; if (_pn++ < 20) { printf("[ABIPIPE] v=%s f=%s rc=%d n=%u\n", _abi_vspv.c_str(), _abi_fspv.c_str(), _rc, g_main_n); fflush(stdout); } }
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
+      // 18.4482 M937: give the app real ShaderPatcher ids / program handles and capture their SPIR-V names.
+      { static std::map<uint32_t,std::string> _pid2spv, _vobj2spv, _fobj2spv;
+        static uint32_t _nextid = 0x8540B000u, _nextobj = 0x8540C000u;
+        if (strstr(_ge->name, "ShaderPatcherRegisterProgram")) {
+          uint64_t _gh = hle_gxp_hash(s->r[1]); auto _it = _gh ? _abi_man.find(_gh) : _abi_man.end();
+          if (_it != _abi_man.end()) { uint8_t* _q = GP(s->r[2]);
+            if (_q) { std::memcpy(_q, &_nextid, 4); _pid2spv[_nextid] = _it->second;
+              static int _n=0; if (_n++<12) printf("[ABIPGID] id=%08X hash=%016llX spv=%s n=%u\n", _nextid, (unsigned long long)_gh, _it->second.c_str(), g_main_n);
+              _nextid += 0x20u; } } }
+        else if (strstr(_ge->name, "ShaderPatcherCreateVertexProgram") || strstr(_ge->name, "ShaderPatcherCreateFragmentProgram")) {
+          const bool _frag = strstr(_ge->name, "CreateFragmentProgram") != nullptr;
+          auto _it = _pid2spv.find(s->r[1]);
+          if (_it != _pid2spv.end()) { uint8_t* _q = GP(_stk[2]);
+            if (_q) { std::memcpy(_q, &_nextobj, 4); (_frag ? _fobj2spv : _vobj2spv)[_nextobj] = _it->second;
+              static int _n2=0; if (_n2++<12) printf("[ABIPGOBJ] %s obj=%08X spv=%s n=%u\n", _frag?"frag":"vert", _nextobj, _it->second.c_str(), g_main_n);
+              _nextobj += 0x40u; } } }
+        else if (strstr(_ge->name, "PrecomputedVertexStateInit") || strstr(_ge->name, "PrecomputedFragmentStateInit") || strstr(_ge->name, "PrecomputedDrawInit")) {
+          const bool _frag = strstr(_ge->name, "PrecomputedFragmentStateInit") != nullptr;
+          uint32_t _obj = s->r[1];
+          if (!_frag) { auto _it = _vobj2spv.find(_obj); if (_it != _vobj2spv.end() && _abi_vspv != _it->second) { _abi_vspv = _it->second;
+              static int _n3=0; if (_n3++<10) printf("[ABIOBJ] vert obj=%08X spv=%s\n", _obj, _it->second.c_str()); } }
+          else { auto _it = _fobj2spv.find(_obj); if (_it != _fobj2spv.end() && _abi_fspv != _it->second) { _abi_fspv = _it->second;
+              static int _n4=0; if (_n4++<10) printf("[ABIOBJ] frag obj=%08X spv=%s\n", _obj, _it->second.c_str()); } } } }
       auto _t0 = std::chrono::steady_clock::now();
       uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
       { auto _t1 = std::chrono::steady_clock::now(); long long _us = std::chrono::duration_cast<std::chrono::microseconds>(_t1-_t0).count();

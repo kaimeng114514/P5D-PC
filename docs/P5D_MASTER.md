@@ -952,6 +952,25 @@
 | M934 | §18.4479: ★★★★★★ **找到"首帧可见"缺失的整块拼图：SPIR-V 着色器资产与管线选择机制在磁盘上完整存在，只是我们的 AOT harness 从未接线**。证据与发现：
 | M935 | §18.4480: ★★★★★★★ **实现 GXP→SPIR-V→Vulkan 管线接线（首帧最后一环）：harness 在 GXM ABI 分发前捕获 SetVertex/FragmentProgram 的 GXP 程序、FNV-1a64 哈希、查 `spv_all/gxp_manifest.txt`，并在每次 Draw 前调用 `p5d::vulkan::select_real_pipeline()` 绑定真实管线**。实现（全部在 `recomp_harness.cpp` 的 `hle_call` GXMABI 分发块内）：
 | M936 | §18.4481: **发现 page1 渲染走的是 GXM "Precomputed" 路径（不调用 SetVertex/FragmentProgram），因此上一版 ABIGXP 捕获没触发；已把捕获钩子扩展到 `sceGxmPrecomputedVertexStateInit`/`sceGxmPrecomputedFragmentStateInit`**。证据（`out62m_m1017pipe.txt`，管线接线版 62M 运行）：
+| M937 | §18.4482: **关键发现：所有 Precomputed*Init 的 program 参数 r1=0 —— 因为 ShaderPatcher 的 `RegisterProgram`/`CreateVertexProgram`/`CreateFragmentProgram` 是 STUB（返回 0 且不写 out 参数），app 的 program id/句柄全是 0；已实现假句柄链：RegisterProgram 输出假 id（记录 id→spv）、Create*Program 输出假 program 对象（记录 obj→spv）、Precomputed*Init 从对象映射捕获 v/f spv**。证据（`out62m_m1018pipe2.txt`）：
+```
+[ABICAP] name=sceGxmPrecomputedFragmentStateInit frag=1 r1=00000000 r2=8F950D80
+[ABICAP] name=sceGxmPrecomputedVertexStateInit frag=0 r1=00000000 r2=8F950E80
+[ABICAP] name=sceGxmPrecomputedVertexStateInit frag=0 r1=00000000 r2=8F746050  (全部 r1=0)
+[GXMABI] sceGxmPrecomputedDrawInit va=812B1520 r0=8F745F18 r1=00000000 r2=8F950E80
+[GXMABI] sceGxmPrecomputedDrawSetParams va=812B1480 r0=8F745F18 r1=00000000 r2=00000000 r3=90039680
+[GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000
+err: [ERROR] gxm_draw_arrays: no graphics pipeline bound
+```
+→ app 的 program 句柄全部为 0（ShaderPatcher 系列是 `STUB_LOG` 占位，不写 out 参数）。
+**修复（18.4482）**（`recomp_harness.cpp`，GXMABI 分发块内、读栈参数之后）：
+1) 新增 `hle_gxp_hash(gxpva)`（FNV-1a64 + 魔数/大小校验）；
+2) `sceGxmShaderPatcherRegisterProgram`：`gxp = s->r[1]` → 哈希 → manifest 查 spv 名 → **写假 programId（0x8540B000+）到 out `s->r[2]`** → 记 `_pid2spv[id]=spv`，打印 `[ABIPGID] id=... hash=... spv=...`；
+3) `sceGxmShaderPatcherCreateVertexProgram`/`CreateFragmentProgram`：读 `s->r[1]=programId` → 查 `_pid2spv` → **写假 program 对象指针（0x8540C000+）到 out `_stk[2]`** → 记 `_vobj2spv`/`_fobj2spv`，打印 `[ABIPGOBJ]`；
+4) `PrecomputedVertexStateInit`/`PrecomputedFragmentStateInit`/`PrecomputedDrawInit`：从 `s->r[1]`（program 对象）查映射 → 设置 `_abi_vspv`/`_abi_fspv`，打印 `[ABIOBJ]`；
+5) Draw 前（M935 逻辑）`select_real_pipeline("<spvdir>/<v>","<spvdir>/<f>")` → `[ABIPIPE]`/`[REAL-PIPE]`。
+编译链接成功；二进制含 `[ABIPGID]/[ABIPGOBJ]/[ABIOBJ]` 标签。已启动 62M 长跑（`out62m_m1019shaderhandles.txt`）。NEXT: 验证 `[ABIPGID]`→`[ABIPGOBJ]`→`[ABIOBJ]`→`[ABIPIPE]`/`[REAL-PIPE]` 全链、`gxm_draw_arrays` 错误消失、EndScene/present → **首帧可见画面**。 |
+| §18.4482 | Key finding: every Precomputed*Init has its program argument r1=0 because the ShaderPatcher RegisterProgram/CreateVertexProgram/CreateFragmentProgram are STUBS (return 0, never write the out params), so the app's program ids/handles are all 0; implemented a fake-handle chain: RegisterProgram outputs a fake id (recording id->spv), Create*Program outputs a fake program object (recording obj->spv), and Precomputed*Init captures the v/f spv from the object map. Evidence (out62m_m1018pipe2.txt): [ABICAP] sceGxmPrecomputedFragmentStateInit frag=1 r1=00000000 r2=8F950D80; [ABICAP] sceGxmPrecomputedVertexStateInit r1=00000000 r2=8F950E80; [GXMABI] sceGxmPrecomputedDrawInit va=812B1520 r0=8F745F18 r1=00000000 r2=8F950E80; sceGxmPrecomputedDrawSetParams r1=0; sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000; err 'gxm_draw_arrays: no graphics pipeline bound'. FIX 18.4482 (recomp_harness.cpp, inside the GXMABI dispatch block after reading stack args): (1) add hle_gxp_hash(gxpva) (FNV-1a64 with magic/size validation); (2) sceGxmShaderPatcherRegisterProgram: gxp=s->r[1] -> hash -> manifest spv name -> write fake programId (0x8540B000+) to out s->r[2] -> record _pid2spv[id]=spv, print [ABIPGID]; (3) sceGxmShaderPatcherCreateVertexProgram/CreateFragmentProgram: read s->r[1]=programId -> look up _pid2spv -> write fake program object pointer (0x8540C000+) to out _stk[2] -> record _vobj2spv/_fobj2spv, print [ABIPGOBJ]; (4) PrecomputedVertexStateInit/PrecomputedFragmentStateInit/PrecomputedDrawInit: look up s->r[1] (program object) in the maps -> set _abi_vspv/_abi_fspv, print [ABIOBJ]; (5) before Draw (M935 logic) select_real_pipeline("<spvdir>/<v>","<spvdir>/<f>") -> [ABIPIPE]/[REAL-PIPE]. Build+link succeed; binary contains [ABIPGID]/[ABIPGOBJ]/[ABIOBJ] tags. 62M run started out62m_m1019shaderhandles.txt; NEXT: verify the full chain [ABIPGID]->[ABIPGOBJ]->[ABIOBJ]->[ABIPIPE]/[REAL-PIPE], the disappearance of the gxm_draw_arrays error, EndScene/present -> first visible frame. |
 1) `[ABISPVDIR] dir=C:/dev/p5d_build/spv_all manifest=4331` ✅（manifest 加载正常）；
 2) 但 `[ABIGXP]`/`[ABIPIPE]`/`[REAL-PIPE]` = **0**，`gxm_draw_arrays: no graphics pipeline bound` 依旧；
 3) `[GXMABI]` 调用名统计显示 page1 期间 **没有** `sceGxmSetVertexProgram`/`SetFragmentProgram`，而是：
@@ -487971,3 +487990,54 @@ NEXT：`[ABICAP]` 是否命中、`[ABIGXP]`/`[ABIPIPE]`/`[REAL-PIPE]` 是否出�
 ANTI-FORGETTING ENTRY. Keywords: M936 page1 uses the GXM Precomputed path, not SetVertexProgram/SetFragmentProgram, so the M935 capture never fired. out62m_m1017pipe.txt: [ABISPVDIR] dir=C:/dev/p5d_build/spv_all manifest=4331 but [ABIGXP]/[ABIPIPE]/[REAL-PIPE] = 0 and 'gxm_draw_arrays: no graphics pipeline bound' persists; [GXMABI] stats show sceGxmBeginScene va=812B1470, sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000 lr=811EC006, sceGxmPrecomputedDrawSetVertexStream va=812B13E0 r0=8F7471D0 r2=8F951E00 lr=811E331A, and no SetVertexProgram/SetFragmentProgram at all. The Precomputed APIs used are sceGxmPrecomputedVertexStateInit 0x812B1630, sceGxmPrecomputedFragmentStateInit 0x812B16D0, sceGxmPrecomputedDrawInit 0x812B1520, PrecomputedDrawSetVertexStream 0x812B13E0. FIX 18.4481: extend the ABI pre-dispatch capture condition to SetVertexProgram/SetFragmentProgram/PrecomputedVertexStateInit/PrecomputedFragmentStateInit; program object = s->r[1] for all (2nd arg is the {Vertex,Fragment}Program*); frag flag true for SetFragmentProgram or PrecomputedFragmentStateInit; add [ABICAP] debug prints (first 8). Build+link OK; binary contains [ABICAP]; 62M run started out62m_m1018pipe2.txt; NEXT: check [ABICAP] hits, [ABIGXP]/[ABIPIPE]/[REAL-PIPE], disappearance of the draw error, EndScene/present -> first visible frame.
 
 LOOKUP: 0x812B1630, 0x812B16D0, 0x812B1520, 0x812B13E0, 0x812B15F0, [ABICAP], out62m_m1018pipe2.txt -> §18.4480 [relevant: pipeline wiring], §18.4479 [relevant: manifest]
+### 18.4482 PORT M937: ShaderPatcher 假句柄链（让 app 真正拿到 program 对象）+ GXP→SPIR-V 捕获闭环
+
+1) 问题（`out62m_m1018pipe2.txt`）：
+```
+[ABICAP] sceGxmPrecomputedFragmentStateInit frag=1 r1=00000000 r2=8F950D80
+[ABICAP] sceGxmPrecomputedVertexStateInit frag=0 r1=00000000 r2=8F950E80
+[GXMABI] sceGxmPrecomputedDrawInit va=812B1520 r0=8F745F18 r1=00000000 r2=8F950E80
+[GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000
+err: [ERROR] gxm_draw_arrays: no graphics pipeline bound
+```
+→ app 传给 Precomputed 状态的 **program 指针恒为 0**。根因：`sce_gxm.cpp` 的
+`sceGxmShaderPatcherRegisterProgram` / `CreateVertexProgram` / `CreateFragmentProgram` 都是
+`STUB_LOG` 占位（返回 0、**不写 out 参数**）→ app 保存的 programId/句柄全 0。
+2) 修复（18.4482，全部在 `recomp_harness.cpp` 的 GXMABI 分发块、读栈参数之后）：
+```cpp
+static uint64_t hle_gxp_hash(uint32_t gxpva) {   // FNV-1a64 over SceGxmProgram
+  uint8_t* g = GP(gxpva); if (!g) return 0;
+  uint32_t mg=0, sz=0; memcpy(&mg,g,4); memcpy(&sz,g+8,4);
+  if (mg != 0x00505847u || sz < 0x18u || sz > 0x40000u) return 0;
+  uint64_t h = 0xcbf29ce484222325ull;
+  for (uint32_t i=0;i<sz;++i){ h ^= (uint64_t)g[i]; h *= 1099511628211ull; }
+  return h; }
+
+// RegisterProgram(patcher, programHeader, programId*)
+if (strstr(_ge->name,"ShaderPatcherRegisterProgram")) {
+  uint64_t gh = hle_gxp_hash(s->r[1]);
+  auto it = gh ? _abi_man.find(gh) : _abi_man.end();
+  if (it != _abi_man.end()) { uint8_t* q = GP(s->r[2]);
+    if (q) { memcpy(q, &_nextid, 4); _pid2spv[_nextid] = it->second;
+             printf("[ABIPGID] id=%08X hash=%016llX spv=%s\n", ...); _nextid += 0x20u; } } }
+
+// CreateVertexProgram / CreateFragmentProgram(..., out = stack arg 7th = _stk[2])
+auto it = _pid2spv.find(s->r[1]);
+if (it != _pid2spv.end()) { uint8_t* q = GP(_stk[2]);
+  if (q) { memcpy(q, &_nextobj, 4); (_frag?_fobj2spv:_vobj2spv)[_nextobj] = it->second;
+           printf("[ABIPGOBJ] ..."); _nextobj += 0x40u; } }
+
+// PrecomputedVertex/FragmentStateInit / PrecomputedDrawInit: 从 program 对象映射捕获
+uint32_t obj = s->r[1];
+if (!_frag) { auto it = _vobj2spv.find(obj); if (it != _vobj2spv.end()) _abi_vspv = it->second; }
+else        { auto it = _fobj2spv.find(obj); if (it != _fobj2spv.end()) _abi_fspv = it->second; }
+```
+3) 编译链接成功；二进制含 `[ABIPGID]/[ABIPGOBJ]/[ABIOBJ]` 标签。
+4) 已启动 62M 长跑：`out62m_m1019shaderhandles.txt`。
+NEXT：检查完整链条 `[ABIPGID]` → `[ABIPGOBJ]` → `[ABIOBJ]` → `[ABIPIPE]`/`[REAL-PIPE]`、
+`gxm_draw_arrays` 错误是否消失、EndScene/present → **首帧可见画面**。
+验证：`out62m_m1018pipe2.txt`（r1=0 证据）、`out62m_m1019shaderhandles.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M937 Precomputed*Init program argument r1 is always 0 because the ShaderPatcher RegisterProgram/CreateVertexProgram/CreateFragmentProgram are STUB_LOG placeholders that return 0 and never write out params, so the app's program ids/handles are all 0. Evidence out62m_m1018pipe2.txt: [ABICAP] PrecomputedFragmentStateInit r1=0 r2=8F950D80; PrecomputedVertexStateInit r1=0 r2=8F950E80; [GXMABI] sceGxmPrecomputedDrawInit va=812B1520 r0=8F745F18 r1=0 r2=8F950E80; sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000; err 'gxm_draw_arrays: no graphics pipeline bound'. FIX 18.4482 in recomp_harness.cpp GXMABI dispatch block: (1) hle_gxp_hash(gxpva) FNV-1a64 with magic 0x00505847/size validation; (2) ShaderPatcherRegisterProgram: hash s->r[1] -> manifest spv name -> write fake programId (0x8540B000+) to out s->r[2] -> _pid2spv[id]=spv, print [ABIPGID]; (3) ShaderPatcherCreateVertexProgram/CreateFragmentProgram: s->r[1]=programId -> _pid2spv -> write fake program object (0x8540C000+) to out _stk[2] -> _vobj2spv/_fobj2spv, print [ABIPGOBJ]; (4) PrecomputedVertexStateInit/PrecomputedFragmentStateInit/PrecomputedDrawInit: s->r[1]=program object -> map -> set _abi_vspv/_abi_fspv, print [ABIOBJ]; (5) before Draw select_real_pipeline("<spvdir>/<v>","<spvdir>/<f>") -> [ABIPIPE]/[REAL-PIPE]. Build+link OK; binary contains [ABIPGID]/[ABIPGOBJ]/[ABIOBJ]. 62M run started out62m_m1019shaderhandles.txt; NEXT: verify [ABIPGID]->[ABIPGOBJ]->[ABIOBJ]->[ABIPIPE]/[REAL-PIPE], disappearance of the draw error, EndScene/present -> first visible frame.
+
+LOOKUP: 0x812B12D0, 0x812B15C0, 0x812B1350, 0x812B1630, 0x812B16D0, 0x812B1520, hle_gxp_hash, [ABIPGID], [ABIPGOBJ], [ABIOBJ], out62m_m1019shaderhandles.txt -> §18.4481 [relevant: Precomputed path], §18.4480 [relevant: pipeline wiring]
