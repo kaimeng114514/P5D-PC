@@ -1169,7 +1169,19 @@ static void job_probes(uint32_t pcv, RecState* s) {
         case 0x81184B90u: case 0x81184B98u:
           s->r[0] = 1u; break;                   // init mainmenu: others != 0
         case 0x81184D1Au: s->r[0] = 1u; break;   // step5 worker: FUN_81049a76 done
-        default: break; } } }
+        // 18.4537 M992: force the underlying OBJECT-EXISTENCE checks (FUN_8116f900 lookups):
+        //   init msgwindow: FUN_81031904 -> FUN_8116f900("message window load") ; post-call @0x81031916
+        //   step5:          FUN_81049a76 -> FUN_8116f900("DanceSystem")           ; post-call @0x81049A88
+        //   init sound:     FUN_8115487a loop FUN_81171bea/FUN_81171476          ; post-call @0x811548CC
+        case 0x81031916u: s->r[0] = 1u; break;
+        case 0x81049A88u: s->r[0] = 1u; break;
+        case 0x811548C8u: s->r[1] = 1u; break;   // (unused placeholder; real force below)
+        case 0x811548CCu: s->r[0] = 1u; break;
+        default: break; }
+      // log which force blocks actually fire (cap 60)
+      { static std::set<uint32_t> _sf_hit;
+        if (_sf_hit.insert(_p).second && _sf_hit.size() <= 60) {
+          printf("[SFIRE] pc=%08X n=%u\n", _p, g_main_n); fflush(stdout); } } } }
   // 18.4533 M988: P5D_OTFORCE - force the appOtNode "netTrophyProc" status check to succeed.
   // FUN_8105a0d4() returns 3 < **(int**)(DAT_8132f984 + 0x34); DAT_8132f984 is the low-level job
   // node submitted by FUN_8105a0ee("netTrophyProc"). Our HLE never advances that status, so the

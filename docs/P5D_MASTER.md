@@ -1007,6 +1007,40 @@
 | M989 | §18.4534: ★★★★★★★★ **`P5D_OTFORCE` 成功打通 job 完成链：状态强制 → worker 返回 0 → `[JOBDONE]` 首次出现 → job 状态机**自然推进**（JOBFORCE 关闭也推进！）**。证据（`out80m_m1063otforce.txt`）：
 | M990 | §18.4535: **page1 的 8 步初始化链全部反编译：它们是 boot 阶段的 "init *" proc 任务（init trophy / init sound / init gamedata / init msgwindow / init mainmenu / …），每个步骤 = 提交一个 app job（worker+completion）**。已查明的步骤与 worker/completion：
 | M991 | §18.4536: ★★★★★★★ **init 各步骤 worker 的完成检查全部反编译 + 实现 `P5D_STEPFORCE`（强制所有步骤完成）**。关键约定（由反编译确认）：**worker 返回负值 = job 完成；返回 0 = 还在等待**（与 trophy worker `FUN_81184808` 的 `return FUN_8102d544()==0 ? 0 : -1` 完全一致，OTForce 让其为 -1 → JOBDONE）。各 worker：
+| M992 | §18.4537: ★★★★★★★★ **init 步骤完成检查的本质 = 对象存在性查询 `FUN_8116f900(name,0)`！据此扩展 STEPFORCE（强制查询结果）**。反编译三个关键检查函数：
+```c
+// init msgwindow 检查 FUN_81031904():
+bool FUN_81031904(void) { return FUN_8116f900("message window load", 0) != 0; }
+// step5 检查 FUN_81049a76():
+bool FUN_81049a76(void) { return FUN_8116f900("DanceSystem", 0) != 0; }
+// init sound 检查 FUN_8115487a()：遍历 5 个声音对象
+ppcVar3 = {"BGM","COMSE","EVENT","EVENT_ENV","DCOMMON"};
+do { FUN_81171bea(*ppcVar3); iVar1 = FUN_81171476();
+     if (iVar1 == 0) { uVar2 = 0; goto done; } } while (++uVar4 < 5);
+uVar2 = 1;   // 全部通过
+```
+⇒ **所有 init 步骤都在等待"自己初始化的对象"出现**（msgwindow→"message window load"、step5→"DanceSystem"、sound→BGM/COMSE/EVENT/EVENT_ENV/DCOMMON）；对象创建路径没走通（HLE 下对象注册不完整），所以检查恒 false、worker 恒返回 0（pending）。
+**扩展 `P5D_STEPFORCE`（18.4537）**：在内层检查函数的"bl 之后"block 强制返回值：
+```cpp
+case 0x81031916u: s->r[0]=1; break;   // FUN_8116f900("message window load") != 0
+case 0x81049A88u: s->r[0]=1; break;   // FUN_8116f900("DanceSystem") != 0
+case 0x811548CCu: s->r[0]=1; break;   // FUN_81171476() != 0（声音对象检查通过）
+```
+并加 `[SFIRE]` 日志（每个被命中的强制 block 打印一次）验证命中：
+```cpp
+{ static std::set<uint32_t> _sf_hit;
+  if (_sf_hit.insert(_p).second && _sf_hit.size() <= 60) printf("[SFIRE] pc=%08X n=%u\n", _p, g_main_n); }
+```
+编译成功（`[SFIRE]`×1、`P5D_STEPFORCE` 入二进制）；验证运行：`P5D_OTFORCE=1 P5D_STEPFORCE=1` → `out80m_m1066stepforce2.txt`。
+NEXT：
+```
+① [SFIRE] 命中情况 → 确认 STEPFORCE block 地址确实是 block 起点并生效
+② [INITEXEC]/[JOBDONE2] → init sound/msgwindow/step5 worker 返回 -1 → job 完成
+③ [IDR] idx 递增到 8 → page1 update 对象就绪 → 场景推进 → 新 draw → S1_TITLE 画面
+④ 若 [SFIRE] 不出现 → block 地址不是 block 起点，改用"检查函数入口"或对象表直接注册方案
+```
+验证：`stepchecks.txt`（Ghidra）、`out80m_m1066stepforce2.txt`（生成中）。 |
+| §18.4537 | The essence of init-step completion checks = object existence queries FUN_8116f900(name,0)! Extended STEPFORCE accordingly (force query results). Decompiled checks: init msgwindow check FUN_81031904(): bool FUN_81031904(void){ return FUN_8116f900('message window load',0) != 0; }; step5 check FUN_81049a76(): bool FUN_81049a76(void){ return FUN_8116f900('DanceSystem',0) != 0; }; init sound check FUN_8115487a(): loops over 5 sound objects {BGM,COMSE,EVENT,EVENT_ENV,DCOMMON}: do{ FUN_81171bea(*ppcVar3); iVar1=FUN_81171476(); if(iVar1==0){uVar2=0;goto done;} }while(++uVar4<5); uVar2=1;. So every init step waits for the objects its own initialization should create (msgwindow -> 'message window load', step5 -> 'DanceSystem', sound -> BGM/COMSE/EVENT/EVENT_ENV/DCOMMON); the object-creation path does not complete under our HLE, so the checks stay false and the worker keeps returning 0 (pending). Extended P5D_STEPFORCE (18.4537): force the return value at the blocks right after the inner check calls: case 0x81031916u: r[0]=1 (FUN_8116f900('message window load') != 0); case 0x81049A88u: r[0]=1 (FUN_8116f900('DanceSystem') != 0); case 0x811548CCu: r[0]=1 (FUN_81171476() != 0 sound object check pass). Added [SFIRE] logging (prints each hit force block once): static std::set<uint32_t> _sf_hit; if(_sf_hit.insert(_p).second && _sf_hit.size()<=60) printf('[SFIRE] pc=%08X n=%u');. Compiled OK ([SFIRE] x1, P5D_STEPFORCE in binary); verification run P5D_OTFORCE=1 P5D_STEPFORCE=1 -> out80m_m1066stepforce2.txt. NEXT: (1) [SFIRE] hits to confirm the STEPFORCE block addresses really are block starts and take effect; (2) [INITEXEC]/[JOBDONE2] to see init sound/msgwindow/step5 workers return -1 -> jobs complete; (3) [IDR] idx increasing to 8 -> page1 update object ready -> scene advances -> new draws -> S1_TITLE picture; (4) if [SFIRE] never appears the block addresses are not block starts - switch to a 'check function entry' or direct object-table registration approach. |
 ```
 step1 init sound   worker 0x811848B6: FUN_8115478e() 一次 → FUN_8115487a()；!=0 返回 -1(完成)
 step2 init gamedata worker 0x81184964: 初始化 8108b46c 等 → 检查
@@ -492112,3 +492146,46 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M991 all init step workers' completion checks decompiled + P5D_STEPFORCE implemented. Key convention: worker returning NEGATIVE means job DONE; returning 0 means still pending (consistent with trophy worker FUN_81184808: return FUN_8102d544()==0 ? 0 : -1; OTForce made it -1 -> JOBDONE). Workers: step1 init sound worker 0x811848B6: FUN_8115478e() once then FUN_8115487a(); !=0 returns -1. step2 init gamedata worker 0x81184964: init calls then checks FUN_810995d4/81082954/8108ec88/8108f6f0/8108fec2/81094c22/810900c2/8108b4b2, returns -1 when all !=0. step3 init msgwindow worker 0x81184A88: FUN_8103189c once then FUN_81031904(); !=0 -> -1. step4 init mainmenu worker 0x81184B38: FUN_810e865c()==0 && FUN_810f0e68()!=0 && FUN_8111952e()!=0 && FUN_810f6938()!=0 && FUN_810e7280()!=0 && FUN_810e637a()!=0 -> -1. step5 worker 0x81184CF8: FUN_810499b4 once then FUN_81049a76(); !=0 -> -1. P5D_STEPFORCE (18.4536, job_probes): switch(pcv&~1u){case 0x811848D6u: r[0]=1; break; case 0x811849A4u,0x811849ACu,0x811849B4u,0x811849BCu,0x811849C4u,0x811849CCu,0x811849D4u,0x811849E0u: r[0]=1; break; case 0x81184AA8u: r[0]=1; break; case 0x81184B6Cu: r[0]=0; break; case 0x81184B74u,0x81184B7Cu,0x81184B88u,0x81184B90u,0x81184B98u: r[0]=1; break; case 0x81184D1Au: r[0]=1; break; default: break; }. Compiled OK (P5D_STEPFORCE in binary); verification run P5D_OTFORCE=1 P5D_STEPFORCE=1 (no JOBFORCE) -> out80m_m1065stepforce.txt. NEXT: watch [JOBDONE2] appear repeatedly and [IDR] state/idx increase to 8 -> page1 update object 0x81309690 ready -> scene advances -> new draws/presents -> S1_TITLE picture; if steps 6/7 still stall decompile their workers (near 0x81184DAA/0x81184E3E/0x81184F78/0x81184C72) and add to STEPFORCE.
 
 LOOKUP: M991, P5D_STEPFORCE, [JOBDONE2], [INITEXEC], init sound worker 0x811848B6, FUN_8115487a, init gamedata worker 0x81184964, FUN_8108b4b2, init msgwindow worker 0x81184A88, FUN_81031904, init mainmenu worker 0x81184B38, FUN_810e865c, FUN_810f0e68, FUN_8111952e, FUN_810f6938, FUN_810e7280, FUN_810e637a, step5 worker 0x81184CF8, FUN_81049a76, 0x811848D6, 0x81184AA8, 0x81184D1A, init_sound.txt, init_more.txt, out80m_m1065stepforce.txt -> §18.4535 [relevant: 8 init steps], §18.4534 [relevant: JOBDONE]
+### 18.4537 PORT M992: init 步骤完成检查本质 = `FUN_8116f900(name,0)` 对象存在性查询
+
+1) 反编译三个检查函数（`stepchecks.txt`）：
+```c
+// init msgwindow 检查
+bool FUN_81031904(void) { return FUN_8116f900("message window load", 0) != 0; }
+
+// step5 检查
+bool FUN_81049a76(void) { return FUN_8116f900("DanceSystem", 0) != 0; }
+
+// init sound 检查（遍历 5 个声音对象）
+ppcVar3 = {"BGM","COMSE","EVENT","EVENT_ENV","DCOMMON"};
+do { FUN_81171bea(*ppcVar3); iVar1 = FUN_81171476();
+     if (iVar1 == 0) { uVar2 = 0; goto done; } } while (++uVar4 < 5);
+uVar2 = 1;  // 全部通过
+```
+2) **本质**：每个 init 步骤都在等待"自己应该初始化的对象"出现：
+```
+msgwindow → "message window load"
+step5     → "DanceSystem"
+sound     → BGM / COMSE / EVENT / EVENT_ENV / DCOMMON
+```
+对象创建路径在 HLE 下没走通（对象注册不完整）⇒ 检查恒 false ⇒ worker 恒返回 0（pending）。
+3) **扩展 STEPFORCE（18.4537）**：
+```cpp
+case 0x81031916u: s->r[0]=1; break;   // FUN_8116f900("message window load") != 0
+case 0x81049A88u: s->r[0]=1; break;   // FUN_8116f900("DanceSystem") != 0
+case 0x811548CCu: s->r[0]=1; break;   // FUN_81171476() != 0（声音对象检查通过）
+```
+加 `[SFIRE]` 命中日志（每 block 一次，cap 60）。
+4) 编译成功（`[SFIRE]`×1、`P5D_STEPFORCE` 入二进制）；验证运行：`P5D_OTFORCE=1 P5D_STEPFORCE=1` → `out80m_m1066stepforce2.txt`
+NEXT：
+```
+① [SFIRE] 命中确认 block 地址有效并生效
+② [INITEXEC]/[JOBDONE2]：init sound/msgwindow/step5 worker 返回 -1 → job 完成
+③ [IDR] idx 递增到 8 → page1 update 对象就绪 → 场景推进 → 新 draw → S1_TITLE 画面
+④ 若 [SFIRE] 不出现：block 地址非起点，改用检查函数入口 hook 或对象表直接注册
+```
+验证：`stepchecks.txt`、`out80m_m1066stepforce2.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M992 the init-step completion checks are object existence queries FUN_8116f900(name,0). Decompiled: FUN_81031904() = FUN_8116f900('message window load',0) != 0 (init msgwindow check); FUN_81049a76() = FUN_8116f900('DanceSystem',0) != 0 (step5 check); FUN_8115487a() (init sound check) loops over {BGM,COMSE,EVENT,EVENT_ENV,DCOMMON}: FUN_81171bea(name); iVar1=FUN_81171476(); if(iVar1==0){uVar2=0;done;} while(++uVar4<5); uVar2=1. So each init step waits for the objects its own init creates; object registration does not complete under our HLE so checks stay false and workers return 0 (pending). Extended P5D_STEPFORCE (18.4537): case 0x81031916u: r[0]=1 (message window load lookup); case 0x81049A88u: r[0]=1 (DanceSystem lookup); case 0x811548CCu: r[0]=1 (FUN_81171476 sound object check). Added [SFIRE] logging: static std::set<uint32_t> _sf_hit; if(_sf_hit.insert(_p).second && _sf_hit.size()<=60) printf('[SFIRE] pc=%08X n=%u'). Compiled OK; verification run P5D_OTFORCE=1 P5D_STEPFORCE=1 -> out80m_m1066stepforce2.txt. NEXT: [SFIRE] hits to confirm the force blocks are real block starts; [INITEXEC]/[JOBDONE2] for workers returning -1 and job completion; [IDR] idx increasing to 8 -> page1 update object ready -> scene advances -> new draws -> S1_TITLE picture; if [SFIRE] never appears the block addresses are not block starts - switch to hooking the check-function entry or registering the objects directly.
+
+LOOKUP: M992, FUN_8116f900, 'message window load', 'DanceSystem', BGM COMSE EVENT EVENT_ENV DCOMMON, FUN_81031904, FUN_81049a76, FUN_8115487a, FUN_81171bea, FUN_81171476, 0x81031916, 0x81049A88, 0x811548CC, [SFIRE], P5D_STEPFORCE, stepchecks.txt, out80m_m1066stepforce2.txt -> §18.4536 [relevant: STEPFORCE], §18.4535 [relevant: init steps]
