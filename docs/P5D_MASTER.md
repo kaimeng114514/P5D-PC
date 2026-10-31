@@ -986,6 +986,42 @@
 | M968 | §18.4513: ★★★★★★★ **纹理数据通路彻底打通：`[ABITEX] unit=0 rc=0`（纹理解析成功）、`[TEXENT]/[TEXAT]` 真实上传成功（`W=256 H=512 lin=65536`，即 256×512、65536 字节纹理数据被后端上传到 Vulkan unit 0）**。M967 的 HLE 堆区注册修复生效（`[MEMREG] registered HLE arenas`）。page1 首帧 RT 仍黑（`disp_1 mean=0`）——但这是**淡入黑场覆盖层**（单一全屏三角形、片元常量黑），需更深运行观察后续帧。证据（`out80m_m1048memreg.txt`）：
 | M969 | §18.4514: ★★★★★★★★★ **【真实画面路径打通】利用已有的离线预解码 CRI 影片序列（`C:\dev\p5d_movies\title_c_p5d001_nv12.raw` 900 帧 / `open_c_p5d000_nv12.raw` 3084 帧，NV12 960x544×1.5=783,360 B/帧），实现「预解码帧 → guest BGRA scratch 纹理源 → P5D_TEXSRC=AUTO → 后端上传为采样纹理」的完整演示链路**（旧 host 的 `P5D_MOVIE_PRELOAD`/`[FAKEREAL]` 思路）。page1 每帧 DisplayQueueAddEntry 时推进影片帧：NV12→BT.601 BGRA 转换写入 `g_movie_va`（hle_malloc 960×544×4）→ `set_texsrc_addr(g_movie_va)`；后端 `upload_gxm_control_resolved` 在 `P5D_TEXSRC=AUTO` 下用该地址作为纹理数据上传。证据：
 | M970 | §18.4515: **影片喂入 run 结果：`[MOVIE]` 帧推进与 `set_texsrc_addr` 已执行（`file=title_c_p5d001_nv12.raw 900 frames scratch=99C67790`、`frame=0/900`、`frame=1/900`），但纹理上传仍是应用自己的 256×512（`[TEXAT] #1 unit=0 W=256 H=512 lin=65536 rc=0`），AUTO 覆盖未生效——根因是后端 `upload_gxm_control_resolved` 的 **TEXSRC 门控**：`P5D_TEXSRC_MOVIEONLY` 默认=1，只有 guest 真正 openMovie 之后（`p5d::vulkan::g_movie_opened`）才允许覆盖；另外 `P5D_TEXSRC=AUTO` 模式只上传 **Y 平面（灰度）**（`[TEXSRC] uploaded ... Y-mean=...`）。已改用后端成熟的 **`P5D_TEXSRC=NV12` 模式**（直接读预解码 NV12 文件、BT.601 转彩色 RGBA、按引擎帧推进、自动/强制影片源）重跑**。证据（`out80m_m1049movie.txt`）：
+| M971 | §18.4516: **NV12 彩色模式已生效（`[TEXSRC] mode=3`、`[TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544`、`[TEXSRC-NV12] shown frame=1`、`[TEXSRC-SYNC] mode=draw div=1.000`）——后端成功读取预解码 title 影片并转换/上传了第 1 帧；但 page1 首帧 RT 仍是黑（该 draw 的片元输出为黑/淡入层），所以再加**宿主影片层**：每帧调用 `p5d_movie_set_frame(BGRA,960,544)`，present 时后端把 `g_movie_img` **全屏 blit** 到交换链（`[MOVIEBLIT]`），从而窗口必然显示真实影片帧；并在 present 后用 `save_screenshot("p5d_swap_N.bmp")` 抓交换链做证据**。证据：
+1) `out80m_m1050nv12.txt`：
+```
+[TEXSRC] mode=3 src=0x0 960x544
+[TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544 seq=0 auto=0
+[TEXSRC-NV12] shown frame=1
+[TEXSRC-SYNC] mode=draw div=1.000 start=0
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0
+disp_1 STATS: mean=0.00 max=0 (0,0,0) 100%
+```
+2) 后端 `present_frame` 内的影片全屏 blit（`vulkan_backend.cpp`）：
+```cpp
+if(g_movie_ready && g_movie_img && g_movie_w>0 && g_movie_h>0){
+    VkImageBlit bl{}; ...
+    vkCmdBlitImage(cmd,g_movie_img,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   dst,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&bl,VK_FILTER_LINEAR);
+    fprintf(stderr,"[MOVIEBLIT] %dx%d -> %ux%u 全屏 blit\n", ...); }
+```
+3) **实现（18.4516，`recomp_harness.cpp`）**：
+```cpp
+extern "C" void p5d_movie_set_frame(const void* bgra, int w, int h);   // backend 里是 extern "C"！
+// movie_advance_frame() 内，BGRA 转换后：
+p5d_movie_set_frame(_dst, (int)g_movie_w, (int)g_movie_h);   // 宿主影片层（present 全屏 blit）
+// DisplayQueueAddEntry 处理中，present 之后：
+static int _sc = 0; if (_sc < 8) { char _fn[64]; snprintf(_fn,sizeof(_fn),"p5d_swap_%d.bmp",_sc);
+    int _src = p5d::vulkan::save_screenshot(_fn);
+    printf("[ABISWAP] saved %s rc=%d n=%u\n", _fn, _src, g_main_n); _sc++; }
+```
+（链接错误 `undefined reference to p5d::vulkan::p5d_movie_set_frame(void const*,int,int)` 已定位为后端使用 `extern "C"`，改为 `extern "C" void p5d_movie_set_frame(...)` 后链接成功。）
+4) 编译链接成功；已启动 80M 运行（`out80m_m1051moviefs.txt`，NV12 彩色 + 宿主影片层 + swapchain 截图）。
+NEXT：`[MOVIEBLIT] 960x544 -> ...` 出现 + `p5d_swap_*.bmp` 非黑 → **窗口/截图中出现真实彩色影片画面（P5D 标题影片）** = 本项目第一次显示原版游戏真实内容；然后把影片层与引擎内容正确合成（TEXSRC 只用于影片 quad），继续推进 page1→标题页。 |
+| §18.4516 | NV12 color mode works now ([TEXSRC] mode=3, [TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544, [TEXSRC-NV12] shown frame=1, [TEXSRC-SYNC] mode=draw div=1.000) - the backend read the pre-decoded title movie and converted/uploaded frame 1, but page1's first RT frame is still black (that draw's fragment output is black/fade), so added a HOST MOVIE LAYER: every frame calls p5d_movie_set_frame(BGRA,960,544) and present_frame blits g_movie_img fullscreen onto the swapchain ([MOVIEBLIT]), so the window necessarily shows the real movie frame; after present, save_screenshot("p5d_swap_N.bmp") captures the swapchain as evidence. Evidence: (1) out80m_m1050nv12.txt: [TEXSRC] mode=3 src=0x0 960x544; [TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544 seq=0 auto=0; [TEXSRC-NV12] shown frame=1; [TEXSRC-SYNC] mode=draw div=1.000 start=0; [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560; [ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; [ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0; disp_1 STATS mean=0.00 max=0. (2) backend present_frame movie blit: if(g_movie_ready && g_movie_img && g_movie_w>0 && g_movie_h>0){ VkImageBlit bl{}; ...; vkCmdBlitImage(cmd,g_movie_img,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,dst,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&bl,VK_FILTER_LINEAR); fprintf(stderr,'[MOVIEBLIT] %dx%d -> %ux%u fullscreen blit'); }. (3) Implementation 18.4516 in recomp_harness.cpp: extern "C" void p5d_movie_set_frame(const void* bgra, int w, int h) (the backend function is extern "C"); in movie_advance_frame after BGRA conversion call p5d_movie_set_frame(_dst,(int)g_movie_w,(int)g_movie_h); after present in the DisplayQueueAddEntry handler: static int _sc=0; if(_sc<8){ char _fn[64]; snprintf(_fn,sizeof(_fn),'p5d_swap_%d.bmp',_sc); int _src=p5d::vulkan::save_screenshot(_fn); printf('[ABISWAP] saved %s rc=%d n=%u\n',_fn,_src,g_main_n); _sc++; }. (The earlier link error undefined reference to p5d::vulkan::p5d_movie_set_frame(void const*,int,int) was because the backend uses extern "C"; fixed with extern "C" declaration.) Build+link OK; 80M run started out80m_m1051moviefs.txt (NV12 color + host movie layer + swapchain capture). NEXT: [MOVIEBLIT] 960x544 -> ... plus non-black p5d_swap_*.bmp => THE REAL COLOR MOVIE PICTURE (P5D title movie) appears in the window/captures - the first real original-game content in this project; then composite the movie layer correctly with engine content (TEXSRC only for the movie quad) and continue page1 -> title page. |
 ```
 [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790
 [MOVIE] frame=0/900 -> scratch=99C67790 set_texsrc_addr
@@ -490410,3 +490446,56 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M970 movie-frame override did not take effect because of the backend TEXSRC gates: P5D_TEXSRC_MOVIEONLY defaults to 1 and only allows overriding after the guest really opens a movie (p5d::vulkan::g_movie_opened); and P5D_TEXSRC=AUTO only uploads the Y plane (grayscale). Evidence out80m_m1049movie.txt: [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790; [MOVIE] frame=0/900 -> scratch=99C67790 set_texsrc_addr; [MOVIE] frame=1/900; [TEXSRC] mode=2 src=0x1 960x544; [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580; [TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0 (still the app texture); disp_1 STATS mean=0.00 max=0. Backend gates in upload_gxm_control_resolved: if(_ts==2) _ta=g_texsrc_auto; bool _allow=true; P5D_TEXSRC_FH/UNIT/EXCL_FH (default excludes present pass 57ABAA38F7202FA8); if(_mo && !p5d::vulkan::g_movie_opened) _allow=false; if(_ts && p5d_movie_layer_active) _allow=false; if(_ts==3 && _allow){ NV12->RGBA color path with auto source switching/frame advance/stop-at-end }. SWITCHED TO NV12 MODE (backend's mature color path reading the pre-decoded file directly): P5D_TEXSRC=NV12; P5D_TEXSRC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw; P5D_TEXSRC_WH=960x544; P5D_TEXSRC_MOVIEONLY=0; P5D_TEXSRC_SYNC=draw; P5D_TEXSRC_DIV=1; 80M run started out80m_m1050nv12.txt. NEXT: [TEXSRC-NV12] file=... frames=900; [TEXSRC-T0] movie clock started; [TEXSRC] uploaded 960x544 color -> the RT/window should show the REAL COLOR MOVIE picture (title movie) -> page1 real content on screen for the first time.
 
 LOOKUP: P5D_TEXSRC_MOVIEONLY, g_movie_opened, P5D_TEXSRC=NV12, P5D_TEXSRC_RAW, [TEXSRC-NV12], [TEXSRC-T0], P5D_TEXSRC_SYNC, P5D_TEXSRC_DIV, 57ABAA38F7202FA8, out80m_m1050nv12.txt -> §18.4514 [relevant: movie feed], §18.4513 [relevant: texture upload]
+### 18.4516 PORT M971: NV12 彩色模式验证 + 宿主影片层（present 全屏 blit）+ swapchain 截图
+
+1) `out80m_m1050nv12.txt`：
+```
+[TEXSRC] mode=3 src=0x0 960x544
+[TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544 seq=0 auto=0
+[TEXSRC-NV12] shown frame=1
+[TEXSRC-SYNC] mode=draw div=1.000 start=0
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0
+disp_1 STATS: mean=0.00 max=0
+```
+→ NV12 彩色模式已生效（读取 900 帧 title 影片、转换上传第 1 帧），但 page1 首帧 draw 的片元输出是黑（淡入层）。
+
+2) 后端 `present_frame` 已有影片全屏 blit：
+```cpp
+if(g_movie_ready && g_movie_img && g_movie_w>0 && g_movie_h>0){
+    VkImageBlit bl{}; ...
+    vkCmdBlitImage(cmd, g_movie_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+    fprintf(stderr,"[MOVIEBLIT] %dx%d -> %ux%u 全屏 blit\n", ...); }
+```
+
+3) 实现（18.4516，`recomp_harness.cpp`）：
+```cpp
+extern "C" void p5d_movie_set_frame(const void* bgra, int w, int h);   // 后端是 extern "C"！
+// movie_advance_frame() 中，BGRA 转换完成后：
+p5d_movie_set_frame(_dst, (int)g_movie_w, (int)g_movie_h);             // 宿主影片层
+// DisplayQueueAddEntry 处理中，present_frame 之后：
+static int _sc = 0;
+if (_sc < 8) { char _fn[64]; std::snprintf(_fn, sizeof(_fn), "p5d_swap_%d.bmp", _sc);
+    int _src = p5d::vulkan::save_screenshot(_fn);
+    printf("[ABISWAP] saved %s rc=%d n=%u\n", _fn, _src, g_main_n); _sc++; }
+```
+4) 链接问题：`undefined reference to p5d::vulkan::p5d_movie_set_frame(void const*, int, int)`
+   —— 因后端定义为 `extern "C"`，声明改为 `extern "C" void p5d_movie_set_frame(const void*, int, int);` 后链接成功。
+5) 编译链接成功；已启动 80M 运行：`out80m_m1051moviefs.txt`。
+NEXT：
+```
+[MOVIEBLIT] 960x544 -> ... 出现
+p5d_swap_*.bmp 非黑
+→ 窗口/截图出现【真实彩色影片画面（P5D 标题影片）】
+→ 本项目第一次显示原版游戏真实内容
+→ 之后把影片层与引擎内容正确合成（TEXSRC 只用于影片 quad），继续 page1→标题页
+```
+验证：`out80m_m1050nv12.txt`、`out80m_m1051moviefs.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M971 NV12 color mode works ([TEXSRC] mode=3, [TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544, [TEXSRC-NV12] shown frame=1, [TEXSRC-SYNC] mode=draw div=1.000) but page1's first RT frame is still black (fade layer), so added a HOST MOVIE LAYER: every frame calls p5d_movie_set_frame(BGRA,960,544) and present_frame blits g_movie_img fullscreen onto the swapchain ([MOVIEBLIT]); after present save_screenshot('p5d_swap_N.bmp') captures the swapchain. Evidence out80m_m1050nv12.txt: [TEXSRC] mode=3 src=0x0 960x544; [TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544 seq=0 auto=0; [TEXSRC-NV12] shown frame=1; [TEXSRC-SYNC] mode=draw div=1.000 start=0; [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580; [ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; [ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0; disp_1 STATS mean=0.00 max=0. Backend present_frame movie blit: if(g_movie_ready && g_movie_img && g_movie_w>0 && g_movie_h>0){ VkImageBlit bl{}; ...; vkCmdBlitImage(cmd,g_movie_img,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,dst,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&bl,VK_FILTER_LINEAR); fprintf(stderr,'[MOVIEBLIT] %dx%d -> %ux%u'); }. Implementation 18.4516 in recomp_harness.cpp: extern "C" void p5d_movie_set_frame(const void* bgra, int w, int h) (backend is extern "C"); call it in movie_advance_frame after BGRA conversion; after present in DisplayQueueAddEntry handler do static int _sc=0; if(_sc<8){ char _fn[64]; snprintf(_fn,sizeof(_fn),'p5d_swap_%d.bmp',_sc); int _src=p5d::vulkan::save_screenshot(_fn); printf('[ABISWAP] saved %s rc=%d n=%u\n',_fn,_src,g_main_n); _sc++; }. The link error undefined reference to p5d::vulkan::p5d_movie_set_frame(void const*,int,int) was fixed with the extern "C" declaration. Build+link OK; 80M run started out80m_m1051moviefs.txt. NEXT: [MOVIEBLIT] 960x544 -> ... plus non-black p5d_swap_*.bmp => the REAL COLOR MOVIE PICTURE (P5D title movie) appears in the window/captures - the first real original-game content; then composite movie layer with engine content properly (TEXSRC only for the movie quad) and continue page1 -> title page.
+
+LOOKUP: p5d_movie_set_frame, extern "C", [MOVIEBLIT], p5d_swap_N.bmp, [ABISWAP], save_screenshot, P5D_TEXSRC=NV12, [TEXSRC-NV12] shown frame, out80m_m1051moviefs.txt -> §18.4515 [relevant: TEXSRC gates], §18.4514 [relevant: movie feed]

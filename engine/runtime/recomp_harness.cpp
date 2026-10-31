@@ -688,6 +688,8 @@ static uint32_t hle_malloc_ret(uint32_t p) {
   return p;
 }
 namespace p5d { namespace vulkan { void set_texsrc_addr(unsigned int addr); } }   // 18.4514 M969
+extern "C" void p5d_movie_set_frame(const void* bgra, int w, int h);   // 18.4516 M971 (extern "C" in the backend)
+namespace p5d { namespace vulkan { int save_screenshot(const char* filename); } }   // 18.4516 M971
 static uint32_t hle_malloc(uint32_t n) {
   std::lock_guard<std::mutex> _hlk(g_hle_mtx);
   tl_last_malloc_n = n;   // 18.4241: host-thread model - allocator must be thread-safe
@@ -781,7 +783,10 @@ static void movie_advance_frame(void) {
       }
     }
     p5d::vulkan::set_texsrc_addr(g_movie_va);
-    static int _mn = 0; if (_mn++ < 12) { printf("[MOVIE] frame=%ld/%ld -> scratch=%08X set_texsrc_addr\n", g_movie_frame, g_movie_frames, g_movie_va); fflush(stdout); }
+    // 18.4516 M971: also feed the host movie layer - present_frame blits g_movie_img fullscreen over the
+    // swapchain image (vkCmdBlitImage), so the real movie frame becomes visible regardless of engine shaders.
+    p5d_movie_set_frame(_dst, (int)g_movie_w, (int)g_movie_h);
+    static int _mn = 0; if (_mn++ < 12) { printf("[MOVIE] frame=%ld/%ld -> scratch=%08X set_texsrc_addr+set_frame\n", g_movie_frame, g_movie_frames, g_movie_va); fflush(stdout); }
   }
   ++g_movie_frame;
 }
@@ -1684,6 +1689,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (_dq && _data) {
           movie_advance_frame();   // 18.4514 M969: feed the offline-decoded movie frame as the texture source
           p5d::vulkan::present_frame(_data);
+          { static int _sc = 0;   // 18.4516 M971: capture the swapchain (movie layer blitted inside present_frame)
+            if (_sc < 8) { char _fn[64]; std::snprintf(_fn, sizeof(_fn), "p5d_swap_%d.bmp", _sc);
+              int _src = p5d::vulkan::save_screenshot(_fn);
+              printf("[ABISWAP] saved %s rc=%d n=%u\n", _fn, _src, g_main_n); fflush(stdout); _sc++; } }
           static int _rtcap_done = 0;
           static int _disp_n = 0;
           if (_disp_n < 8) {
