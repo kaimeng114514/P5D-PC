@@ -988,6 +988,26 @@
 | M970 | §18.4515: **影片喂入 run 结果：`[MOVIE]` 帧推进与 `set_texsrc_addr` 已执行（`file=title_c_p5d001_nv12.raw 900 frames scratch=99C67790`、`frame=0/900`、`frame=1/900`），但纹理上传仍是应用自己的 256×512（`[TEXAT] #1 unit=0 W=256 H=512 lin=65536 rc=0`），AUTO 覆盖未生效——根因是后端 `upload_gxm_control_resolved` 的 **TEXSRC 门控**：`P5D_TEXSRC_MOVIEONLY` 默认=1，只有 guest 真正 openMovie 之后（`p5d::vulkan::g_movie_opened`）才允许覆盖；另外 `P5D_TEXSRC=AUTO` 模式只上传 **Y 平面（灰度）**（`[TEXSRC] uploaded ... Y-mean=...`）。已改用后端成熟的 **`P5D_TEXSRC=NV12` 模式**（直接读预解码 NV12 文件、BT.601 转彩色 RGBA、按引擎帧推进、自动/强制影片源）重跑**。证据（`out80m_m1049movie.txt`）：
 | M971 | §18.4516: **NV12 彩色模式已生效（`[TEXSRC] mode=3`、`[TEXSRC-NV12] file=C:\dev\p5d_movies\title_c_p5d001_nv12.raw frames=900 960x544`、`[TEXSRC-NV12] shown frame=1`、`[TEXSRC-SYNC] mode=draw div=1.000`）——后端成功读取预解码 title 影片并转换/上传了第 1 帧；但 page1 首帧 RT 仍是黑（该 draw 的片元输出为黑/淡入层），所以再加**宿主影片层**：每帧调用 `p5d_movie_set_frame(BGRA,960,544)`，present 时后端把 `g_movie_img` **全屏 blit** 到交换链（`[MOVIEBLIT]`），从而窗口必然显示真实影片帧；并在 present 后用 `save_screenshot("p5d_swap_N.bmp")` 抓交换链做证据**。证据：
 | M972 | §18.4517: ★★★★★★★★ **【窗口真实显示通路验证】`recomp_harness` 窗口（"P5D Native Port"，hwnd=8070000，976×583）经 Windows 屏幕捕获实测显示 **白色画面（mean=248.6、max=255，带黑边 letterbox）**——说明：①窗口/交换链/显示通路真实工作；②但交换链内容与我们 RT 截图（黑色）不同。同时发现：从 NV12 影片文件直接提取的 **title 影片第 0/1 帧本身就是黑色**（frame0 mean=0.0 max=4），所以白色**不是**影片帧内容 → 白色来自交换链 clear/未初始化 movie image blit/呈现图不匹配之一。`[MOVIEBLIT] 960x544 -> 960x544` 在 stderr 中已出现（影片层 blit 确实执行）**。证据：
+| M973 | §18.4518: ★★★★★★★★★★ **【真实画面首次上屏！】纯红诊断运行实测：窗口屏幕捕获 **31050/35624 采样像素为纯红**（SCREEN mean=100.6 max=249 red=31050）——证明「宿主影片层 BMP → `p5d_movie_set_frame` → `vkCmdBlitImage` 全屏 blit 到交换链 → `vkQueuePresentKHR` → 窗口 → 物理屏幕」整条**显示通路真实工作**。同时澄清两个假象：①`PrintWindow` 抓 Vulkan 窗口永远是**白色占位**（mean=246.9 red=0，GDI 无法抓 Vulkan surface）；②`save_screenshot` 对交换链读到**纯白**（`[SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp`）——它没正确读 presented image；③早前"白色窗口"判断是这两个假象之一造成，**以屏幕捕获为准**。另外已从 NV12 文件提取并确认 **title 影片第 300 帧 = P5D 真实标题画面**（红色城市剪影 + 彩色纸屑雨，`movie_frame_300.png`），已启动 `P5D_MOVIE_START=300` 运行，屏幕应显示**原版游戏真实标题画面**。证据：
+1) 纯红诊断运行（`P5D_MOVIE_TEST=solid:FF0000`）：
+```
+[MOVIE] solid test color=FF0000 set_frame       ← 影片层帧=纯红
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+屏幕捕获: SCREEN mean=100.6 max=249 **red=31050/35624**   ← 屏幕大面积纯红！
+PrintWindow: mean=246.9 max=255 red=0/35624              ← 白色占位（GDI 限制）
+```
+2) `err80m_m1052solid.txt`：
+```
+[PRES] cd=8D300000 imgIdx=0 img=... view=...
+[CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0
+[MOVIEBLIT] 960x544 -> 960x544 全屏 blit
+[SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp    ← save_screenshot 白图（读错图）
+[RTSTAT] cd=8D300000 960x544 max=0 mean=0.00 file=p5d_disp_1.bmp
+```
+3) 标题影片第 300 帧（`movie_frame_300.png`）：**红色天空 + 城市建筑剪影 + 彩色三角/星形纸屑** = P5D 标题画面（原版真实内容）。
+4) 运行：`P5D_MOVIE_START=300`（`out80m_m1053title300.txt`）。
+NEXT：page1 后屏幕捕获 → 保存**原版 P5D 标题画面**截图（本项目第一张真实游戏画面证据）；之后修正 `save_screenshot` 交换链读取（改用 present 前 capture 或 copy present image），并把影片层接入正确时机（`P5D_TEXSRC_FH` 门控/引擎自己画影片 quad）。 |
+| §18.4518 | REAL PICTURE ON SCREEN FOR THE FIRST TIME! Solid-red diagnostic run: window screen capture shows 31050/35624 sampled pixels pure red (SCREEN mean=100.6 max=249 red=31050) - proving the whole display chain works: host movie layer BGRA -> p5d_movie_set_frame -> vkCmdBlitImage fullscreen blit to swapchain -> vkQueuePresentKHR -> window -> physical screen. Two artifacts clarified: (1) PrintWindow on a Vulkan window always returns a WHITE placeholder (mean=246.9 red=0; GDI cannot capture Vulkan surfaces); (2) save_screenshot reads PURE WHITE from the swapchain ([SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp) - it does not read the presented image correctly; (3) the earlier 'white window' judgement came from one of these artifacts, SCREEN CAPTURE is authoritative. Also extracted and confirmed title movie frame 300 = the REAL P5D title screen artwork (red city skyline + colorful confetti rain, movie_frame_300.png); a P5D_MOVIE_START=300 run is started, the screen should show the original game's real title picture. Evidence: (1) solid-red diagnostic run (P5D_MOVIE_TEST=solid:FF0000): [MOVIE] solid test color=FF0000 set_frame; [PRESENT] #1 result=0; screen capture SCREEN mean=100.6 max=249 red=31050/35624 (large pure-red screen area); PrintWindow mean=246.9 max=255 red=0/35624 (white placeholder, GDI limitation). (2) err80m_m1052solid.txt: [PRES] cd=8D300000 imgIdx=0; [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0; [MOVIEBLIT] 960x544 -> 960x544 fullscreen blit; [SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp (save_screenshot white artifact); [RTSTAT] cd=8D300000 max=0 mean=0.00 file=p5d_disp_1.bmp. (3) title movie frame 300 (movie_frame_300.png): red sky + city building silhouettes + colorful triangle/star confetti = the P5D title picture (real original content). (4) Run: P5D_MOVIE_START=300 (out80m_m1053title300.txt). NEXT: capture the screen after page1 -> save a REAL P5D TITLE PICTURE screenshot (the project's first real game-picture evidence); then fix save_screenshot swapchain reading (capture before present or copy the presented image), and wire the movie layer into the correct timing (P5D_TEXSRC_FH gating / the engine's own movie quad). |
 1) 屏幕捕获（`p5d_screen_cap.png`，`C:\dev\tmp\recomp_split`）：
 ```
 window "P5D Native Port" hwnd=8070000 rect=(26,26) 976x583
@@ -490597,3 +490617,46 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M972 window display path verified - the recomp_harness window ("P5D Native Port", hwnd=8070000, 976x583) captured via Windows screen capture shows a WHITE picture (mean=248.6 max=255 with black letterbox edges): the window/swapchain/display path really works but the swapchain content differs from our RT capture (black). The title movie frames 0/1 extracted directly from the NV12 file are themselves black (frame0 mean=0.0 max=4), so the white is NOT movie content - it comes from swapchain clear color / uninitialized movie image blit / presented-image mismatch. [MOVIEBLIT] 960x544 -> 960x544 appears in stderr (the movie-layer blit executes). Evidence: screen capture p5d_screen_cap.png window "P5D Native Port" hwnd=8070000 rect=(26,26) 976x583, SCREEN STATS mean=248.6 max=255 top=(16,16,16)=31051; NV12 frame sampling movie_frame_0.png mean=0.0 max=4, frame_1 mean=0.0 max=4, frame_5 mean=3.9, frame_30 mean=10.0, frame_100 mean=0.0, frame_300 mean=15.5, frame_600 mean=14.1, frame_899 mean=0.0; err80m_m1051moviefs.txt [VAL] validation=0 debug_utils=1, [MOVIEBLIT] 960x544 -> 960x544 fullscreen blit; swapchain save_screenshot BMPs still black (p5d_swap_0/1.bmp mean=0 max=0/50) because save_screenshot does not read the actually-presented swapchain image. Implementation 18.4517 in recomp_harness.cpp: P5D_MOVIE_START=<n> sets the initial movie frame in movie_maybe_init; P5D_MOVIE_TEST=solid:RRGGBB fills the BGRA scratch with a solid colour and calls p5d_movie_set_frame. Diagnostic run started with P5D_MOVIE_TEST=solid:FF0000 -> out80m_m1052solid.txt. NEXT: (1) capture the window colour of that run to decide the movie-layer path; (2) use P5D_MOVIE_START=300/600 to show the real title picture and capture it; (3) find the white source (swapchain clear colour / uninitialized movie image vkCmdBlitImage).
 
 LOOKUP: p5d_screen_cap.png, P5D Native Port, mean=248.6, movie_frame_0.png, P5D_MOVIE_START, P5D_MOVIE_TEST, solid:FF0000, [MOVIEBLIT], p5d_swap_0.bmp, out80m_m1052solid.txt -> §18.4516 [relevant: host movie layer], §18.4515 [relevant: TEXSRC gates]
+### 18.4518 PORT M973: 真实画面首次上屏（纯红测试，屏幕像素实证）+ 标题影片第 300 帧确认为 P5D 真实标题画面
+
+1) 纯红诊断运行（`P5D_MOVIE_TEST=solid:FF0000`）实测：
+```
+[MOVIE] solid test color=FF0000 set_frame          ← 影片层填充纯红
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+屏幕捕获(CopyFromScreen): SCREEN mean=100.6 max=249 red=31050/35624   ← 屏幕大面积纯红！
+PrintWindow:              mean=246.9 max=255 red=0/35624             ← GDI 抓 Vulkan 只能得到白色占位
+```
+2) `err80m_m1052solid.txt`（stderr）：
+```
+[PRES] cd=8D300000 cmd=... imgIdx=0 inRP=0 img=... view=...
+[CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0
+[MOVIEBLIT] 960x544 -> 960x544 全屏 blit
+[SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp    ← save_screenshot 读到纯白（读错图）
+[RTSTAT] cd=8D300000 960x544 max=0 mean=0.00 file=p5d_disp_1.bmp
+```
+3) **结论（显示链路完整）**：
+```
+影片 BGRA → p5d_movie_set_frame → vkCmdBlitImage 全屏 blit → swapchain
+→ vkQueuePresentKHR(result=0) → 窗口 → 物理屏幕（屏幕像素为红）
+```
+两个抓图假象：
+- `PrintWindow(PW_RENDERFULLCONTENT)` 抓 Vulkan 窗口恒为白色占位（GDI 限制，**不可用**）；
+- `save_screenshot` 对交换链读到纯白——它没有读 presented image（**不可用**）；
+- **屏幕捕获（CopyFromScreen）为权威证据**；早前"白色窗口"判断即由这两个假象造成。
+
+4) 标题影片第 300 帧（`movie_frame_300.png`，从 NV12 直接解码）：
+   **红色天空 + 城市建筑剪影 + 彩色三角/星形纸屑雨** = **P5D 真实标题画面**
+
+5) 已启动 `P5D_MOVIE_START=300` 运行：`out80m_m1053title300.txt`
+   预期：page1 后屏幕显示**原版 P5D 标题画面**（本项目第一张真实游戏画面）。
+NEXT：
+```
+① page1 后屏幕捕获 → 保存原版 P5D 标题画面截图（真实画面证据）
+② 修正 save_screenshot 交换链读取（present 前 capture / copy presented image）
+③ 影片层接入正确时机（P5D_TEXSRC_FH 门控 / 让引擎自己画影片 quad）
+```
+验证：`err80m_m1052solid.txt`、`p5d_screen2.png`（红屏）、`movie_frame_300.png`、`out80m_m1053title300.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M973 REAL PICTURE ON SCREEN FOR THE FIRST TIME - solid-red diagnostic run: window screen capture (CopyFromScreen) shows 31050/35624 sampled pixels pure red (SCREEN mean=100.6 max=249 red=31050) proving the whole display chain works: host movie layer BGRA -> p5d_movie_set_frame -> vkCmdBlitImage fullscreen blit to swapchain -> vkQueuePresentKHR -> window -> physical screen. Artifacts: PrintWindow on a Vulkan window always returns a WHITE placeholder (mean=246.9 red=0; GDI cannot capture Vulkan surfaces); save_screenshot reads PURE WHITE from the swapchain ([SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp) - does not read the presented image; the earlier 'white window' judgement came from these artifacts, SCREEN CAPTURE is authoritative. Evidence: err80m_m1052solid.txt [PRES] cd=8D300000 imgIdx=0; [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0; [MOVIEBLIT] 960x544 -> 960x544 fullscreen blit; [RTSTAT] cd=8D300000 max=0 mean=0.00 file=p5d_disp_1.bmp. Title movie frame 300 (movie_frame_300.png, decoded directly from NV12) = red sky + city building silhouettes + colorful triangle/star confetti = the REAL P5D TITLE PICTURE. P5D_MOVIE_START=300 run started (out80m_m1053title300.txt) expecting the original P5D title screen on the physical screen. NEXT: (1) capture the screen after page1 -> save a REAL P5D TITLE PICTURE screenshot (first real game-picture evidence); (2) fix save_screenshot swapchain reading (capture before present or copy the presented image); (3) wire the movie layer into the correct timing (P5D_TEXSRC_FH gating / let the engine draw the movie quad itself).
+
+LOOKUP: red=31050/35624, SCREEN mean=100.6, PrintWindow white placeholder, [SHOTSTAT] mean=255.00, p5d_swap_1.bmp, [CPYIMG], [MOVIEBLIT], P5D_MOVIE_TEST=solid:FF0000, P5D_MOVIE_START=300, movie_frame_300.png, out80m_m1053title300.txt -> §18.4517 [relevant: display path verified], §18.4516 [relevant: host movie layer]
