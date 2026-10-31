@@ -18,7 +18,7 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 | ARM/Thumb → x86-64 **AOT 静态重编译** | 90–95% | **229,791 个基本块 / 32 个宿主批次**已翻译并原生执行，`[NOFN]=0`；修复全局性 **pc-relative 字面量加载错误**（`ldr/ldrd/vldr [pc,#imm]` 原先按 `r15` 生成 → 485 处修正、22/32 批次重编） |
 | 原版 eboot/SELF **原样加载** | 85–90% | ELF 段映射、导入表、NID 解析、模块启动全部可用；默认 30M 块回归稳定 `exit=0`；**完整 boot 链已打通**：S0_LOGO → 启动 USM 影片（约 100 秒虚拟时间，guest 软件解码器 `FUN_811DF91A`）→ 应用世界在 **n≈59.5M** 恢复运行 → **S1 标题加载页（page1）开始运行** |
 | **HLE 系统 API 接管** | 70–75% | 内存/线程/fiber/信号量/事件标志/消息/文件/GXM/CRI 日志骨架均工作；本阶段新增：`sceKernelCreateLwMutex` 语义修正、`sceKernelLockLwMutexCB`(0x812B2800) 别名、`sceDisplayWaitVblankStartMultiCB` 时间片模拟、`sceKernelGetProcessTimeWide` 虚拟时钟模式、CRI FS 初始化桥（`0x8128399E`）等 |
-| **GXM → Vulkan** | 70–80% | **首帧已上屏**：真实 SPIR-V 管线（GXP→SPIR-V manifest 4331 条）创建成功（`[REAL-PIPE] #1 OK`），BeginScene → Draw（UBO/纹理绑定）→ `end_frame()` → `vkQueueSubmit` → `vkQueuePresentKHR` 全部成功（`ef_debug.log: after present result=0`）；`sceGxmDisplayQueueAddEntry` 已接线为提交+present；下一步补全 title 渲染细节与后续场景 |
+| **GXM → Vulkan** | 60–70% | **提交流程已打通、画面内容仍为黑（诚实版）**：真实 SPIR-V 管线（GXP→SPIR-V manifest 4331 条）创建成功（`[REAL-PIPE] #1 OK`），BeginScene → Draw → RT→swapchain 拷贝 → `vkQueuePresentKHR result=0` 全链执行；但实测 RT 截图 **全黑**（PIL mean=0/max=0），根因：纹理全绑 dummy（`[TEXBIND] dummy=16`）、uniform 全零（RINIT 零表兜底）、顶点/几何数据未校验；正在补渲染数据通路 |
 | 资源 / 文件系统 | 65–70% | `data.cpk`（10,555 文件）+ `vita.cpk`（531 文件）已挂载；**CRI FS binder 已初始化并保持**（`binit=0x816A0BA0`，n=5000 由 HLE 直接调用 guest `criFs_Initialize`）；page1 阶段 **CRI 流已打开（`streamcnt=3`）**，sequence 控制器 `page0..page5` 回调全部注册；读完成投递链路仍在定位 |
 | 线程 / fiber / 调度 | 85–90% | **guest 双 fiber 启动链完全打通**（fiber A 原生完成位 → `FUN_8120683C` 返回 → 销毁 A → 运行 fiber B）；线程级 `sceFiberGetSelf` 重新武装 dummy 使调度器恢复切换；新增**周期抢占 + 虚拟唤醒期限**（`P5D_PERIODPUMP`/`P5D_THRYIELD`），修复"抢占后 worker 永久 waiting"；调度实验早期门控 `n>=100000` 保护 CRI 初始化 |
 | 音频（SceNgs / CRI Atom） | 5–10% | CRI Atom 初始化已进入；仍缺 ACF/ACB 配置与解码，音频输出为桩 |
@@ -47,7 +47,8 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 - **M935–M937（18.4480–18.4482）**：GXP→SPIR-V 管线接线：manifest 4331 条、FNV-1a64 哈希、`select_real_pipeline`；发现 page1 走 **Precomputed** 状态 API 且 ShaderPatcher 是 STUB（program 句柄全 0）→ 实现**假句柄链**（RegisterProgram → Create*Program → Precomputed 捕获）
 - **M938（18.4483）**：假句柄链全链打通（`[ABIPGID]→[ABIPGOBJ]→[ABIOBJ]→[SHADERMOD] ok`），真实 `vkCreateGraphicsPipelines` 调用；修复 "Draw" 子串误匹配 `PrecomputedDrawInit` 导致的过早建管线崩溃
 - **M939（18.4484）**：**第一发真实 draw 完整执行**（`[REAL-PIPE] #1 OK`、`[FRAMEBEGIN] frame=1`、`[FUBOHOST]`、`[TEXBIND]`）；发现 app 不调用 `sceGxmEndScene`，只调用 `sceGxmDisplayQueueAddEntry` → 把两者接到后端 `end_frame()`（提交+present）
-- **M940（18.4485）**：★★★★★ **首帧上屏成功**：`[FRAMESUBMIT] frame=1`、`ef_debug.log: after submit result=0 / after present result=0`（`vkQueuePresentKHR` 成功）；新增首帧截图钩子（`p5d_frame_first.bmp`）
+- **M940–M943（18.4485–18.4488）**：present 提交流程打通（`vkQueuePresentKHR result=0`、RT→swapchain 拷贝、RT 截图钩子）；**诚实更正（M945）**：画面内容仍为黑，纹理/uniform/几何数据通路待补
+- **M944–M945（18.4489–18.4490）**：窗口"未响应"修复（Win32 消息泵）；RT 截图实测全黑（PIL mean=0/max=0）、定位纹理 dummy/uniform 零值问题，启动红色片元着色器诊断实验
 
 ### 当前阻塞（明确、可执行）
 

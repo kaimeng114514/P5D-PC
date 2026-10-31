@@ -960,6 +960,23 @@
 | M942 | §18.4487: ★★★★★★★ **离屏 RT 内容成功 present 到窗口：`[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)`——这次呈现的是游戏真实渲染的 RT（`cd=8D300000` 960x544），RT→swapchain `vkCmdCopyImage` 已执行**。`out62m_m1023rtpresent.txt` 证据：
 | M943 | §18.4488: **RT 截图顺序修正：`save_rt_screenshot(cd)` 必须在 `present_frame(cd)` 之后调用**——因为 RT 是在 `present_frame` 内部才 `[RTPOOL] create` 入池的，之前先截图必然 `rc=-1`。`out62m_m1024rtshot.txt` 证据：
 | M944 | §18.4489: **修复游戏窗口显示"未响应"：harness 从未处理 Win32 消息（无 PeekMessage 消息泵），主线程长时间跑 AOT 循环时 Windows 判定窗口挂起；已加入消息泵**。原因：`recomp_harness.cpp` 之前完全没有 `#include <windows.h>` / `PeekMessage`（实测计数 0），而 Vulkan 窗口由后端在 guest 主线程创建，随后主线程一直埋在 AOT/嵌套执行里 → Windows 消息队列积压 → 标题栏"未响应"（白色/幽灵窗口）。修复（18.4489）：
+| M945 | §18.4490: **诚实纠正：M940–M942 的 "present 成功" 只是 `vkQueuePresentKHR result=0`（提交流程成功），画面内容仍全黑——用户观察到窗口纯白/无内容是对的**。实测定量：`p5d_rt_first.bmp`（960x544，M943 修正后成功产出）用 PIL 统计：**mean=0.00、max=0、100% 像素 (0,0,0)** → **RT 内容完全黑**。数据通路缺口（err/日志证据）：
+```
+err: [TEXBIND] #0 real=0 alias=0 dummy=16          ← 16 个纹理全部绑到 dummy（无真实纹理）
+err: [FUBOHOST] #1 ... UBO float: 0.00000 ...      ← 片元 UBO 全 0
+[M941 修复] RINIT 用零表覆盖 DAT_816CBE2C（避免 BADMEM）→ uniform 数据必然为 0
+[REAL-PIPE] #1 OK 仅说明管线/模块创建成功，不代表绘制内容正确
+```
+结论：**端到端"结构链"已打通**（BeginScene→真实管线→Draw→RT→copy→present result=0），
+但 **渲染数据通路未打通**：纹理未绑定（全 dummy）、uniform 全零（RINIT 零表覆盖）、顶点/几何数据未校验 → 输出黑屏。
+**决定性实验（18.4490）**：用后端内置诊断片元着色器 `P5D_REALFS=red`（常量红色，不依赖纹理/uniform）
+重跑 62M：若 RT 截图变红 ⇒ 顶点/光栅化/管线/呈现链路正确，问题定位在 **纹理+uniform 数据通路**；
+若仍黑 ⇒ 问题在 draw 之前的几何/管线绑定。已启动 62M 长跑（`out62m_m1028redfs.txt`）。
+NEXT：读红色实验结果 → 按结论补：
+  a) 纹理：`sceGxmTextureInitLinear/Tiled`、`SetTexture`、`PrecomputedFragmentStateSetTexture` 接后端真实 `upload_texture_to_unit` + RT alias；
+  b) uniform：`sceGxmSetUniformDataF`/`SetDefaultUniformBuffer`/Precomputed 版本把 guest 数据写入真实 UBO（去掉零表 hack 或只在 guest 未提供时兜底）；
+  c) 顶点流：核对 `upload_vertex_stream`/`PrecomputedDrawSetVertexStream` 的 guest VA→host 数据转换。 |
+| §18.4490 | HONEST CORRECTION: M940-M942's 'present succeeded' only means vkQueuePresentKHR returned result=0 (the submission path worked); the frame content is still completely black - the user's observation of a pure-white/empty window is correct. Measured: p5d_rt_first.bmp (960x544, produced after the M943 ordering fix) analyzed with PIL gives mean=0.00, max=0, 100% pixels (0,0,0) -> the RT content is entirely black. Data-path gaps (evidence): err [TEXBIND] #0 real=0 alias=0 dummy=16 (all 16 textures bound to dummy, no real textures); err [FUBOHOST] #1 ... UBO float 0.00000... (fragment UBO all zeros); the M941 RINIT hack overrides DAT_816CBE2C with a zero table (to avoid the BADMEM) so uniforms are necessarily zero; [REAL-PIPE] #1 OK only means the pipeline/modules were created, not that the drawn content is correct. Conclusion: the end-to-end STRUCTURAL chain is connected (BeginScene -> real pipeline -> Draw -> RT -> copy -> present result=0), but the RENDER DATA PATH is not: textures unbound (all dummy), uniforms all zero (RINIT zero-table override), vertex/geometry data unverified -> black output. DECISIVE EXPERIMENT 18.4490: rerun 62M with the backend's built-in diagnostic red fragment shader (P5D_REALFS=red, constant red, independent of textures/uniforms): if the RT capture turns red, then vertex/rasterization/pipeline/present are correct and the problem is localized to the texture+uniform data path; if still black, the problem is in geometry/pipeline binding before draw. 62M run started (out62m_m1028redfs.txt). NEXT: read the red experiment result and then fix: (a) textures: sceGxmTextureInitLinear/Tiled, SetTexture, PrecomputedFragmentStateSetTexture wired to the backend real upload_texture_to_unit + RT alias; (b) uniforms: sceGxmSetUniformDataF/SetDefaultUniformBuffer and Precomputed variants writing guest data into the real UBO (drop the zero-table hack or only fall back when the guest provides none); (c) vertex streams: verify upload_vertex_stream/PrecomputedDrawSetVertexStream guest VA -> host data conversion. |
 ```cpp
 #ifdef _WIN32
 #include <windows.h>
@@ -488523,3 +488540,37 @@ NEXT：确认窗口不再"未响应"、`p5d_rt_first.bmp` 产出并查看真实�
 ANTI-FORGETTING ENTRY. Keywords: M944 game window 'Not Responding' fix - the harness never processed Win32 messages (windows.h/PeekMessage count 0) while the Vulkan window was created on the guest main thread and the main thread then stayed buried in AOT/nested execution -> message queue backup -> Windows marks the window hung. FIX 18.4489: add #ifdef _WIN32 #include <windows.h> and static void hle_pump_win_messages(void) { MSG m; int _k=0; while (PeekMessageA(&m,nullptr,0,0,PM_REMOVE) && _k++<128) { TranslateMessage(&m); DispatchMessageA(&m); } } (#else empty); call from job_probes every 16384 executed blocks ({ static uint32_t _pmc=0; if (((++_pmc) & 0x3FFFu)==0u) hle_pump_win_messages(); }) and from the main loop every 256 iterations (while (n<maxb) { if ((n&0xFF)==0) hle_pump_win_messages(); ... }). Covers both the outer loop (~10-20ms) and the nested render loop. Verified 2.5M smoke out2m_m1026pump.txt: [CRIFSHLE] binit_after=816A0BA0, [THREXIT] 0, [PREEMPT] 10, exit=0, BADMEM=0. Build+link OK; 62M run started out62m_m1027pump.txt (message pump + RT screenshot). NEXT: confirm the window is responsive and p5d_rt_first.bmp is produced/inspected.
 
 LOOKUP: hle_pump_win_messages, PeekMessageA, DispatchMessageA, job_probes, out62m_m1027pump.txt -> §18.4488 [relevant: RT screenshot], §18.4487 [relevant: RT present]
+### 18.4490 PORT M945: 诚实纠正（present 成功≠有画面）+ 黑屏数据通路分析 + 红色诊断实验
+
+1) 用户反馈：窗口显示纯白、没有真实画面。实测确认：
+```
+p5d_rt_first.bmp (960x544) -> PIL 统计: mean=0.00  max=0  top color (0,0,0) 100%
+```
+=> **RT 内容完全为黑**。M940–M942 的 "present 成功" 只代表 `vkQueuePresentKHR result=0`（提交流程成功），
+不代表画面内容正确；**之前 README/里程碑中"首帧已上屏/有真实画面"的表述不准确，已更正**。
+2) 渲染数据通路缺口（证据）：
+```
+err: [TEXBIND] #0 real=0 alias=0 dummy=16        ← 16 个纹理全部 dummy
+err: [FUBOHOST] #1 ... UBO float: 0.00000 ...    ← 片元 UBO 全 0
+RINIT 把 DAT_816CBE2C 覆盖成零表（避免 BADMEM）→ uniform 必然为 0
+[REAL-PIPE] #1 OK 只说明管线/模块创建成功
+```
+3) 结论：端到端**结构链**已通（BeginScene→真实 SPIR-V 管线→Draw→RT→RT→swapchain copy→present result=0），
+但**渲染数据通路未通**：纹理全 dummy、uniform 全零、顶点数据未校验 → 输出黑屏。
+4) 决定性实验（18.4490）：`P5D_REALFS=red`（后端内置常量红色片元着色器，不依赖纹理/uniform）：
+- RT 截图变红 ⇒ 顶点/光栅化/管线/呈现正确，问题在纹理+uniform 数据；
+- 仍黑 ⇒ 问题在 draw 之前的几何/管线绑定。
+已启动 62M 长跑：`out62m_m1028redfs.txt`。
+5) NEXT（按实验结果）：
+```
+a) 纹理通路：sceGxmTextureInitLinear/Tiled、sceGxmSetTexture、sceGxmPrecomputedFragmentStateSetTexture
+   → 后端 upload_texture_to_unit / RT alias 真实上传；
+b) uniform 通路：sceGxmSetUniformDataF、SetDefaultUniformBuffer、Precomputed* 版本
+   → 把 guest 数据写入真实 UBO（去掉 RINIT 零表 hack 或仅兜底）；
+c) 顶点流：upload_vertex_stream / PrecomputedDrawSetVertexStream 的 guest VA→host 解包校验。
+```
+验证：`p5d_rt_first.bmp`（PIL: mean=0/max=0）、`out62m_m1027pump.txt`（TEXBIND dummy/FUBOHOST 零）、`out62m_m1028redfs.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M945 HONEST CORRECTION - 'present succeeded' only means vkQueuePresentKHR returned result=0, the frame content is still black; user seeing a pure-white/empty window is CORRECT. Measured p5d_rt_first.bmp (960x544) with PIL: mean=0.00 max=0 top color (0,0,0) 100% -> RT content entirely black. Data-path gaps: err [TEXBIND] #0 real=0 alias=0 dummy=16 (all 16 textures bound to dummy), err [FUBOHOST] #1 UBO float 0.00000 (fragment UBO all zeros), the M941 RINIT hack overrides DAT_816CBE2C with a zero table so uniforms are zero, [REAL-PIPE] #1 OK only means pipeline/modules created. The structural chain is connected but the render data path is not: textures unbound, uniforms zero, vertex/geometry unverified -> black output. Decisive experiment 18.4490: rerun with P5D_REALFS=red (backend built-in constant-red fragment shader, independent of textures/uniforms); if the RT capture turns red then vertex/raster/pipeline/present are correct and the problem is the texture+uniform data path; if still black the problem is geometry/pipeline binding before draw. 62M run started out62m_m1028redfs.txt. NEXT: fix (a) textures via sceGxmTextureInitLinear/Tiled, SetTexture, PrecomputedFragmentStateSetTexture -> backend upload_texture_to_unit + RT alias; (b) uniforms via sceGxmSetUniformDataF/SetDefaultUniformBuffer/Precomputed variants writing guest data into the real UBO (drop the zero-table hack or only fall back); (c) vertex streams via upload_vertex_stream/PrecomputedDrawSetVertexStream guest VA->host data conversion.
+
+LOOKUP: p5d_rt_first.bmp, [TEXBIND], [FUBOHOST], P5D_REALFS, upload_texture_to_unit, [REAL-PIPE], out62m_m1028redfs.txt -> §18.4489 [relevant: message pump], §18.4488 [relevant: RT screenshot], §18.4486 [relevant: display path]
