@@ -963,6 +963,36 @@
 | M945 | §18.4490: **诚实纠正：M940–M942 的 "present 成功" 只是 `vkQueuePresentKHR result=0`（提交流程成功），画面内容仍全黑——用户观察到窗口纯白/无内容是对的**。实测定量：`p5d_rt_first.bmp`（960x544，M943 修正后成功产出）用 PIL 统计：**mean=0.00、max=0、100% 像素 (0,0,0)** → **RT 内容完全黑**。数据通路缺口（err/日志证据）：
 | M946 | §18.4491: ★★★★★★ **红色片元诊断结果：即使换成常量红色片元着色器，RT 截图仍全黑（mean=0/max=0）→ 定位到根因：后端 `sceGxmBeginScene` **忽略 renderTarget/colorSurface 参数**，永远渲染进 swapchain；而我们的显示路径把**从未被绘制过的 app RT** 拷贝到 swapchain → 把真实绘制内容覆盖成黑色**。证据链：
 | M947 | §18.4492: ★★★★★★★ **找到并实现正确的渲染架构（源自旧 host `eboot_probe.cpp` 的成熟做法）：`BeginScene` 的 colorSurface 在 guest 栈 `[sp+8]`，surface 结构 `+0 flags/+4 width/+8 height/+0xC stride/+0x10 data/+0x14 format/+0x18 type`；正确流程是 `begin_scene_pass(data,w,h)`（画进 app 的 RT，且 `g_cur_pass_rp` 与管线 render pass 匹配）→ `end_scene_pass()` → `present_frame(data)`（RT→swapchain 拷贝+present）**。证据链：
+| M948 | §18.4493: **M947 架构验证结果：BeginScene 的 colorSurface 参数解析取错了（`[ABIBEGIN] surf=816CBCC4 data=00000000 0x0`）→ 回退到 begin_frame，RT 依旧全黑（mean=0/max=0）；已改为多候选探测（r3 + 栈 4 个指针 + 两种 surface 布局自动判别）**。`out62m_m1030rtscene.txt`：
+```
+[ABIBEGIN] surf=816CBCC4 data=00000000 0x0 n=59454976      ← 从栈 sp+8 读到的不是 colorSurface
+[ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59475321
+[REAL-PIPE] #1 OK ... ; [DRAWST] #1 vc=3 ... rp=0000000000000000
+err: [ENDPASS] cd=00000000 cmd=... inRP=1
+RT STATS: mean=0.00 max=0 (0,0,0) 100%                       ← 仍黑
+```
+分析：`0x816CBCC4` 是 image 数据段的全局地址（不是堆上 surface），且 +4/+8/+0x10 全 0 → 说明
+**colorSurface 不在 [sp+8]**（旧 host 的栈偏移与我们的 AOT 栈基不同），或 surface 结构布局不同。
+`[GXMABI] sceGxmBeginScene` 早期记录：`r0=85410040 r1=00000004 r2=85410040 r3=00000000`
+→ 说明 BeginScene 的参数分布与 Vita 头文件顺序不同（r3=0，真正的 colorSurface 必须在栈上或 r2 结构里）。
+**修复（18.4493）**：BeginScene 拦截改为**候选探测 + 自动判别**：
+- 候选：`r3`、栈 [sp+0]、[sp+4]、[sp+8]、[sp+0xC]
+- 对每个候选按两种布局判别：
+  - 布局 A：`+0 flags, +4 width, +8 height, +0xC stride, +0x10 data, +0x14 format, +0x18 type`
+  - 布局 B：`+0 width, +4 height, +8 data`
+- 选中条件：`w/h ∈ [64,2048]` 且 `data ∈ [0x80000000,0xC0000000)`，否则打印 `[ABICAND]` 供人工判别
+- 选中则 `begin_scene_pass(data,w,h)`，否则回退 `begin_frame()`
+```cpp
+uint32_t _cand[6] = { s->r[3], stk[0], stk[1], stk[2], stk[3], 0 };
+for each cand: read _q words w0,w4,w8,wC,w10;
+  if (w4 in [64,2048] && w8 in [64,2048] && w10 in [0x80000000,0xC0000000)) -> layout A;
+  else if (w0,w4 in range && w8 data-like) -> layout B;
+  print [ABICAND] #i ptr=%08X w0/w4/w8/wC/w10;
+选中后 begin_scene_pass(...)
+```
+编译链接成功；已启动 62M 探测运行（`out62m_m1031begincand.txt`，红 FS）。
+NEXT：读 `[ABICAND]` 找出正确 surface 指针/布局 → 修正 BeginScene 解析 → RT 应变红。 |
+| §18.4493 | M947 architecture verification result: the BeginScene colorSurface argument was parsed wrong ([ABIBEGIN] surf=816CBCC4 data=00000000 0x0) -> fell back to begin_frame, RT still all black (mean=0/max=0); changed to multi-candidate probing (r3 + 4 stack pointers + automatic discrimination of two surface layouts). out62m_m1030rtscene.txt: [ABIBEGIN] surf=816CBCC4 data=00000000 0x0 n=59454976; [ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59475321; [REAL-PIPE] #1 OK; [DRAWST] #1 vc=3 ... rp=0000000000000000; err [ENDPASS] cd=00000000 cmd=... inRP=1; RT STATS mean=0.00 max=0 (0,0,0) 100% (still black). Analysis: 0x816CBCC4 is an image data-segment global address (not a heap surface), and its +4/+8/+0x10 are all 0 -> colorSurface is NOT at [sp+8] (the old host's stack offset differs from our AOT stack base), or the surface layout differs. Early [GXMABI] record: sceGxmBeginScene r0=85410040 r1=00000004 r2=85410040 r3=00000000 -> the BeginScene argument distribution differs from the Vita header order (r3=0; the real colorSurface must be on the stack or inside the r2 structure). FIX 18.4493: BeginScene interception now probes candidates + auto-discriminates: candidates r3, [sp+0], [sp+4], [sp+8], [sp+0xC]; for each read words w0,w4,w8,wC,w10 and test two layouts: layout A (+0 flags, +4 width, +8 height, +0xC stride, +0x10 data, +0x14 format, +0x18 type) and layout B (+0 width, +4 height, +8 data); accept when w/h in [64,2048] and data in [0x80000000,0xC0000000); print [ABICAND] #i ptr=... w0/w4/w8/wC/w10 for manual discrimination; if accepted call begin_scene_pass(data,w,h) else fall back to begin_frame(). Build+link OK; 62M probe run started (out62m_m1031begincand.txt with P5D_REALFS=red). NEXT: read [ABICAND] to find the real surface pointer/layout -> fix the BeginScene parsing -> the RT should turn red. |
 1) M946 实验（`out62m_m1029swappresent.txt`，红 FS + 直接 present swapchain）：
 ```
 err: [REALFS-RED] red diagnostic fragment module ready
@@ -488755,3 +488785,43 @@ NEXT：若 `p5d_rt_first.bmp` 变红 ⇒ 架构修正成功 → 补纹理/unifor
 ANTI-FORGETTING ENTRY. Keywords: M947 found+implemented the correct render architecture from the old host eboot_probe.cpp: BeginScene colorSurface is on the guest stack at [sp+8]; surface struct fields +0 flags, +4 width, +8 height, +0xC stride, +0x10 data, +0x14 format, +0x18 type; correct flow begin_scene_pass(data,w,h) (draws INTO the app RT and g_cur_pass_rp matches the pipeline render pass) -> end_scene_pass() -> present_frame(data) (RT->swapchain copy+present). Evidence: M946 experiment out62m_m1029swappresent.txt (red FS + direct swapchain present) shows [REALFS-RED] ready, [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... rp=0000000000000000, [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_swap_first.bmp, SWAP STATS mean=0.00 max=0 (0,0,0) 100% -> even the swapchain is black, so the draw is dropped: pipeline creation fell back to _rp=g_rp_clear (offscreen RP) while the draw is inside the swapchain RP -> render pass incompatible -> Vulkan silently drops it. Old host impl (p5dsrc/src/loader/eboot_probe.cpp): _csurf=gxp_rd(sp+8); width=_csurf+4; height=_csurf+8; stride=_csurf+0xC; data=_csurf+0x10; begin_scene_pass(data,width,height); EndScene end_scene_pass(); DisplayQueue present_frame(data). Implementation 18.4492 in recomp_harness.cpp GXMABI dispatch: intercept sceGxmBeginScene (read csurf GP(sp+8), read +4/+8/+0x10, print [ABIBEGIN], begin_scene_pass or begin_frame fallback); sceGxmEndScene -> end_scene_pass() ([ABIEND]); sceGxmDisplayQueueAddEntry -> data=*(u32*)GP(s->r[2]); end_scene_pass(); present_frame(data); first-frame save_rt_screenshot(data,'p5d_rt_first.bmp'); declarations namespace p5d { namespace vulkan { void begin_scene_pass(unsigned,w,h); void begin_frame(); ... } }. Build+link OK (binary [ABIBEGIN]/[ABIEND]); 62M verification run out62m_m1030rtscene.txt with P5D_REALFS=red. NEXT: if p5d_rt_first.bmp turns red the architecture is fixed (then textures/uniforms/vertex data); otherwise debug begin_scene_pass RT framebuffer/pipeline compatibility.
 
 LOOKUP: begin_scene_pass, end_scene_pass, present_frame, [ABIBEGIN], [ABIEND], 0x812B1470, eboot_probe.cpp, out62m_m1030rtscene.txt -> §18.4491 [relevant: BeginScene ignores RT], §18.4490 [relevant: black RT]
+### 18.4493 PORT M948: BeginScene colorSurface 参数解析修正（多候选探测）
+
+1) M947 验证运行（`out62m_m1030rtscene.txt`）：
+```
+[ABIBEGIN] surf=816CBCC4 data=00000000 0x0 n=59454976
+[ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59475321
+[REAL-PIPE] #1 OK ...
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3 rp=0000000000000000
+err: [ENDPASS] cd=00000000 cmd=... inRP=1
+RT STATS: mean=0.00 max=0 (0,0,0) 100%              <- 仍黑
+```
+2) 分析：
+- `0x816CBCC4` 是 image 数据段全局地址（非堆上 surface），且 +4/+8/+0x10 全 0；
+- 说明 **colorSurface 不在 [sp+8]**（旧 host 的栈偏移与我们的 AOT 栈基不同），或 surface 结构布局不同；
+- 早期 `[GXMABI] sceGxmBeginScene` 记录：`r0=85410040 r1=00000004 r2=85410040 r3=00000000`
+  → 参数分布与 Vita 头文件顺序不同，真正 colorSurface 必须在栈上/结构内。
+3) 修复（18.4493）：BeginScene 拦截 = **候选探测 + 自动判别**：
+```cpp
+uint32_t _cand[6] = { s->r[3], 0,0,0,0,0 };
+for (int _i = 0; _i < 4; ++_i) { uint8_t* _qs = GP(_sp + _i*4u); if (_qs) std::memcpy(&_cand[1+_i], _qs, 4); }
+for (int _i = 0; _i < 6; ++_i) {
+  uint32_t _c = _cand[_i]; uint8_t* _q = GP(_c); if (!_q) continue;
+  uint32_t w0,w4,w8,wC,w10; memcpy 5 words;
+  // 布局 A: +0 flags, +4 w, +8 h, +0xC stride, +0x10 data
+  // 布局 B: +0 w, +4 h, +8 data
+  if (!_csurf) {
+    if (w4∈[64,2048] && w8∈[64,2048] && w10∈[0x80000000,0xC0000000)) { _csurf=_c; _cd=w10; _cw=w4; _ch=w8; }
+    else if (w0∈[64,2048] && w4∈[64,2048] && w8 data-like) { _csurf=_c; _cw=w0; _ch=w4; _cd=w8; }
+  }
+  printf("[ABICAND] #%d ptr=%08X w0=%08X w4=%08X w8=%08X wC=%08X w10=%08X\n", ...);
+}
+if (_cd && _cw && _ch) begin_scene_pass(_cd,_cw,_ch); else begin_frame();
+```
+4) 编译链接成功；已启动 62M 探测运行：`out62m_m1031begincand.txt`（红 FS）。
+NEXT：读 `[ABICAND]` 找正确 surface 指针/布局 → 修正 BeginScene 解析 → RT 应变为红色。
+验证：`out62m_m1030rtscene.txt`、`out62m_m1031begincand.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M948 BeginScene colorSurface argument parsed wrong in M947 ([ABIBEGIN] surf=816CBCC4 data=00000000 0x0) -> fell back to begin_frame and the RT stayed black (mean=0/max=0). out62m_m1030rtscene.txt shows [ABIBEGIN] surf=816CBCC4 data=00000000 0x0 n=59454976; [ABIRT] saved p5d_rt_first.bmp cd=8D300000; [REAL-PIPE] #1 OK; [DRAWST] vc=3 inrp=1 rp=0000000000000000; [ENDPASS] cd=00000000; RT STATS mean=0.00 max=0 (0,0,0) 100%. 0x816CBCC4 is an image data-segment global (not a heap surface) with +4/+8/+0x10 all zero -> colorSurface is NOT at [sp+8] (old host stack offset differs from our AOT stack base) or the layout differs; early [GXMABI] sceGxmBeginScene r0=85410040 r1=00000004 r2=85410040 r3=00000000 shows the arg distribution differs from the Vita header order. FIX 18.4493: BeginScene interception probes candidates r3 + [sp+0..0xC] and auto-discriminates two layouts: A (+0 flags,+4 width,+8 height,+0xC stride,+0x10 data,+0x14 format,+0x18 type) and B (+0 width,+4 height,+8 data); accepts when w/h in [64,2048] and data in [0x80000000,0xC0000000); prints [ABICAND] #i ptr=... w0/w4/w8/wC/w10; on success begin_scene_pass(data,w,h) else begin_frame(). Build+link OK; 62M probe run started out62m_m1031begincand.txt with P5D_REALFS=red. NEXT: read [ABICAND] to find the real surface pointer/layout, fix the BeginScene parsing, and the RT should turn red.
+
+LOOKUP: [ABIBEGIN], [ABICAND], begin_scene_pass, 0x816CBCC4, 0x85410040, out62m_m1031begincand.txt -> §18.4492 [relevant: render architecture], §18.4491 [relevant: BeginScene ignores RT]

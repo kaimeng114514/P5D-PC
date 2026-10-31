@@ -1492,11 +1492,26 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       //   pipeline render pass matches g_cur_pass_rp) ; DisplayQueueAddEntry -> end_scene_pass() + present_frame(RT)
       //   which copies the RT to the swapchain and presents it.
       if (strncmp(_ge->name, "sceGxmBeginScene", 16) == 0) {
-        uint32_t _sp = s->r[13]; uint32_t _csurf = 0; uint8_t* _q = GP(_sp + 8u);
-        if (_q) std::memcpy(&_csurf, _q, 4);
-        uint32_t _cd = 0, _cw = 0, _ch = 0;
-        if ((_q = GP(_csurf)) != nullptr) { std::memcpy(&_cw, _q + 4, 4); std::memcpy(&_ch, _q + 8, 4); std::memcpy(&_cd, _q + 0x10, 4); }
-        static int _bn = 0; if (_bn++ < 12) { printf("[ABIBEGIN] surf=%08X data=%08X %ux%u n=%u\n", _csurf, _cd, _cw, _ch, g_main_n); fflush(stdout); }
+        // 18.4493 M948: find the real colorSurface argument - probe r3 and the first stack args.
+        uint32_t _sp = s->r[13];
+        uint32_t _cand[6] = { s->r[3], 0, 0, 0, 0, 0 };
+        for (int _i = 0; _i < 4; ++_i) { uint8_t* _qs = GP(_sp + (uint32_t)_i * 4u); if (_qs) std::memcpy(&_cand[1 + _i], _qs, 4); }
+        uint32_t _cd = 0, _cw = 0, _ch = 0, _csurf = 0;
+        for (int _i = 0; _i < 6; ++_i) {
+          uint32_t _c = _cand[_i]; uint8_t* _q = GP(_c);
+          if (!_q) continue;
+          uint32_t _w0 = 0, _w4 = 0, _w8 = 0, _wc = 0, _w10 = 0;
+          std::memcpy(&_w0, _q, 4); std::memcpy(&_w4, _q + 4, 4); std::memcpy(&_w8, _q + 8, 4);
+          std::memcpy(&_wc, _q + 0xC, 4); std::memcpy(&_w10, _q + 0x10, 4);
+          static int _pn = 0; if (_pn++ < 24) { printf("[ABICAND] #%d ptr=%08X w0=%08X w4=%08X w8=%08X wC=%08X w10=%08X n=%u\n", _i, _c, _w0, _w4, _w8, _wc, _w10, g_main_n); fflush(stdout); }
+          if (!_csurf) {
+            uint32_t _ww = _w4, _hh = _w8;
+            if (_ww >= 64u && _ww <= 2048u && _hh >= 64u && _hh <= 2048u && _w10 >= 0x80000000u && _w10 < 0xC0000000u) {
+              _csurf = _c; _cd = _w10; _cw = _ww; _ch = _hh; }
+            else if (_ww == 0 && _hh == 0 && _w0 >= 64u && _w0 <= 2048u && _w4 >= 64u && _w4 <= 2048u && _w8 >= 0x80000000u && _w8 < 0xC0000000u) {
+              _csurf = _c; _cw = _w0; _ch = _w4; _cd = _w8; }   // alternate layout: w,h,data
+          } }
+        printf("[ABIBEGIN] surf=%08X data=%08X %ux%u n=%u\n", _csurf, _cd, _cw, _ch, g_main_n); fflush(stdout);
         if (_cd && _cw && _ch) p5d::vulkan::begin_scene_pass(_cd, _cw, _ch);
         else p5d::vulkan::begin_frame();
         s->r[0] = 0; return s->r[14];
