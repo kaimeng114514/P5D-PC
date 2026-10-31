@@ -995,6 +995,62 @@
 | M977 | §18.4522: ★★★★★★★ **【page1 视频解码真凶定位】引擎在 page1 开头调用硬件视频解码 HLE（当前为通用空桩返回 0）→ 影片内容永远不出现；同时确认 3 张 960×544 影片纹理、墙钟动画、离屏取证全部就绪**。证据（`out80m_m1054engmov.txt`）：
 | M978 | §18.4523: ★★★★★★★★ **实现 `SceVideodecUser` HLE（AOT harness 版）：9 个视频解码 API（stub 0x812B2120–0x812B21A0）从"无名空桩"变为真实假解码——把预解码 NV12 影片帧写入 app 提供的 `SceAvcdecPicture` 输出缓冲，并按 Vita3K 语义回填 `numOfOutput`/frame 尺寸/`info.pts`，让 CRI 认为解码成功并发布帧 → 引擎自己的影片纹理与绘制路径将拿到真实画面（"原版代码自己画"的关键打通）**。实现依据：旧 host `eboot_probe.cpp` 的 `n_avc_*` 实现（h145k80~k949 经验）+ Vita3K `SceVideodecUser.cpp` 权威语义。实现（18.4523，`recomp_harness.cpp`，文件级 `p5d_vdec_hle()`，在 hle_call 入口按 stub VA 分派）：
 | M979 | §18.4524: **Ghidra 反编译 CRI 视频驱动（0x812A8000–0x812AD000，173 个函数）+ 运行验证：视频 HLE 已被调用（`[AVDEC] InitLibrary n=59562930`、`QueryMem 960x544 ref=3 -> 0x240000 n=59563748`），但 **CreateDecoder/Decode 从未被调用**（到 n=62.9M 仍只有 2 条）——CRI 影片管线在"创建解码器"之前就停住了；已反编译出解码器创建/解码驱动的准确调用形态，供下一步定位卡点**。反编译证据（`C:\dev\p5d_build\ghidra_out\vdec_range.txt`，Ghidra 全量分析工程 P5D_FULL）：
+| M980 | §18.4525: **定位 CRI 视频管线卡点：page1 只进入 `FUN_812A8D14`（sceVideodecInitLibrary 封装），**`FUN_812a9140`（CriVavcPsp2 解码器创建）/`FUN_812a9836`/`FUN_812a9fae`（每帧解码驱动）从未被进入**——即引擎在"创建 CriVavcPsp2 解码器对象"之前就停住；已用完整反编译确认该创建函数的全部分支与前置条件，并按旧 host 经验加入 **page1 二次 `criFs_Initialize`（`P5D_CRIFSHLE2_AT`）** 作为解法验证**。证据：
+1) 新增 guest 入口探针 `[VDECFN]`（`P5D_VDECPROBE=1`，job_probes 内比较 pcv 与 0x812A8D14/8ED8/9140/9836/9FAE）：
+```
+[VDECFN] pc=812A8D14 r0=812A8D15 r1=816C5798 r2=8132049C r3=81320EF4 sp=84856308 r5=81540690 lr=812A826C n=59562928
+（整个 page1 直到 n=60.25M：只有 1 条 VDECFN，即只有 InitLibrary 封装被进入）
+[AVDEC] InitLibrary r0=00001001 r1=848562D8 n=59562930
+[AVDEC] QueryMem 960x544 ref=3 -> 0x240000 n=59563748
+```
+2) `FUN_812a9140` 完整反编译（`vdec_range.txt`）—— CriVavcPsp2 解码器创建流程：
+```c
+iVar1 = FUN_812abcd4(param_1,0x100,"CriVavcPsp2: HnObj",4);   // handle 对象 0x100B
+SceLibc_6DC1F0D8(iVar1,0,0x100);                               // memset
+*(u32*)(iVar1+0x1c)=uVar8; *(iVar1+8)=param_1; *(iVar1+0x20)=uVar6;
+*(iVar1+0x24)=0x7512; *(iVar1+0x28)=1000; *(iVar1+0x2c)=max(4,param_2[4]+2);
+if (uVar10==0) {   // 需要分配 CDRAM 工作内存
+  uVar5 = FUN_812a8ed8(w,h,max);                 // -> QueryDecoderMemSize 封装
+  uVar10 = (uVar5 + 0x3ffff) & 0xfffc0000;       // 256KB 对齐
+  local_3c=0x14; uStack_38=4; local_34=0x100000;
+  iVar4 = SceSysmem_B9D5EBDE("criVavcPsp2",0x9408060,uVar10,&local_3c);   // sceKernelAllocMemBlock
+  if (iVar4<0) FUN_81278f96(0,"E12041804M:sceKernelAllocMemBlock() failed.");
+  else { iVar4=SceSysmem_B8EF5818(iVar4,&local_64); uVar10=local_64;    // GetMemBlockInfo(base)
+         if(iVar4!=0) FUN_81279486(0,"E12041805M:sceKernelGetMemBlockBase() failed, err=0x%x",iVar4); }
+  *(u32*)(iVar1+0xf0)=uVar10;
+}
+if ((uVar10 & 0xfffff)!=0) { FUN_81279486(0,"E12041901M:Decoder work memory for CDRAM requires 0x%x alignment.",0x100000); ... }
+iVar4 = SceVideodecUser_97E95EDB(0x1001,&local_54{w,h},&local_68);        // QueryDecoderMemSize
+iVar2 = FUN_81279aee(auStack_60,iVar4,0x100000);                        // 分配 DX 内存
+*(iVar1+0xf8)=iVar2; *(iVar1+0xfc)=iVar4;
+if (DAT_8154083c != 1) {                                               // ★ 创建解码器（我们缺的）
+  local_48=*(iVar1+0x1c); local_44=*(iVar1+0x20); local_40=DAT_8154082c;
+  *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc);
+  iVar4 = SceVideodecUser_E82BB69B(0x1001,iVar1+0xd0,&local_48);       // sceAvcdecCreateDecoder
+  if (iVar4<0) FUN_81278ee0(0,"E10120805M : Failed sceAvcdecCreateDecoder() err=0x%x.");
+}
+iVar4 = FUN_812add56(param_1,0,0x10); *(iVar1+0x40)=iVar4;              // input SJ
+... APU/FrmPool 分配；DAT_81540838==1 时 SceGxm_C61E34FC(iVar4,uVar5,1)  // sceGxmMapMemory
+```
+3) 运行中的内存分配是成功的（`[MEMA]`/`[MEMB]`）：
+```
+[MEMA] AllocMemBlock uid=0000012D size=00C00000 addr=99000000 name=81306058 lr=81153CAE
+[MEMB] GetMemBlockInfo uid=0000012D -> base=99000000 size=00C00000 info=84856360 lr=81153CB6 hit=1
+```
+4) 旧 host 经验（h145k461/h145k80）：**引擎自己的影片播放器卡在"streamer 未建"→影片永不结束→title 场景到不了**；旧 host 用 `P5D_CRIFSHLE` 在 page1 期间再次调用 `criFs_Initialize` 解除。我们的 run 只在 n=5000 调过一次：
+```
+[CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000 binit_after=816A0BA0
+```
+**实现（18.4526，`recomp_harness.cpp`）**：新增第二次 CRI FS 初始化（page1 阶段）：
+```cpp
+{ static long long _cfat2 = -1; if (_cfat2 < 0) { const char* _e2 = getenv("P5D_CRIFSHLE2_AT"); _cfat2 = _e2 ? atoll(_e2) : -1; }
+  if (_cfat2 > 0 && (long long)n >= _cfat2) { static int _cfh2 = 0; if (!_cfh2) { _cfh2 = 1;
+      uint32_t _cr2 = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);   // criFs_Initialize(NULL,0,0)
+      printf("[CRIFSHLE2] criFs_Initialize -> %08X n=%d\n", _cr2, n); } } }
+```
+已启动验证运行：`P5D_CRIFSHLE_AT=5000 P5D_CRIFSHLE2_AT=59550000 P5D_VDEC=1 P5D_VDECPROBE=1`（`out80m_m1057crifs2.txt`）。
+NEXT：检查 `[CRIFSHLE2]` 返回、`[AVDEC] CreateDecoder/Decode` 是否出现、`[VDECFN]` 是否新增 812A9140/812A9836/812A9FAE、draw 数/RT 截图。 |
+| §18.4525 | Located the CRI video pipeline stall: page1 only enters FUN_812A8D14 (sceVideodecInitLibrary wrapper), while FUN_812a9140 (CriVavcPsp2 decoder creation) / FUN_812a9836 / FUN_812a9fae (per-frame decode driver) are NEVER entered - the engine stalls before creating the CriVavcPsp2 decoder object; decompiled the whole creation function to confirm its branches/preconditions, and per the old host's experience added a second-page criFs_Initialize (P5D_CRIFSHLE2_AT) as the fix to verify. Evidence: (1) new guest-entry probe [VDECFN] (P5D_VDECPROBE=1, job_probes compares pcv with 0x812A8D14/8ED8/9140/9836/9FAE): [VDECFN] pc=812A8D14 r0=812A8D15 r1=816C5798 r2=8132049C r3=81320EF4 sp=84856308 r5=81540690 lr=812A826C n=59562928 (only 1 VDECFN in the whole page1 up to n=60.25M); [AVDEC] InitLibrary n=59562930; [AVDEC] QueryMem 960x544 ref=3 -> 0x240000 n=59563748. (2) FUN_812a9140 full decompilation (vdec_range.txt): CriVavcPsp2 decoder creation: iVar1=FUN_812abcd4(param_1,0x100,'CriVavcPsp2: HnObj',4); memset(iVar1,0,0x100); fields +0x1c/+8/+0x20; +0x24=0x7512; +0x28=1000; +0x2c=max(4,param_2[4]+2); if(uVar10==0){ uVar5=FUN_812a8ed8(w,h,max); uVar10=(uVar5+0x3ffff)&0xfffc0000; local_3c=0x14; uStack_38=4; local_34=0x100000; iVar4=SceSysmem_B9D5EBDE('criVavcPsp2',0x9408060,uVar10,&local_3c) (sceKernelAllocMemBlock, error E12041804M); iVar4=SceSysmem_B8EF5818(iVar4,&local_64) (GetMemBlockInfo(base), error E12041805M); *(u32*)(iVar1+0xf0)=uVar10; } if((uVar10&0xfffff)!=0){ FUN_81279486(0,'E12041901M:Decoder work memory for CDRAM requires 0x%x alignment.',0x100000); } iVar4=SceVideodecUser_97E95EDB(0x1001,&local_54{w,h},&local_68); iVar2=FUN_81279aee(auStack_60,iVar4,0x100000); *(u32*)(iVar1+0xf8)=iVar2; *(u32*)(iVar1+0xfc)=iVar4; if(DAT_8154083c!=1){ local_48=*(iVar1+0x1c); local_44=*(iVar1+0x20); local_40=DAT_8154082c; *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc); iVar4=SceVideodecUser_E82BB69B(0x1001,iVar1+0xd0,&local_48) (sceAvcdecCreateDecoder, error E10120805M); } iVar4=FUN_812add56(param_1,0,0x10); *(u32*)(iVar1+0x40)=iVar4; ... APU/FrmPool allocations; if(DAT_81540838==1) SceGxm_C61E34FC(iVar4,uVar5,1) (sceGxmMapMemory). (3) memory allocations succeed: [MEMA] AllocMemBlock uid=0000012D size=00C00000 addr=99000000 name=81306058 lr=81153CAE; [MEMB] GetMemBlockInfo uid=0000012D -> base=99000000 size=00C00000 hit=1. (4) old host experience (h145k461/h145k80): the engine's own movie player stalls at 'streamer not built' -> movie never ends -> title scene unreachable; old host used P5D_CRIFSHLE to call criFs_Initialize again during page1. Our run only called it once at n=5000 ([CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000). Implementation 18.4526 in recomp_harness.cpp: second CRI FS init (page1 phase): static long long _cfat2=-1; if(_cfat2<0){ const char* _e2=getenv('P5D_CRIFSHLE2_AT'); _cfat2=_e2?atoll(_e2):-1; } if(_cfat2>0 && (long long)n>=_cfat2){ static int _cfh2=0; if(!_cfh2){ _cfh2=1; uint32_t _cr2=call_guest_cb2(&s,0x8128399Eu,0u,0u,4000000); printf('[CRIFSHLE2] criFs_Initialize -> %08X n=%d',_cr2,n); } }. Verification run started: P5D_CRIFSHLE_AT=5000 P5D_CRIFSHLE2_AT=59550000 P5D_VDEC=1 P5D_VDECPROBE=1 (out80m_m1057crifs2.txt). NEXT: check [CRIFSHLE2] return, whether [AVDEC] CreateDecoder/Decode appear, whether [VDECFN] adds 812A9140/812A9836/812A9FAE entries, draw counts and RT captures. |
 ```c
 // FUN_812a8d14 (172B)：sceVideodecInitLibrary 封装（DAT_81540820 初始化计数守卫）
 iVar1 = SceVideodecUser_F1AF65A3(0x1001, &local_30);   // type=0x1001(HW AVC), info struct 0x14 字节
@@ -491175,3 +491231,63 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M979 Ghidra decompiled the CRI video driver (0x812A8000-0x812AD000, 173 functions) and runtime verification: video HLE IS called ([AVDEC] InitLibrary n=59562930; [AVDEC] QueryMem 960x544 ref=3 -> 0x240000 n=59563748) but CreateDecoder/Decode are never called (only 2 lines up to n=62.9M) - the CRI movie pipeline stalls before creating the decoder. Decompilation evidence C:\dev\p5d_build\ghidra_out\vdec_range.txt: FUN_812a8d14 = sceVideodecInitLibrary wrapper (guard DAT_81540820, call SceVideodecUser_F1AF65A3(0x1001,&local_30), error 'E10120801M:Failed sceVideodecInitLibrary() err=0x%x.'); FUN_812a8c98/FUN_812a8ed8 = sceAvcdecQueryDecoderMemSize wrappers SceVideodecUser_97E95EDB(0x1001,&local_1c{w,h,ref},&local_20); FUN_812a9140/FUN_812a9836 = decoder creation (the missing step): *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc); SceVideodecUser_E82BB69B(0x1001, iVar1+0xd0, &local_48), error 'E10120805M : Failed sceAvcdecCreateDecoder() err=0x%x.'; FUN_812a9fae = per-frame decode driver: DecodeAvailableSize(param_1+0xd0), DecodeStop(param_1+0xd0,local_1b4), Decode(param_1+0xd0,&local_19c,local_1a8,0); AU pts = *(param_1+0x4C)* *(param_1+0x28)*90000 -> 3003 ticks/frame. Runtime out80m_m1055vdec.txt: after QueryMem up to n=62.9M CreateDecoder=0 Decode=0 [IDR] continues every ~20k; [PRESENT] #1 result=0; [ABIVTX] #1 vc=3 attrs=1 v0=(-1,-1,1) v1=(3,-1,1); window capture mean=29.3 nonblack=4582/35624 (still black). Conclusions: video HLE works but CRI never reaches CreateDecoder; the stall is before decoder creation - requires stream/AU availability (movie file read, demux, CRI FS completion) + decoder memblock allocation (0x240000); our sceKernelAllocMemBlock/mceFios2 HLE may leave that precondition unsatisfied. NEXT: add probes for the call conditions of FUN_812a9140/FUN_812a9836; check the 0x240000 memblock allocation; check movie AU data availability (mceFios2 file read), feed title AU if needed; once CreateDecoder is called our fake decoder writes real NV12 -> engine-drawn movie.
 
 LOOKUP: vdec_range.txt, FUN_812a8d14, FUN_812a8c98, FUN_812a8ed8, FUN_812a9140, FUN_812a9836, FUN_812a9fae, E10120801M, E10120805M, SceVideodecUser_E82BB69B, [AVDEC] InitLibrary, [AVDEC] QueryMem, 0x240000, out80m_m1055vdec.txt, p5d_vdec_cap_0.png -> §18.4523 [relevant: video HLE port], §18.4522 [relevant: video decode root cause]
+### 18.4525 PORT M980: CRI 视频管线卡点（只进入 InitLibrary，CreateDecoder 从未进入）+ page1 二次 criFs_Initialize
+
+1) 新增 `[VDECFN]` guest 入口探针（`P5D_VDECPROBE=1`）：
+```
+[VDECFN] pc=812A8D14 r0=812A8D15 r1=816C5798 r2=8132049C r3=81320EF4 sp=84856308 r5=81540690 lr=812A826C n=59562928
+```
+→ page1 直到 n=60.25M 只进入 **InitLibrary 封装（FUN_812A8D14）**；
+   `FUN_812a8ed8` / `FUN_812a9140`（解码器创建）/ `FUN_812a9836` / `FUN_812a9fae`（解码驱动）**全部未进入**。
+
+2) `FUN_812a9140` 完整反编译（CriVavcPsp2 解码器创建）——关键步骤：
+```c
+iVar1 = FUN_812abcd4(param_1,0x100,"CriVavcPsp2: HnObj",4);         // handle 对象 0x100B
+// 需要分配 CDRAM 工作内存：
+uVar5 = FUN_812a8ed8(w,h,max);                                       // QueryDecoderMemSize 封装
+uVar10 = (uVar5 + 0x3ffff) & 0xfffc0000;
+iVar4 = SceSysmem_B9D5EBDE("criVavcPsp2",0x9408060,uVar10,&local_3c);  // sceKernelAllocMemBlock
+iVar4 = SceSysmem_B8EF5818(iVar4,&local_64);                          // GetMemBlockInfo(base)
+// 对齐检查（1MB）：
+if ((uVar10 & 0xfffff)!=0) FUN_81279486(0,"E12041901M:Decoder work memory for CDRAM requires 0x%x alignment.",0x100000);
+// 查询 + 分配：
+iVar4 = SceVideodecUser_97E95EDB(0x1001,&local_54{w,h},&local_68);
+iVar2 = FUN_81279aee(auStack_60,iVar4,0x100000);
+// ★ 创建解码器（我们缺的这一步）：
+if (DAT_8154083c != 1) {
+    *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc);
+    iVar4 = SceVideodecUser_E82BB69B(0x1001,iVar1+0xd0,&local_48);    // sceAvcdecCreateDecoder
+    if (iVar4<0) FUN_81278ee0(0,"E10120805M : Failed sceAvcdecCreateDecoder() err=0x%x.");
+}
+// 之后：input SJ、APU、FrmPool 分配；DAT_81540838==1 时 SceGxm_C61E34FC(...) = sceGxmMapMemory
+```
+3) 内存分配成功（page1）：
+```
+[MEMA] AllocMemBlock uid=0000012D size=00C00000 addr=99000000 name=81306058 lr=81153CAE
+[MEMB] GetMemBlockInfo uid=0000012D -> base=99000000 size=00C00000 hit=1
+```
+4) 旧 host 经验：影片播放器卡在"streamer 未建"；旧 host 用 `P5D_CRIFSHLE` **在 page1 再调一次 criFs_Initialize** 解除。
+   本 run 只在 n=5000 调过一次：
+```
+[CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000 binit_after=816A0BA0
+```
+5) 实现（18.4526）：第二次 CRI FS 初始化（page1 阶段）：
+```cpp
+{ static long long _cfat2=-1; if(_cfat2<0){ const char* _e2=getenv("P5D_CRIFSHLE2_AT"); _cfat2=_e2?atoll(_e2):-1; }
+  if(_cfat2>0 && (long long)n>=_cfat2){ static int _cfh2=0; if(!_cfh2){ _cfh2=1;
+      uint32_t _cr2=call_guest_cb2(&s,0x8128399Eu,0u,0u,4000000);
+      printf("[CRIFSHLE2] criFs_Initialize -> %08X n=%d\n",_cr2,n); } } }
+```
+6) 验证运行：`P5D_CRIFSHLE_AT=5000 P5D_CRIFSHLE2_AT=59550000 P5D_VDEC=1 P5D_VDECPROBE=1` → `out80m_m1057crifs2.txt`
+NEXT：
+```
+① [CRIFSHLE2] 返回 0 且 binit 正常?
+② [AVDEC] CreateDecoder/Decode 是否出现?
+③ [VDECFN] 是否新增 812A9140/812A9836/812A9FAE?
+④ draw 数/RT 截图是否出现影片内容?
+```
+验证：`out80m_m1056vdprobe.txt`（VDECFN）、`vdec_range.txt`、`out80m_m1057crifs2.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M980 CRI video pipeline stall - page1 only enters FUN_812A8D14 (sceVideodecInitLibrary wrapper); FUN_812a8ed8/FUN_812a9140 (CriVavcPsp2 decoder creation)/FUN_812a9836/FUN_812a9fae (per-frame decode driver) are NEVER entered up to n=60.25M. Probe: new [VDECFN] guest-entry probe in job_probes (P5D_VDECPROBE=1, compares pcv with 0x812A8D14/8ED8/9140/9836/9FAE): [VDECFN] pc=812A8D14 r0=812A8D15 r1=816C5798 r2=8132049C r3=81320EF4 sp=84856308 r5=81540690 lr=812A826C n=59562928 (only 1 entry). FUN_812a9140 decompiled: CriVavcPsp2 decoder creation: iVar1=FUN_812abcd4(param_1,0x100,'CriVavcPsp2: HnObj',4); memset(iVar1,0,0x100); fields; uVar5=FUN_812a8ed8(w,h,max); uVar10=(uVar5+0x3ffff)&0xfffc0000; SceSysmem_B9D5EBDE('criVavcPsp2',0x9408060,uVar10,&local_3c) (sceKernelAllocMemBlock, error E12041804M); SceSysmem_B8EF5818(iVar4,&local_64) (GetMemBlockInfo base, error E12041805M); alignment check 1MB ('E12041901M:Decoder work memory for CDRAM requires 0x%x alignment.'); SceVideodecUser_97E95EDB(0x1001,&local_54{w,h},&local_68); FUN_81279aee(auStack_60,iVar4,0x100000); then if(DAT_8154083c!=1){ *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc); iVar4=SceVideodecUser_E82BB69B(0x1001,iVar1+0xd0,&local_48) (sceAvcdecCreateDecoder, error E10120805M); } then input SJ/APU/FrmPool allocations; if(DAT_81540838==1) SceGxm_C61E34FC (sceGxmMapMemory). Memory allocations succeed: [MEMA] AllocMemBlock uid=0000012D size=00C00000 addr=99000000 name=81306058 lr=81153CAE; [MEMB] GetMemBlockInfo uid=0000012D -> base=99000000 size=00C00000 hit=1. Old host experience (h145k461/h145k80): the movie player stalls at 'streamer not built'; old host used P5D_CRIFSHLE to call criFs_Initialize AGAIN during page1. Our run only called it at n=5000 ([CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000). Implementation 18.4526 in recomp_harness.cpp: second CRI FS init: static long long _cfat2=-1; if(_cfat2<0){ const char* _e2=getenv('P5D_CRIFSHLE2_AT'); _cfat2=_e2?atoll(_e2):-1; } if(_cfat2>0 && (long long)n>=_cfat2){ static int _cfh2=0; if(!_cfh2){ _cfh2=1; uint32_t _cr2=call_guest_cb2(&s,0x8128399Eu,0u,0u,4000000); printf('[CRIFSHLE2] criFs_Initialize -> %08X n=%d',_cr2,n); } } . Verification run: P5D_CRIFSHLE_AT=5000 P5D_CRIFSHLE2_AT=59550000 P5D_VDEC=1 P5D_VDECPROBE=1 -> out80m_m1057crifs2.txt. NEXT: check [CRIFSHLE2] return; whether [AVDEC] CreateDecoder/Decode appear; whether [VDECFN] adds 812A9140/812A9836/812A9FAE; draw counts and RT captures.
+
+LOOKUP: [VDECFN], P5D_VDECPROBE, 0x812A8D14, 0x812A8ED8, 0x812A9140, 0x812A9836, 0x812A9FAE, CriVavcPsp2, E12041804M, E12041805M, E12041901M, E10120805M, DAT_8154083c, DAT_81540838, P5D_CRIFSHLE2_AT, [CRIFSHLE2], out80m_m1057crifs2.txt -> §18.4524 [relevant: CRI video driver decompile], §18.4523 [relevant: video HLE port]

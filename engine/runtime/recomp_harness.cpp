@@ -1129,6 +1129,16 @@ static void job_probes(uint32_t pcv, RecState* s) {
           uint8_t* _q; if ((_q=GP(_o)) != NULL) std::memcpy(&_w4,_q+4,4), std::memcpy(&_w8,_q+8,4), std::memcpy(&_w48,_q+0x48,4);
           if ((_q=GP(0x816CBE28u))) std::memcpy(&_c28,_q,4); if ((_q=GP(0x816CBE2Cu))) std::memcpy(&_c2c,_q,4);
           printf("[FUNC43E] #%d obj=%08X w4=%08X w8=%08X w48=%08X  g28=%08X g2C=%08X n=%u\n", _n43-1,_o,_w4,_w8,_w48,_c28,_c2c,g_main_n); fflush(stdout); } }
+      // 18.4525 M980: probe the CRI video-driver entry points (why CreateDecoder is never reached)
+      { static int _vp = -1; if (_vp < 0) { const char* _e = getenv("P5D_VDECPROBE"); _vp = (_e && atoi(_e)) ? 1 : 0; }
+        if (_vp) {
+          uint32_t _p2 = pcv & ~1u;
+          if (_p2 == 0x812a8d14u || _p2 == 0x812a8ed8u || _p2 == 0x812a9140u || _p2 == 0x812a9836u || _p2 == 0x812a9faeu) {
+            static uint32_t _cnt[8] = {0};
+            int _i = (_p2 == 0x812a8d14u) ? 0 : (_p2 == 0x812a8ed8u) ? 1 : (_p2 == 0x812a9140u) ? 2 : (_p2 == 0x812a9836u) ? 3 : 4;
+            if (_cnt[_i]++ < 12) {
+              printf("[VDECFN] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X r5=%08X lr=%08X n=%u\n",
+                     _p2, s->r[0], s->r[1], s->r[2], s->r[3], s->r[13], s->r[5], s->r[14], g_main_n); fflush(stdout); } } } }
       if (_p == 0x811EBF94u) { static int _n94 = 0; if (_n94++ < 8) {
           uint32_t _c28=0,_c2c=0; uint8_t* _q;
           if ((_q=GP(0x816CBE28u))) std::memcpy(&_c28,_q,4); if ((_q=GP(0x816CBE2Cu))) std::memcpy(&_c2c,_q,4);
@@ -6474,6 +6484,15 @@ if (g_hacks && (ppc & ~1u) == 0x811E2B50u) {
       if (g_liveupd_n++ < 3) { printf("[LIVEUPD] fiber=%08X pc=%08X sp=%08X\n", g_cur_fiber, pc, s.r[13]); fflush(stdout); } }
     ++n; g_main_n = (uint32_t)n;
     { static long long _cfat = -1; if (_cfat < 0) { const char* _e = getenv("P5D_CRIFSHLE_AT"); _cfat = _e ? atoll(_e) : 55000000; }
+      // 18.4526 M980: second criFs_Initialize call at a later milestone (page1 stall workaround).
+      // The boot-time call (P5D_CRIFSHLE_AT) only initializes FS once; the old host found the CRI streamer
+      // never got built at the title phase and forced criFs_Initialize again during page1.
+      { static long long _cfat2 = -1; if (_cfat2 < 0) { const char* _e2 = getenv("P5D_CRIFSHLE2_AT"); _cfat2 = _e2 ? atoll(_e2) : -1; }
+        if (_cfat2 > 0 && (long long)n >= _cfat2) { static int _cfh2 = 0; if (!_cfh2) { _cfh2 = 1;
+          uint32_t _cr2 = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);
+          uint32_t _bi2 = 0; { uint8_t* _q2 = GP(0x8153FEF4u); if (_q2) std::memcpy(&_bi2, _q2, 4); }
+          printf("[CRIFSHLE2] criFs_Initialize(NULL,0,0) -> %08X n=%d binit_after=%08X\n", _cr2, n, _bi2);
+          fflush(stdout); } } }
       if ((long long)n >= _cfat && getenv("P5D_CRIFSHLE")) { static int _cfh = 0; if (!_cfh) { _cfh = 1;
         uint32_t _cr = call_guest_cb2(&s, 0x8128399Eu, 0u, 0u, 4000000);
         uint32_t _bi=0; { uint8_t* _q=GP(0x8153FEF4u); if(_q) std::memcpy(&_bi,_q,4); }
