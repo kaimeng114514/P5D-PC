@@ -1002,6 +1002,32 @@
 | M984 | §18.4529: **异步 job 执行机制反编译：`FUN_8116f9dc` → `FUN_811dab8c` = app 异步 job 队列派发器（作业节点池/优先级队列/互斥量 DAT_816cd9f0，状态 1=入队/2=运行），worker 回调 0x8116fa5d/0x8116fa67，状态查询 `FUN_8116fa38`→`FUN_811daf12`；运行日志确认 **job 消费者线程存在**（`[JOBQ] consumer q=84857A7C thr=40018000` / `q=8489909C thr=40019000`，线程 40011000/40012000/40013000/40014000 entry=811E68C9，信号量 gfdJobCountSema/gfdJobEmptySema/gfdJobEventFlag），但 fiber 模式下消费者不推进 ⇒ 我们提交的 job 永不完成；`P5D_HOSTTHREADS=1` 试验直接卡死在启动早期（无 FRAMEDUMP/PRESENT）⇒ 真实线程模式当前不可用**。证据：
 | M985 | §18.4530: ★★★★★★ **job worker 真实执行点已反编译 + 实现 `P5D_JOBINLINE`（在强制完成前真正调用 worker 回调，让初始化工作真正发生）**。反编译：`FUN_8116f748(node)` = `DAT_815554c0=node; (*(code*)*node)(); DAT_815554c0=0;` → **job 节点的 [0] 字段就是 worker 回调（无参数调用）**；`FUN_8116f75e(node)` = `DAT_815554c0=node; (**(code**)(node+4))();` → **node[1] = 完成回调**，随后从 DAT_815554c4/c8 链表摘除并释放。job 节点（0x1C 字节）布局：`[0]=worker fn, [1]=completion fn, [2]=arg, [3]=FUN_8116f9dc 返回的池节点指针（完成状态）`。init trophy 提交：worker=`0x81184809`（FUN_81184808→FUN_8102d53c/FUN_8102d544 奖杯初始化）、completion=`0x8118483b`；page1 start 的 initDataRead：worker=`0x81184fff`、completion=`LAB_811850da_1`。**实现（18.4530，job_probes）**：当 `P5D_JOBINLINE=1` 且检测到 job 状态机在等未完成 job（state>=2、job+0xC!=0）时，先读 `node[0]`（worker）并 `call_guest_cb(s, worker, 0, 400000)` 真正执行，再让 JOBFORCE 清 `job+0xC` 推进：
 | M986 | §18.4531: **`P5D_JOBINLINE` 试验结果：worker 回调被递归调用导致挂死——但由此确认「job 执行器本来就在 guest 内运行」**。`out80m_m1061jobinline.txt`：
+| M987 | §18.4532: ★★★★★★★ **job 执行器探针结果：page1 确实在执行 job worker（`[JOBEXEC]` 40+ 条，含 init trophy），但 `[JOBDONE]` = 0 → 完成路径 `FUN_8116f75e` 从未被进入 ⇒ 所有 job 永远"未完成"，状态机只能靠 JOBFORCE 强推**。证据（`out80m_m1062jobprobe.txt`）：
+```
+[JOBEXEC] #8  node=85B846EC worker=81184FFF completion=811850DB n=59584015   ← initDataRead
+[JOBEXEC] #10 node=85B843AC worker=811857C3 completion=81185883 n=59585471
+[JOBEXEC] #20 node=85B86A1C worker=81184809 completion=8118483B n=59604700   ← ★ init trophy job 被真正执行
+[JOBEXEC] #21 node=85A9E18C worker=811853C3 ... n=59604856
+[同 node 周期性重复] #1～#12（85A8FC8C/81159CB1）、#2～#13（85A9E13C/81185309）…
+[JOBDONE] 0                    ← ★ 完成回调路径从未触发
+[JOBFORCE] #1 state=2 idx=0 job=85B86A1C old_j0C=84618110 -> 0 n=59624745
+[SEQREQ] page=1（page0..page5 表）
+（之后到 n=60.4M 仍只有 1 发 draw/present）
+```
+关键分析：
+1) **执行器工作正常**：`FUN_8116f748` 被大量调用并执行 worker（含 init trophy 的 0x81184809）；
+2) **同一 node 反复出现**（如 85A8FC8C/81159CB1 每帧重跑）→ 执行器对"未完成"的 job **每帧重试**；
+3) **`[JOBDONE]`=0**：`FUN_8116f75e`（completion 0x8116fa66 → 摘链/释放）从未被调用 ⇒ worker 返回后执行器认为 job 仍未完成（很可能 worker 返回错误码）；
+4) init trophy worker 内部链：`0x81184809 → FUN_81184808 → FUN_8102d53c → FUN_8102d554 → FUN_8105a0ee(0)`；`FUN_8102d544 → FUN_8102d55e → FUN_8105a0d4`（"appOtNode" 奖杯节点模块）。
+   若 `FUN_8105a0ee`/`FUN_8105a0d4` 底层调用的 NP/奖杯 HLE 返回错误，则 `FUN_81184808` 返回 -1（`if(iVar2==0) return 0; return -1`）⇒ job 永不完成 ⇒ 无限重试。
+NEXT：
+```
+① 反编译 FUN_8105a0ee / FUN_8105a0d4（trophy/otNode 初始化底层）→ 找它调用的 HLE API 与期望返回值；
+② 修正相应 HLE（SceNpTrophy/SceNpManager/file）返回成功 → worker 返回 0 → 执行器走 0x8116fa66 完成路径 → [JOBDONE] 出现；
+③ job 完成后 FUN_8116f8d2 返回 0 → page1 状态机自然推进（无需 JOBFORCE）→ 场景页 update 对象出现 → S1_TITLE 画面。
+```
+验证：`out80m_m1062jobprobe.txt`、`trophyinit.txt`（Ghidra）。 |
+| §18.4532 | Job executor probe results: page1 really executes job workers ([JOBEXEC] 40+ entries incl. init trophy) but [JOBDONE] = 0 -> the completion path FUN_8116f75e is never entered, so every job stays 'incomplete' and the state machine can only be forced forward with JOBFORCE. Evidence (out80m_m1062jobprobe.txt): [JOBEXEC] #8 node=85B846EC worker=81184FFF completion=811850DB n=59584015 (initDataRead); #10 node=85B843AC worker=811857C3 completion=81185883 n=59585471; #20 node=85B86A1C worker=81184809 completion=8118483B n=59604700 (the init trophy job really executed); #21 node=85A9E18C worker=811853C3; the same nodes repeat periodically (#1~#12 node 85A8FC8C worker 81159CB1, #2~#13 node 85A9E13C worker 81185309 ...); [JOBDONE] 0 (the completion callback path never fired); [JOBFORCE] #1 state=2 idx=0 job=85B86A1C old_j0C=84618110 -> 0 n=59624745; [SEQREQ] page=1 (page0..page5 table); after that up to n=60.4M still only 1 draw/present. Analysis: (1) the executor works: FUN_8116f748 is called a lot and executes workers (incl. init trophy's 0x81184809); (2) the same node repeats (85A8FC8C/81159CB1 every frame) => the executor RETRIES incomplete jobs every frame; (3) [JOBDONE]=0: FUN_8116f75e (completion 0x8116fa66 -> unlink/free) is never called => after the worker returns the executor still considers the job incomplete (very likely the worker returns an error code); (4) init trophy worker chain: 0x81184809 -> FUN_81184808 -> FUN_8102d53c -> FUN_8102d554 -> FUN_8105a0ee(0); FUN_8102d544 -> FUN_8102d55e -> FUN_8105a0d4 ('appOtNode' trophy node module). If FUN_8105a0ee/FUN_8105a0d4's underlying NP/trophy HLE returns an error, FUN_81184808 returns -1 (if(iVar2==0) return 0; return -1) => the job never completes => infinite retry. NEXT: (1) decompile FUN_8105a0ee/FUN_8105a0d4 (trophy/otNode init) to find the HLE API calls and expected return values; (2) fix the corresponding HLE (SceNpTrophy/SceNpManager/file) to return success so the worker returns 0 -> executor takes the 0x8116fa66 completion path -> [JOBDONE] appears; (3) once the job completes FUN_8116f8d2 returns 0 -> page1 state machine advances naturally (no JOBFORCE needed) -> scene page update objects appear -> S1_TITLE picture. |
 ```
 [JOBINLINE] job=85B86A1C worker=81184809 completion=8118483B n=59624745 -> invoke
 （之后没有 "returned"，运行挂死；看门狗显示 stuck blk=8116F748，[SNAP] r0=85B846EC r14=8116FA64）
@@ -491748,3 +491774,39 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M986 P5D_JOBINLINE recursion hang - but confirmed the job executor already runs inside the guest. out80m_m1061jobinline.txt: [JOBINLINE] job=85B86A1C worker=81184809 completion=8118483B n=59624745 -> invoke then no 'returned', run hangs ([WD] stuck blk=8116F748, [SNAP] r0=85B846EC r14=8116FA64). Before the hang the existing probes show real execution: [PROC] exec p=85B42A3C cb0=810274E9 cb1=81027A57; [PROCWR] a=815554C0 v=85B42A3C blk=8116F748; [STEP] target=8116FA5C in_table=1 lr=811DB24E; [EXEC2] runner #31; [PROC] exec p=85B846EC cb0=81184FFF cb1=811850DB (initDataRead worker). The executor (0x811DB1F0/0x811DB244 -> FUN_8116fa5c -> worker) already runs in the guest, so inline invocation is unnecessary and harmful (re-entrancy hang) - keep P5D_JOBINLINE off. The real question is why the completion path (FUN_8116f75e -> completion -> job[3] zeroing) does not make FUN_8116f8d2 see completion. Added probes 18.4531: if(pcv==0x8116F748){ node=s->r[0]; worker=rd32(node); completion=rd32(node+4); printf('[JOBEXEC] #%d node=%08X worker=%08X completion=%08X n=%u'); } if(pcv==0x8116F75E){ printf('[JOBDONE] #%d node=%08X n=%u',s->r[0],g_main_n); }. Compiled OK; probe run P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1 -> out80m_m1062jobprobe.txt (JOBINLINE off). NEXT: read [JOBEXEC]/[JOBDONE] counts: if page1 has exec but no done the executor is stuck inside the worker (an HLE call blocks); if done exists but the state machine does not advance it is the completion/job-state-zeroing path; fix that final link -> page1 advances -> new draws -> S1_TITLE picture.
 
 LOOKUP: P5D_JOBINLINE, [JOBINLINE], [JOBEXEC], [JOBDONE], FUN_8116f748, FUN_8116f75e, 0x8116fa5c, 0x811DB1F0, 0x811DB244, [PROC], [PROCWR], [STEP], [EXEC2], out80m_m1061jobinline.txt, out80m_m1062jobprobe.txt -> §18.4530 [relevant: job worker], §18.4529 [relevant: job queue]
+### 18.4532 PORT M987: 执行器探针：worker 在跑，但完成路径从未触发（JOBDONE=0）
+
+1) `out80m_m1062jobprobe.txt`：
+```
+[JOBEXEC] #8  node=85B846EC worker=81184FFF completion=811850DB n=59584015   ← initDataRead
+[JOBEXEC] #20 node=85B86A1C worker=81184809 completion=8118483B n=59604700   ← ★ init trophy 真正执行
+[JOBEXEC] #1～#12 同 node 85A8FC8C/worker 81159CB1 周期性重复 → 未完成 job 每帧重试
+[JOBDONE] 0                     ← ★ 完成路径 FUN_8116f75e 从未触发
+[JOBFORCE] #1 ... n=59624745    ← 只能强推
+[SEQREQ] page=1 ...
+（到 n=60.4M 仍 1 发 draw/present）
+```
+2) 分析：
+- **执行器正常**：FUN_8116f748 大量执行 worker（含 init trophy 0x81184809）；
+- **job 被反复重试**（同 node 每帧出现）→ 说明 worker 返回后执行器仍认为未完成；
+- **`[JOBDONE]`=0**：`FUN_8116f75e`（completion 0x8116fa66 → 摘链/释放）从未调用；
+- init trophy worker 内部链：
+```
+0x81184809 → FUN_81184808 → FUN_8102d53c → FUN_8102d554 → FUN_8105a0ee(0)
+                              FUN_8102d544 → FUN_8102d55e → FUN_8105a0d4
+```
+（"appOtNode" 奖杯节点模块）
+- FUN_81184808 逻辑：`iVar2=FUN_8102d544(); if(iVar2==0) return 0; return -1;`
+  → 若 `FUN_8105a0d4` 底层 HLE 返回错误 ⇒ worker 返回 -1 ⇒ job 永不完成 ⇒ 无限重试。
+NEXT：
+```
+① 反编译 FUN_8105a0ee / FUN_8105a0d4 → 找底层 HLE API 与期望返回值
+② 修正对应 HLE（SceNpTrophy/SceNpManager/文件）返回成功
+③ worker 返回 0 → 执行器走 0x8116fa66 完成路径 → [JOBDONE]
+④ FUN_8116f8d2 返回 0 → page1 状态机自然推进（无需 JOBFORCE）→ 场景对象出现 → S1_TITLE 画面
+```
+验证：`out80m_m1062jobprobe.txt`、`trophyinit.txt`。
+
+ANTI-FORGETTING ENTRY. Keywords: M987 job executor probe results: page1 really executes job workers ([JOBEXEC] 40+ entries incl. init trophy) but [JOBDONE] = 0 - the completion path FUN_8116f75e is never entered, so every job stays incomplete and the state machine can only be forced with JOBFORCE. Evidence out80m_m1062jobprobe.txt: [JOBEXEC] #8 node=85B846EC worker=81184FFF completion=811850DB n=59584015 (initDataRead); #10 node=85B843AC worker=811857C3 completion=81185883; #20 node=85B86A1C worker=81184809 completion=8118483B n=59604700 (init trophy really executed); #21 node=85A9E18C worker=811853C3; same nodes repeat periodically (#1~#12 node 85A8FC8C worker 81159CB1, #2~#13 node 85A9E13C worker 81185309) => the executor retries incomplete jobs every frame; [JOBDONE] 0; [JOBFORCE] #1 state=2 idx=0 job=85B86A1C old_j0C=84618110 -> 0 n=59624745; [SEQREQ] page=1; after that up to n=60.4M still 1 draw/present. Analysis: executor works (FUN_8116f748 executes workers incl. init trophy 0x81184809), same node repeats => retry loop, [JOBDONE]=0 => after the worker returns the executor still considers the job incomplete (very likely the worker returns an error code). init trophy worker chain: 0x81184809 -> FUN_81184808 -> FUN_8102d53c -> FUN_8102d554 -> FUN_8105a0ee(0); FUN_8102d544 -> FUN_8102d55e -> FUN_8105a0d4 ('appOtNode' trophy node module). FUN_81184808 logic: iVar2=FUN_8102d544(); if(iVar2==0) return 0; return -1; => if FUN_8105a0d4's underlying HLE returns an error the worker returns -1 => job never completes => infinite retry. NEXT: decompile FUN_8105a0ee/FUN_8105a0d4 to find the underlying HLE API and expected return values; fix that HLE (SceNpTrophy/SceNpManager/file) to return success so the worker returns 0 -> executor takes the 0x8116fa66 completion path -> [JOBDONE] appears; then FUN_8116f8d2 returns 0 -> page1 state machine advances naturally (no JOBFORCE) -> scene page update objects appear -> S1_TITLE picture.
+
+LOOKUP: [JOBEXEC], [JOBDONE], FUN_8116f748, FUN_8116f75e, 0x8116fa66, 0x81184809, FUN_81184808, FUN_8102d53c, FUN_8102d554, FUN_8105a0ee, FUN_8102d544, FUN_8102d55e, FUN_8105a0d4, appOtNode, out80m_m1062jobprobe.txt, trophyinit.txt -> §18.4531 [relevant: job executor], §18.4530 [relevant: worker callbacks]
