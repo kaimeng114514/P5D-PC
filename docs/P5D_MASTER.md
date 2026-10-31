@@ -958,6 +958,29 @@
 | M940 | §18.4485: ★★★★★★★★★ **【首帧上屏成功！】游戏第一次把画面提交到 Vulkan 交换链：`[FRAMESUBMIT] frame=1` + `ef_debug.log` 的 `after submit result=0` / `before present` / `after present result=0` 全部成功**。`out62m_m1021present.txt` 证据：
 | M941 | §18.4486: **首帧截图揭示：M940 上屏的交换链画面是全黑（`[SHOTSTAT] frame=1 max=0 mean=0.00`）——因为游戏渲染到**离屏 RT**（`DisplayQueueAddEntry` 的 color surface data=`8CF00000`/`8D300000`），而我们用 `end_frame()` 直接呈现了空的 swapchain 图像；已改为正确显示路径：`end_scene_pass()` →（首帧）`save_rt_screenshot(cd,"p5d_rt_first.bmp")` → `present_frame(cd)`（内部把 RT 拷贝到 swapchain 再 present）**。证据（`out62m_m1022capture.txt`）：
 | M942 | §18.4487: ★★★★★★★ **离屏 RT 内容成功 present 到窗口：`[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)`——这次呈现的是游戏真实渲染的 RT（`cd=8D300000` 960x544），RT→swapchain `vkCmdCopyImage` 已执行**。`out62m_m1023rtpresent.txt` 证据：
+| M943 | §18.4488: **RT 截图顺序修正：`save_rt_screenshot(cd)` 必须在 `present_frame(cd)` 之后调用**——因为 RT 是在 `present_frame` 内部才 `[RTPOOL] create` 入池的，之前先截图必然 `rc=-1`。`out62m_m1024rtshot.txt` 证据：
+```
+[ABIRT] cd=8CF00000 rc=-1 (retry next display entry)
+[ABIRT] cd=8D300000 rc=-1 (retry next display entry)      ← 两者都失败
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8D300000 n=59475321
+err: [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0   ← 但 present 时 RT 已在池中（拷贝成功）
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+```
+原因链：`present_frame(cd)` 内部才把 RT 加入 `g_rt_pool`（`[RTPOOL] create cd=8D300000 960x544`），
+而我们把 `save_rt_screenshot` 放在 `present_frame` **之前** → 池里没有该 RT → `rc=-1`（`[RTSHOT] cd=... 不在 RT 池`）。
+**修复（18.4488）**：把首帧 RT 截图移到 `present_frame(_data)` **之后**；重试逻辑保留（后续 DisplayQueue 继续尝试）：
+```cpp
+if (_dq && _data) {
+    p5d::vulkan::present_frame(_data);
+    static int _cap_done = 0;
+    if (!_cap_done) { int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+        if (_rr == 0) { _cap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n", _data, g_main_n); }
+        else { static int _rt=0; if (_rt++<8) printf("[ABIRT] cd=%08X rc=%d (retry next display entry)\n", _data, _rr); } }
+}
+```
+编译链接成功；已启动 62M 长跑（`out62m_m1025rtshot2.txt`）生成 `p5d_rt_first.bmp`。
+NEXT：BMP→PNG 查看**游戏真实画面**；同时确认 page1 进度（`[IDR]`/`[SEQST]`/ctr）。 |
+| §18.4488 | RT screenshot ordering fix: save_rt_screenshot(cd) must be called AFTER present_frame(cd) because the RT only gets created into g_rt_pool inside present_frame; capturing before always returns rc=-1. Evidence (out62m_m1024rtshot.txt): [ABIRT] cd=8CF00000 rc=-1 (retry next display entry); [ABIRT] cd=8D300000 rc=-1 (retry next display entry) (both failed); [ABIDISP] sceGxmDisplayQueueAddEntry data=8D300000 n=59475321; err [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0 (but at present time the RT was in the pool and the copy succeeded); [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS). Cause chain: present_frame(cd) creates the RT into g_rt_pool ([RTPOOL] create cd=8D300000 960x544) while we called save_rt_screenshot BEFORE present_frame -> the RT was not in the pool -> rc=-1 ([RTSHOT] cd=... 不在 RT 池). FIX 18.4488: move the first-frame RT capture to AFTER present_frame(_data); keep the retry logic: if (_dq && _data) { p5d::vulkan::present_frame(_data); static int _cap_done=0; if (!_cap_done) { int _rr = save_rt_screenshot(_data,'p5d_rt_first.bmp'); if (_rr==0) { _cap_done=1; printf('[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n',_data,g_main_n); } else { static int _rt=0; if (_rt++<8) printf('[ABIRT] cd=%08X rc=%d (retry next display entry)\n',_data,_rr); } } }. Build+link OK; 62M run started out62m_m1025rtshot2.txt producing p5d_rt_first.bmp. NEXT: convert BMP to PNG and inspect the real game frame; also confirm page1 progress ([IDR]/[SEQST]/ctr). |
 ```
 [ABIRT] save_rt_screenshot(8CF00000) rc=-1        ← 第一个 DisplayQueue 的 RT 尚未入池（返回 -1）
 [ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786
@@ -488410,3 +488433,32 @@ NEXT：`p5d_rt_first.bmp` → PNG 查看游戏真实画面（page1 渲染结果�
 ANTI-FORGETTING ENTRY. Keywords: M942 offscreen RT content successfully presented: out62m_m1023rtpresent.txt shows [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS) and [CPYIMG] cd=8D300000 src=000001efc0532ad0 960x544 dst=000001efc05306d0 idx=0, [PRES] cd=8D300000 imgIdx=0 rtimg=..., [RTALIAS] cd=8D300000 alias img=..., [RTPOOL] create cd=8D300000 960x544 pool=1, [ENDPASS] cmd=... inRP=1, [CEND] cmd=...; the correct display path end_scene_pass() -> present_frame(cd) copies the real RT (8D300000) to the swapchain and presents with result=0. p5d_rt_first.bmp was not generated because the first capture attempt used RT 8CF00000 which was not in g_rt_pool yet (rc=-1). FIX 18.4487: retry the first-frame RT capture on later DisplayQueue entries until save_rt_screenshot returns 0 (static _cap_done; print [ABIRT] saved p5d_rt_first.bmp from cd=... n=...; else retry up to 8). Build+link OK; 62M run started out62m_m1024rtshot.txt producing p5d_rt_first.bmp. NEXT: convert BMP to PNG and inspect the real game frame (page1 output); continue page1 completion -> S1 title page.
 
 LOOKUP: present_frame, save_rt_screenshot, [CPYIMG], [PRESENT], [RTPOOL], [RTALIAS], p5d_rt_first.bmp, out62m_m1024rtshot.txt -> §18.4486 [relevant: display path], §18.4485 [relevant: first present]
+### 18.4488 PORT M943: RT 截图必须在 present_frame 之后（RT 入池时机）
+
+1) `out62m_m1024rtshot.txt`：
+```
+[ABIRT] cd=8CF00000 rc=-1 (retry next display entry)
+[ABIRT] cd=8D300000 rc=-1 (retry next display entry)
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8D300000 n=59475321
+err: [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+```
+2) 原因：`present_frame(cd)` 内部才执行 `[RTPOOL] create cd=8D300000 960x544` 把 RT 加入 `g_rt_pool`；
+   我们把 `save_rt_screenshot` 放在 present **之前** → 池中无此 RT → `[RTSHOT] cd=... 不在 RT 池` → `rc=-1`。
+3) 修复（18.4488）：截图移到 `present_frame(_data)` 之后：
+```cpp
+if (_dq && _data) {
+    p5d::vulkan::present_frame(_data);
+    static int _cap_done = 0;
+    if (!_cap_done) { int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+        if (_rr == 0) { _cap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n", _data, g_main_n); }
+        else { static int _rt=0; if (_rt++<8) printf("[ABIRT] cd=%08X rc=%d (retry next display entry)\n", _data, _rr); } }
+}
+```
+4) 编译链接成功；已启动 62M 长跑：`out62m_m1025rtshot2.txt`。
+NEXT：`p5d_rt_first.bmp` → PNG 查看游戏真实画面；确认 page1 进度（`[IDR]`/`[SEQST]`/ctr）。
+验证：`out62m_m1024rtshot.txt`、`out62m_m1025rtshot2.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M943 RT screenshot must happen AFTER present_frame because the RT is created into g_rt_pool inside present_frame: out62m_m1024rtshot.txt shows [ABIRT] cd=8CF00000 rc=-1 and cd=8D300000 rc=-1 while err [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0 and [PRESENT] #1 result=0(VK_SUCCESS) succeeded; the RT pool create ([RTPOOL] create cd=8D300000 960x544) happens inside present_frame, so capturing before always returns -1 ([RTSHOT] cd=... 不在 RT 池). FIX 18.4488: move the first-frame RT capture to after present_frame(_data); if (_dq && _data) { present_frame(_data); static int _cap_done=0; if (!_cap_done) { int _rr = save_rt_screenshot(_data,'p5d_rt_first.bmp'); if (_rr==0) { _cap_done=1; printf('[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n',_data,g_main_n); } else { static int _rt=0; if (_rt++<8) printf('[ABIRT] cd=%08X rc=%d (retry next display entry)\n',_data,_rr); } } }. Build+link OK; 62M run started out62m_m1025rtshot2.txt producing p5d_rt_first.bmp. NEXT: convert BMP to PNG and inspect the real game frame; confirm page1 progress ([IDR]/[SEQST]/ctr).
+
+LOOKUP: save_rt_screenshot, present_frame, g_rt_pool, [RTPOOL], [ABIRT], p5d_rt_first.bmp, out62m_m1025rtshot2.txt -> §18.4487 [relevant: RT present], §18.4486 [relevant: display path]
