@@ -951,6 +951,7 @@ namespace p5d { namespace vulkan { void request_capture(const char* name); } }  
 namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } }   // 18.4486 M941
 namespace p5d { namespace vulkan { void begin_scene_pass(unsigned int colorData, unsigned int w, unsigned int h); void begin_frame(); } }   // 18.4492 M947
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
+namespace p5d { namespace vulkan { void update_uniform_buffer(const float* local_to_world, const float* view_proj); } }   // 18.4496 M951
 static void job_probes(uint32_t pcv, RecState* s) {
   { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
 
@@ -1483,6 +1484,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (strncmp(_ge->name, "sceGxmDraw", 10) == 0 && !_abi_vspv.empty() && !_abi_fspv.empty()) {   // 18.4483 M938: only real draws (not PrecomputedDrawInit/Size)
         std::string _vp = _abi_spvdir + "/" + _abi_vspv, _fp = _abi_spvdir + "/" + _abi_fspv;
         int32_t _rc = p5d::vulkan::select_real_pipeline(_vp.c_str(), _fp.c_str());
+        // 18.4496 M951 EXPERIMENT: vertex uniforms are all zero (RINIT zero table) -> the real vertex shader sends every
+        // vertex to w=0 -> no fragments -> black even with the red diagnostic FS. Feed identity matrices once.
+        { static int _id = 0; if (!_id) { _id = 1;
+            static const float _I[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            p5d::vulkan::update_uniform_buffer(_I, _I);
+            printf("[ABIUNI] identity vertex uniforms set n=%u\n", g_main_n); fflush(stdout); } }
         static int _pn = 0; if (_pn++ < 20) { printf("[ABIPIPE] v=%s f=%s rc=%d n=%u\n", _abi_vspv.c_str(), _abi_fspv.c_str(), _rc, g_main_n); fflush(stdout); } }
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }

@@ -966,6 +966,28 @@
 | M948 | §18.4493: **M947 架构验证结果：BeginScene 的 colorSurface 参数解析取错了（`[ABIBEGIN] surf=816CBCC4 data=00000000 0x0`）→ 回退到 begin_frame，RT 依旧全黑（mean=0/max=0）；已改为多候选探测（r3 + 栈 4 个指针 + 两种 surface 布局自动判别）**。`out62m_m1030rtscene.txt`：
 | M949 | §18.4494: ★★★★★★ **候选探测揭示关键真相：BeginScene 的 colorSurface 是 `0x816CBCC4`（image 数据段的全局结构），但其字段全 0——因为**我们从未实现 `sceGxmColorSurfaceInit`（STUB，不写任何字段）**！已实现真实的 ColorSurfaceInit/DepthStencilSurfaceInit HLE，填充 surface 结构。** 证据：
 | M950 | §18.4495: ★★★★★★★ **ColorSurfaceInit 真实实现生效：surface 结构被正确填充（`w=960 h=544 stride=1024 data=8D300000`），且启动期不再 stall。** 3M 冒烟（`out3m_m1033smoke.txt`）：
+| M951 | §18.4496: ★★★★★★ **红 FS + ColorSurfaceInit 验证结果：渲染架构修正生效（`[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544`、`[DRAWST] rp=非空`、viewport 正常 `0,0,960,544`、`[ENDPASS] cd=8D300000`、`[CPYIMG]`、`[PRESENT] result=0`），但 RT 仍全黑 → 定位为：顶点 uniform 全 0（RINIT 零表）导致真实顶点着色器把每个顶点算到 w=0 → 无片元 → 红 FS 也画不出来**。证据（`out62m_m1033rtred.txt`）：
+```
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59454976        ← BeginScene 正确选中 RT
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3
+         vp=0.0,0.0,960.0,544.0 sc=0,0,960,544 rp=0000019d786e7750   ← rp 非空 + viewport 正确
+err: [ENDPASS] cd=8D300000 cmd=... inRP=1
+err: [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+err: [REALFS-RED] ready（红 FS 已生效）；[FUBOHOST] UBO float: 0.00000...（顶点/片元 UBO 全 0）
+RT STATS: mean=0.00 max=0 (0,0,0) 100%                            ← 仍黑
+```
+推理链：真实顶点着色器 gxp_vert_0001 用 UBO 矩阵变换顶点；UBO 全 0 → 位置=(0,0,0,0)/w=0 → 三角形退化 → 零像素。
+**实验（18.4496）**：首次真实 draw 前用后端 `update_uniform_buffer(local_to_world, view_proj)` 写入 **identity 矩阵**：
+```cpp
+static const float _I[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+p5d::vulkan::update_uniform_buffer(_I, _I);
+printf("[ABIUNI] identity vertex uniforms set\n");
+```
+命中则测试三角形（NDC 坐标 -0.5..0.5）应被光栅化 → 红 FS 涂红 → RT 截图变红。
+编译链接成功（二进制含 `[ABIUNI]`）；已启动 62M 运行（`out62m_m1034uni.txt`，红 FS）。
+NEXT：若 RT 变红 ⇒ 光栅化/管线/呈现全通，转入**真实 uniform/顶点数据上传**（最终目标）；若仍黑 ⇒ 查顶点缓冲（bound_vertex_count/vertex buffer 绑定）或输入装配布局。 |
+| §18.4496 | Red-FS + ColorSurfaceInit verification: the render architecture fix works ([ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] rp non-null, viewport 0,0,960,544; [ENDPASS] cd=8D300000; [CPYIMG]; [PRESENT] result=0) but the RT is still all black -> localized to: vertex uniforms are all zero (RINIT zero table) so the real vertex shader computes every vertex to w=0 -> no fragments -> even the red FS cannot paint. Evidence (out62m_m1033rtred.txt): [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59454976; [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3 vp=0.0,0.0,960.0,544.0 sc=0,0,960,544 rp=0000019d786e7750; err [ENDPASS] cd=8D300000 cmd=... inRP=1; err [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0; [PRESENT] #1 result=0(VK_SUCCESS); err [REALFS-RED] ready (red FS active); [FUBOHOST] UBO float 0.00000 (vertex/fragment UBO all zero); RT STATS mean=0.00 max=0 (0,0,0) 100%. Reasoning: the real vertex shader gxp_vert_0001 transforms vertices with UBO matrices; with a zero UBO the position is (0,0,0,0) w=0 -> degenerate triangle -> zero pixels. EXPERIMENT 18.4496: before the first real draw call the backend update_uniform_buffer(local_to_world, view_proj) is fed identity matrices: static const float _I[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}; p5d::vulkan::update_uniform_buffer(_I,_I); printf('[ABIUNI] identity vertex uniforms set\n'); if the draw hits, the test triangle (NDC -0.5..0.5) should rasterize -> red FS paints it red -> the RT capture turns red. Build+link OK (binary contains [ABIUNI]); 62M run started (out62m_m1034uni.txt with P5D_REALFS=red). NEXT: if the RT turns red then rasterization/pipeline/present all work and work moves to real uniform/vertex data upload (the ultimate goal); if still black check the vertex buffer (bound_vertex_count/vertex buffer binding) or the input assembly layout. |
 ```
 [ABICS] init surf=816CBC74 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8CF00000 sane=1
 [ABICS] init surf=816CBCC4 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8D300000 sane=1   ← BeginScene 的 colorSurface!
@@ -488948,3 +488970,35 @@ NEXT：检查 `[ABIBEGIN]`/`[ABICAND]`/`[ABIRT]` 与 BMP 颜色统计；若变�
 ANTI-FORGETTING ENTRY. Keywords: M950 the real ColorSurfaceInit (9 args) now works and fills the surface structures correctly: 3M smoke out3m_m1033smoke.txt shows [ABICS] init surf=816CBC74 w=960 h=544 stride=1024 data=8CF00000 sane=1; [ABICS] init surf=816CBCC4 w=960 h=544 stride=1024 data=8D300000 sane=1 (BeginScene colorSurface); [ABICS] init surf=816CBD14 w=960 h=544 stride=1024 data=8D700000 sane=1; [ABICS] init surf=816CBEC8 fmt=4734976 ... sane=0 (4th call args insane, write skipped); done blocks=3000000 exit=0. 0x816CBCC4 ([sp+8]) now has data=0x8D300000 which is exactly the RT passed to DisplayQueueAddEntry -> BeginScene probe can now select it and call begin_scene_pass(0x8D300000,960,544). Also 18.4495: the M949 DepthStencilSurfaceInit interception caused a boot stall (init loop 0x811EAAE4 hung at n=347993, [812B1660/816CBEF8/...]) and was REVERTED (keep the old stub; depth not needed for the red-FS test); ColorSurfaceInit got a sanity guard requiring w/h in [64,2048] and stride in [64,4096] before writing. 62M verification run started out62m_m1033rtred.txt with P5D_REALFS=red: expected [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 -> [ABIRT] capture turns red -> present_frame shows red. NEXT: check [ABIBEGIN]/[ABICAND]/[ABIRT] and BMP color stats; if red the architecture is fixed and work moves to textures/uniforms/vertex data.
 
 LOOKUP: sceGxmColorSurfaceInit, 0x812B1730, [ABICS], 0x816CBCC4, 0x8D300000, sane, out3m_m1033smoke.txt, out62m_m1032csinit.txt, out62m_m1033rtred.txt -> §18.4494 [relevant: ColorSurfaceInit impl], §18.4493 [relevant: BeginScene arg probe]
+### 18.4496 PORT M951: 真实 RT 渲染架构已生效、但仍零像素 → 顶点 uniform 全 0（identity 实验）
+
+1) 验证运行 `out62m_m1033rtred.txt`：
+```
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59454976
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3
+         vp=0.0,0.0,960.0,544.0 sc=0,0,960,544 rp=0000019d786e7750
+err: [ENDPASS] cd=8D300000 cmd=... inRP=1
+err: [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+err: [REALFS-RED] red diagnostic fragment module ready
+[FUBOHOST] #1 ... UBO float: 0.00000 ...        <- UBO 全 0
+RT STATS: mean=0.00 max=0 (0,0,0) 100%          <- 仍黑
+```
+2) 结论：
+- BeginScene→begin_scene_pass(RT) 生效（rp 非空、viewport 正确、end_scene_pass 的 cd 正确）；
+- RT→swapchain copy + present 正常；
+- **零像素原因**：真实顶点着色器用 UBO 矩阵变换顶点，UBO 全 0 → 顶点 (0,0,0,0)/w=0 → 退化三角形。
+3) 实验（18.4496）：首次真实 draw 前写入 identity 顶点 uniform：
+```cpp
+static const float _I[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+p5d::vulkan::update_uniform_buffer(_I, _I);        // 后端: memcpy 到 uniform_buffer_mapped（128B）+ flush
+printf("[ABIUNI] identity vertex uniforms set n=%u\n", g_main_n);
+```
+4) 编译链接成功（含 `[ABIUNI]`）；已启动 62M 运行：`out62m_m1034uni.txt`（红 FS）。
+NEXT：RT 变红 ⇒ 光栅化/管线/呈现全通 → 转入真实 uniform/顶点数据上传；
+仍黑 ⇒ 查顶点缓冲绑定（bound_vertex_count/vertex buffer）与输入装配布局。
+验证：`out62m_m1033rtred.txt`（架构生效证据）、`out62m_m1034uni.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M951 red-FS + ColorSurfaceInit verification shows the render architecture fix works: [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] rp non-null and viewport 0,0,960,544; [ENDPASS] cd=8D300000; [CPYIMG] cd=8D300000 960x544; [PRESENT] result=0; but the RT is still all black -> vertex uniforms are all zero (RINIT zero table), so the real vertex shader gxp_vert_0001 computes every vertex to w=0 -> degenerate triangle -> no fragments -> even the red diagnostic FS cannot paint. Evidence out62m_m1033rtred.txt: [REALFS-RED] ready, [FUBOHOST] UBO float 0.00000, RT STATS mean=0.00 max=0 (0,0,0) 100%. EXPERIMENT 18.4496: before the first real draw feed identity matrices via the backend update_uniform_buffer(local_to_world,view_proj): static const float _I[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}; p5d::vulkan::update_uniform_buffer(_I,_I); printf('[ABIUNI] identity vertex uniforms set n=%u\n',g_main_n); the backend memcpy's 128B into uniform_buffer_mapped and flushes. If the test triangle (NDC -0.5..0.5) rasterizes, the red FS paints it red and the RT capture turns red. Build+link OK (binary contains [ABIUNI]); 62M run started out62m_m1034uni.txt with P5D_REALFS=red. NEXT: if the RT turns red then rasterization/pipeline/present all work and work moves to real uniform/vertex data upload; if still black check vertex buffer binding (bound_vertex_count/vertex buffer) and the input assembly layout.
+
+LOOKUP: update_uniform_buffer, [ABIUNI], [FUBOHOST], [DRAWST], P5D_REALFS, out62m_m1033rtred.txt, out62m_m1034uni.txt -> §18.4495 [relevant: ColorSurfaceInit], §18.4492 [relevant: render architecture]
