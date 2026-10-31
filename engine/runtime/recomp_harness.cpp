@@ -7,6 +7,16 @@
 //   0x812B19B0 sceFiosInitialize, 0x812B19C0 sceFiosFHClose, 0x812B1910 sceAppUtilInit, 0x812B2210 abort,
 //   0x812B22A0 malloc etc.
 #include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+// 18.4489 M944: pump Win32 messages so the game window does not show "Not Responding"
+static void hle_pump_win_messages(void) {
+  MSG m; int _k = 0;
+  while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE) && _k++ < 128) { TranslateMessage(&m); DispatchMessageA(&m); }
+}
+#else
+static void hle_pump_win_messages(void) {}
+#endif
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -941,6 +951,8 @@ namespace p5d { namespace vulkan { void request_capture(const char* name); } }  
 namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } }   // 18.4486 M941
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 static void job_probes(uint32_t pcv, RecState* s) {
+  { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
+
   { static int _ri_env = -1; if (_ri_env < 0) { const char* _e = getenv("P5D_RINIT"); _ri_env = (_e && atoi(_e)) ? 1 : 0; }
     if (_ri_env && g_main_n >= 59400000u) {
       uint32_t _p = pcv & ~1u;
@@ -4562,6 +4574,7 @@ int main(int argc, char** argv) {
   int n = 0;
   uint32_t prev_blk = 0;
   while (n < maxb) {
+    if ((n & 0xFF) == 0) hle_pump_win_messages();   // 18.4489 M944
     if (g_pump_cool > 0) --g_pump_cool;   // 18.4181: pump cooldown tick
     if ((n & 0x1FF) == 0 && !g_thr.empty()) hle_thr_pump(&s, 400);
     if (false && n == 20000) {   // 18.4176: INJECT disabled - the injected fake load-request nodes are what the wait callback 0x811830C8 was waiting on

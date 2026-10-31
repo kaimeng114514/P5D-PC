@@ -959,6 +959,27 @@
 | M941 | §18.4486: **首帧截图揭示：M940 上屏的交换链画面是全黑（`[SHOTSTAT] frame=1 max=0 mean=0.00`）——因为游戏渲染到**离屏 RT**（`DisplayQueueAddEntry` 的 color surface data=`8CF00000`/`8D300000`），而我们用 `end_frame()` 直接呈现了空的 swapchain 图像；已改为正确显示路径：`end_scene_pass()` →（首帧）`save_rt_screenshot(cd,"p5d_rt_first.bmp")` → `present_frame(cd)`（内部把 RT 拷贝到 swapchain 再 present）**。证据（`out62m_m1022capture.txt`）：
 | M942 | §18.4487: ★★★★★★★ **离屏 RT 内容成功 present 到窗口：`[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)`——这次呈现的是游戏真实渲染的 RT（`cd=8D300000` 960x544），RT→swapchain `vkCmdCopyImage` 已执行**。`out62m_m1023rtpresent.txt` 证据：
 | M943 | §18.4488: **RT 截图顺序修正：`save_rt_screenshot(cd)` 必须在 `present_frame(cd)` 之后调用**——因为 RT 是在 `present_frame` 内部才 `[RTPOOL] create` 入池的，之前先截图必然 `rc=-1`。`out62m_m1024rtshot.txt` 证据：
+| M944 | §18.4489: **修复游戏窗口显示"未响应"：harness 从未处理 Win32 消息（无 PeekMessage 消息泵），主线程长时间跑 AOT 循环时 Windows 判定窗口挂起；已加入消息泵**。原因：`recomp_harness.cpp` 之前完全没有 `#include <windows.h>` / `PeekMessage`（实测计数 0），而 Vulkan 窗口由后端在 guest 主线程创建，随后主线程一直埋在 AOT/嵌套执行里 → Windows 消息队列积压 → 标题栏"未响应"（白色/幽灵窗口）。修复（18.4489）：
+```cpp
+#ifdef _WIN32
+#include <windows.h>
+static void hle_pump_win_messages(void) {
+    MSG m; int _k = 0;
+    while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE) && _k++ < 128) { TranslateMessage(&m); DispatchMessageA(&m); }
+}
+#else
+static void hle_pump_win_messages(void) {}
+#endif
+// job_probes（每执行块）：
+{ static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
+// 主循环：
+while (n < maxb) { if ((n & 0xFF) == 0) hle_pump_win_messages(); ... }
+```
+覆盖两条路径：外层主循环（每 256 块，约 10-20ms）与**嵌套执行/渲染帧循环**（job_probes 每 16384 块）→ 窗口消息持续被处理，Windows 不再标记挂起；WM_CLOSE 也能被正常接收（可关闭窗口）。
+验证：2.5M 冒烟（`out2m_m1026pump.txt`）：`[CRIFSHLE] binit_after=816A0BA0`、`[THREXIT]` 0、`[PREEMPT]` 10、exit=0、BADMEM=0。
+编译链接成功；已启动 62M 长跑（`out62m_m1027pump.txt`，消息泵 + RT 截图）。
+NEXT：确认窗口不再"未响应"、`p5d_rt_first.bmp` 产出并查看真实画面。 |
+| §18.4489 | Fixed the game window showing 'Not Responding': the harness never processed Win32 messages (no PeekMessage pump), so while the main thread ran the AOT loop for a long time Windows marked the window hung; added a message pump. Cause: recomp_harness.cpp had no #include <windows.h> / PeekMessage at all (measured count 0), while the Vulkan window is created by the backend on the guest main thread and the main thread then stays buried in AOT/nested execution -> the Windows message queue backs up -> 'Not Responding' in the title bar (white/ghost window). FIX 18.4489: #ifdef _WIN32 #include <windows.h> static void hle_pump_win_messages(void) { MSG m; int _k=0; while (PeekMessageA(&m,nullptr,0,0,PM_REMOVE) && _k++<128) { TranslateMessage(&m); DispatchMessageA(&m); } } #else static void hle_pump_win_messages(void) {} #endif; call it from job_probes every 16384 executed blocks ({ static uint32_t _pmc=0; if (((++_pmc) & 0x3FFFu)==0u) hle_pump_win_messages(); }) and from the main loop every 256 iterations (while (n < maxb) { if ((n & 0xFF)==0) hle_pump_win_messages(); ... }). This covers both the outer main loop (~10-20ms) and the nested-execution/render frame loop (job_probes), so window messages are processed continuously and Windows no longer marks the window hung; WM_CLOSE is received too. Verified: 2.5M smoke (out2m_m1026pump.txt): [CRIFSHLE] binit_after=816A0BA0, [THREXIT] 0, [PREEMPT] 10, exit=0, BADMEM=0. Build+link OK; 62M run started (out62m_m1027pump.txt, message pump + RT screenshot). NEXT: confirm the window is responsive and p5d_rt_first.bmp is produced/inspected. |
 ```
 [ABIRT] cd=8CF00000 rc=-1 (retry next display entry)
 [ABIRT] cd=8D300000 rc=-1 (retry next display entry)      ← 两者都失败
@@ -488462,3 +488483,43 @@ NEXT：`p5d_rt_first.bmp` → PNG 查看游戏真实画面；确认 page1 进度
 ANTI-FORGETTING ENTRY. Keywords: M943 RT screenshot must happen AFTER present_frame because the RT is created into g_rt_pool inside present_frame: out62m_m1024rtshot.txt shows [ABIRT] cd=8CF00000 rc=-1 and cd=8D300000 rc=-1 while err [CPYIMG] cd=8D300000 src=... 960x544 dst=... idx=0 and [PRESENT] #1 result=0(VK_SUCCESS) succeeded; the RT pool create ([RTPOOL] create cd=8D300000 960x544) happens inside present_frame, so capturing before always returns -1 ([RTSHOT] cd=... 不在 RT 池). FIX 18.4488: move the first-frame RT capture to after present_frame(_data); if (_dq && _data) { present_frame(_data); static int _cap_done=0; if (!_cap_done) { int _rr = save_rt_screenshot(_data,'p5d_rt_first.bmp'); if (_rr==0) { _cap_done=1; printf('[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n',_data,g_main_n); } else { static int _rt=0; if (_rt++<8) printf('[ABIRT] cd=%08X rc=%d (retry next display entry)\n',_data,_rr); } } }. Build+link OK; 62M run started out62m_m1025rtshot2.txt producing p5d_rt_first.bmp. NEXT: convert BMP to PNG and inspect the real game frame; confirm page1 progress ([IDR]/[SEQST]/ctr).
 
 LOOKUP: save_rt_screenshot, present_frame, g_rt_pool, [RTPOOL], [ABIRT], p5d_rt_first.bmp, out62m_m1025rtshot2.txt -> §18.4487 [relevant: RT present], §18.4486 [relevant: display path]
+### 18.4489 PORT M944: 窗口"未响应"修复 —— Win32 消息泵
+
+1) 现象：游戏窗口标题栏显示"未响应"（Not Responding）。
+2) 原因：`recomp_harness.cpp` 从不处理 Win32 消息（`windows.h` / `PeekMessage` 计数均为 0）；
+   Vulkan 窗口由后端在 guest 主线程创建，之后主线程一直执行 AOT 块/嵌套渲染循环，
+   消息队列积压 → Windows 判定窗口挂起（表现为白色无响应窗口）。
+3) 修复（18.4489）：
+```cpp
+#ifdef _WIN32
+#include <windows.h>
+static void hle_pump_win_messages(void) {
+    MSG m; int _k = 0;
+    while (PeekMessageA(&m, nullptr, 0, 0, PM_REMOVE) && _k++ < 128) { TranslateMessage(&m); DispatchMessageA(&m); }
+}
+#else
+static void hle_pump_win_messages(void) {}
+#endif
+
+// job_probes（每个执行块）：嵌套执行/渲染帧循环也会处理消息
+{ static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
+
+// 外层主循环
+while (n < maxb) {
+    if ((n & 0xFF) == 0) hle_pump_win_messages();
+    ...
+}
+```
+4) 验证：2.5M 冒烟（`out2m_m1026pump.txt`）：
+```
+[CRIFSHLE] criFs_Initialize -> 0 n=5000 binit_after=816A0BA0
+[THREXIT] 0   [PREEMPT] 10
+done: blocks=2500000 ... exit=0；BADMEM 0
+```
+5) 编译链接成功；已启动 62M 长跑：`out62m_m1027pump.txt`（消息泵 + RT 截图）。
+NEXT：确认窗口不再"未响应"、`p5d_rt_first.bmp` 产出并查看真实画面。
+验证：`out2m_m1026pump.txt`、`out62m_m1027pump.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M944 game window 'Not Responding' fix - the harness never processed Win32 messages (windows.h/PeekMessage count 0) while the Vulkan window was created on the guest main thread and the main thread then stayed buried in AOT/nested execution -> message queue backup -> Windows marks the window hung. FIX 18.4489: add #ifdef _WIN32 #include <windows.h> and static void hle_pump_win_messages(void) { MSG m; int _k=0; while (PeekMessageA(&m,nullptr,0,0,PM_REMOVE) && _k++<128) { TranslateMessage(&m); DispatchMessageA(&m); } } (#else empty); call from job_probes every 16384 executed blocks ({ static uint32_t _pmc=0; if (((++_pmc) & 0x3FFFu)==0u) hle_pump_win_messages(); }) and from the main loop every 256 iterations (while (n<maxb) { if ((n&0xFF)==0) hle_pump_win_messages(); ... }). Covers both the outer loop (~10-20ms) and the nested render loop. Verified 2.5M smoke out2m_m1026pump.txt: [CRIFSHLE] binit_after=816A0BA0, [THREXIT] 0, [PREEMPT] 10, exit=0, BADMEM=0. Build+link OK; 62M run started out62m_m1027pump.txt (message pump + RT screenshot). NEXT: confirm the window is responsive and p5d_rt_first.bmp is produced/inspected.
+
+LOOKUP: hle_pump_win_messages, PeekMessageA, DispatchMessageA, job_probes, out62m_m1027pump.txt -> §18.4488 [relevant: RT screenshot], §18.4487 [relevant: RT present]
