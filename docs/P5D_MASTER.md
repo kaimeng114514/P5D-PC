@@ -992,6 +992,48 @@
 | M974 | §18.4519: ★★★★★★★★★★★ **【真实游戏画面】：屏幕捕获成功捕获到**原版 P5D 标题画面**（红色天空 + 城市剪影 + 彩色三角/星形纸屑雨）真实显示在 `recomp_harness` 窗口（976×583）中——与本项目从 NV12 直接解码的 title 影片第 300 帧（`movie_frame_300.png`）一致。这是本项目**第一次在屏幕上显示原版游戏的真实画面内容**。证据文件：`C:\dev\p5d_build\evidence_p5d_title_real.png`（窗口捕获）与 `evidence_p5d_title_frame300_ref.png`（NV12 原帧参考）。捕获方法（唯一可靠）：枚举 `recomp_harness` 的窗口 → `MoveWindow` 到干净位置 → `BringWindowToTop`/`SetForegroundWindow` → `CopyFromScreen` 抓窗口矩形；`PrintWindow`（GDI，Vulkan 白占位）与 `save_screenshot`（读交换链白图）均不可用。运行：`out80m_m1053title300.txt`：
 | M975 | §18.4520: **用户反馈「全屏打游戏时弹窗打扰」→ 已实现三项降低干扰/离屏取证能力（本轮只做代码+文档，不启动窗口、不做桌面截屏）**：
 | M976 | §18.4521: **实现「引擎自绘影片」通路：当 draw 绑定的片元纹理控制块声明尺寸 = 960×544（影片纹理）时，把预解码 BGRA 影片帧通过 `upload_gxm_control_to_unit(unit, ctrl16, hostPixels, bytes)` 直接上传为该单元内容 → 原版片元着色器自己采样并绘制影片帧（不再依赖宿主全屏 blit 演示层）**。开关 `P5D_MOVIE_ENGINE=1`；日志 `[ABIMOVTEX]`。实现位置：harness 的 draw 时纹理上传块之前（18.4521）：
+| M977 | §18.4522: ★★★★★★★ **【page1 视频解码真凶定位】引擎在 page1 开头调用硬件视频解码 HLE（当前为通用空桩返回 0）→ 影片内容永远不出现；同时确认 3 张 960×544 影片纹理、墙钟动画、离屏取证全部就绪**。证据（`out80m_m1054engmov.txt`）：
+1) 引擎自己创建 **3 张 960×544 影片纹理**（`[ABITEXI]`，n≈6.147M）：
+```
+[ABITEXI] tex=851CBB98 data=96900000 fmt=0C000000 960x544 mip=0 mask=60000000 n=6147163
+[ABITEXI] tex=851CBC48 data=96F00000 fmt=0C000000 960x544 mip=0 mask=60000000 n=6148516
+[ABITEXI] tex=851CBCF8 data=97600000 fmt=0C000000 960x544 mip=0 mask=60000000 n=6149862
+```
+2) **page1 开头调用视频解码 HLE**（`[H57M]`）：
+```
+[H57M] va=812B21A0 pc=812B21A0 lr=812A8D84 a0=00001001 a1=848562D8 a2=00000001 n=59562930   ← sceVideodecInitLibrary (NID F1AF65A3)
+[H57M] va=812B2170 pc=812B2170 lr=812A8CC4 a0=00001001 a1=84856354 a2=84856350 n=59563748   ← sceAvcdecQueryDecoderMemSize (NID 97E95EDB)
+```
+→ 我们的 AOT harness 里这些是**无名通用空桩（返回 0）** ⇒ 解码器内存大小=0、解码永不产出帧 ⇒ 影片纹理始终空 ⇒ 引擎画黑。
+3) **完整导入表**（权威）：`C:\dev\p5dsrc\docs\eboot_imports_with_nid.json`（410 条导入，含 stub_vaddr/module/func_nid）。
+   `SceVideodecUser` 9 条导入（stub VA 0x812B2120–0x812B21A0）：
+```
+0x812B2120 25F31020  sceAvcdecDecodeFlush
+0x812B2130 3A5F4924  sceVideodecTermLibrary
+0x812B2140 441673E3  sceAvcdecDecodeAvailableSize
+0x812B2150 8A0E359E  sceAvcdecDeleteDecoder
+0x812B2160 9648D853  sceAvcdecDecodeStop
+0x812B2170 97E95EDB  sceAvcdecQueryDecoderMemSize
+0x812B2180 D6190A06  sceAvcdecDecode
+0x812B2190 E82BB69B  sceAvcdecCreateDecoder
+0x812B21A0 F1AF65A3  sceVideodecInitLibrary
+```
+4) **墙钟动画生效**：`[MOVIE] clock=wall start=300` → `frame=300/900` → `frame=367/900`（按 29.97fps 推进）。
+5) **离屏取证生效且精确**：`P5D_MOVIE_CAPTURE=1` 写出 `p5d_moviecap_0.bmp`（960×544，mean=15.31 max=255）；转 PNG 后与直接从 NV12 解码的 `movie_frame_300.png` **sha256 完全一致（312f3f63e81c52ea）**——BT.601→BGRA→BMP 全链路字节级正确，且**不需要窗口/桌面截屏**。证据文件：`C:\dev\p5d_build\evidence_offscreen_movie_frame300.png`。
+6) `[ABIMOVTEX] 0`：引擎的影片纹理绑定/使用走它自己的解码输出路径，不经过我们已捕获的 Set* 纹理绑定 API ⇒ **"引擎自绘影片"必须实现 SceVideodecUser HLE**（假解码：把预解码 NV12 帧写进 app 提供的 `SceAvcdecPicture` 输出缓冲）。
+   旧项目经验（`docs\P5D_MASTER.md` h145k80~k93 / `_head_index.tsv`）：sceAvcdecDecode 由我们的 0x812AA2A8 调用，参数 `r0=ctrl, r1=au, r2=pic`；`pp=SceAvcdecPicture` 在 app 栈 `sp+0x160`；输出缓冲指针由 app 在 `pp->frame.pPicture[0]` 提供；把 NV12 帧写进该缓冲即可让 CRI 把帧当作解码结果发布。
+NEXT：
+```
+① 在 hle_call 里按 stub VA 接 SceVideodecUser 9 个 API（0x812B2120..0x812B21A0）：
+   InitLibrary/TermLibrary/CreateDecoder/DeleteDecoder/Flush/Stop → 返回 0 + 伪句柄
+   QueryDecoderMemSize → 返回合理值（如 0x200000）
+   DecodeAvailableSize → 返回 AU 大小（足够 ≥ r7）
+   Decode → 成功并把预解码 NV12 帧写入 app 的 SceAvcdecPicture 输出缓冲（Y/UV 平面 + pitch）
+② 验证：引擎自己的影片 quad 采样到真实帧 → RT 截图（p5d_disp_*.bmp）出现影片内容 = 原版代码自绘成功
+③ 之后把 [IDR]/[VDEC] 事件与解码帧号同步
+```
+验证：`out80m_m1054engmov.txt`、`C:\dev\p5d_build\evidence_offscreen_movie_frame300.png`。 |
+| §18.4522 | page1 video-decode root cause located: at page1 start the engine calls the hardware video-decode HLE (currently a nameless generic stub returning 0) so movie content never appears; meanwhile confirmed 3x 960x544 movie textures, wall-clock animation and offscreen evidence are all ready. Evidence (out80m_m1054engmov.txt): (1) the engine itself creates 3 movie textures 960x544 ([ABITEXI] tex=851CBB98 data=96900000 fmt=0C000000 960x544 n=6147163; tex=851CBC48 data=96F00000 n=6148516; tex=851CBCF8 data=97600000 n=6149862); (2) at page1 start it calls the video-decode HLE ([H57M] va=812B21A0 pc=812B21A0 lr=812A8D84 a0=00001001 a1=848562D8 a2=00000001 n=59562930 = sceVideodecInitLibrary NID F1AF65A3; [H57M] va=812B2170 pc=812B2170 lr=812A8CC4 a0=00001001 a1=84856354 a2=84856350 n=59563748 = sceAvcdecQueryDecoderMemSize NID 97E95EDB) -> in our AOT harness these are nameless generic stubs returning 0 => decoder memory size = 0, decode never produces frames => movie textures stay empty => the engine draws black. (3) Full import table (authoritative): C:\dev\p5dsrc\docs\eboot_imports_with_nid.json (410 imports with stub_vaddr/module/func_nid); SceVideodecUser 9 imports at stub VAs 0x812B2120-0x812B21A0: 25F31020 DecodeFlush, 3A5F4924 TermLibrary, 441673E3 DecodeAvailableSize, 8A0E359E DeleteDecoder, 9648D853 DecodeStop, 97E95EDB QueryDecoderMemSize, D6190A06 Decode, E82BB69B CreateDecoder, F1AF65A3 InitLibrary. (4) Wall-clock animation works: [MOVIE] clock=wall start=300 -> frame=300/900 -> frame=367/900. (5) Offscreen evidence works and is exact: P5D_MOVIE_CAPTURE=1 wrote p5d_moviecap_0.bmp (960x544 mean=15.31 max=255); converted PNG is sha256-identical (312f3f63e81c52ea) to movie_frame_300.png decoded directly from NV12 - BT.601->BGRA->BMP byte-exact, no window/desktop capture needed; evidence file C:\dev\p5d_build\evidence_offscreen_movie_frame300.png. (6) [ABIMOVTEX] 0: the engine's movie-texture binding follows its own decode-output path, not our captured Set* texture APIs => engine-drawn movie requires implementing the SceVideodecUser HLE (fake decode writing pre-decoded NV12 into the app-provided SceAvcdecPicture output buffers). Old-project knowledge (h145k80~k93): sceAvcdecDecode is called from our 0x812AA2A8 with r0=ctrl,r1=au,r2=pic; pp=SceAvcdecPicture on the app stack at sp+0x160; output buffer pointers are provided by the app in pp->frame.pPicture[0]; writing an NV12 frame into that buffer makes CRI publish it as the decode result. NEXT: (1) in hle_call match the stub VAs of the 9 SceVideodecUser APIs (0x812B2120..0x812B21A0): InitLibrary/TermLibrary/CreateDecoder/DeleteDecoder/Flush/Stop -> return 0 + fake handle; QueryDecoderMemSize -> reasonable value (e.g. 0x200000); DecodeAvailableSize -> AU size (enough >= r7); Decode -> success + write the pre-decoded NV12 frame into the app SceAvcdecPicture output buffer (Y/UV planes + pitch); (2) verify the engine's own movie quad samples real frames -> RT captures (p5d_disp_*.bmp) show movie content = original code draws it; (3) then sync [IDR]/[VDEC] events with the decoded frame index. |
 ```cpp
 { static int _me = -1; if (_me < 0) _me = (getenv("P5D_MOVIE_ENGINE") != nullptr) ? 1 : 0;
   if (_me && g_movie_va) {
@@ -490871,3 +490913,58 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M976 engine-drawn movie path - when a draw's bound fragment texture control block declares size 960x544 (movie texture), upload the pre-decoded BGRA movie frame directly as that unit's content via upload_gxm_control_to_unit(unit, ctrl16, hostPixels, bytes), so the ORIGINAL fragment shader samples and draws the movie frame (no longer relying on the host fullscreen-blit demo layer). Toggle P5D_MOVIE_ENGINE=1; log tag [ABIMOVTEX]. Backend API (vulkan_backend.h): SceInt32 upload_gxm_control_to_unit(SceUInt32 unit, const void* control16, const SceUInt8* hostPixels, SceUInt32 bytes) - internally resolve_gxm_texture parses the control block (swizzle/size/format) then uploads hostPixels to that unit's VkImage. Control-block width/height parse for linear/tiled/strided: _w1=_frag_tex[u][4..7]; _tm=_w1&0xE0000000; if(_tm==0x60000000||0x80000000||0xC0000000){ _tw=((_w1>>12)&0xFFF)+1; _th=(_w1&0xFFF)+1; } if(_tw==g_movie_w && _th==g_movie_h) upload. Compiled at Idle priority exit=0; binary contains [ABIMOVTEX]/P5D_MOVIE_ENGINE. This is a key step toward 'the original code draws it itself'. Verify when user not gaming: P5D_HIDEWINDOW=1 P5D_MOVIE_ENGINE=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_START=300 (optional P5D_MOVIE_CAPTURE=1). NEXT: verify [ABIMOVTEX] appears + RT screenshot shows movie content (engine-drawn); if page1 has no 960x544 movie-texture draw, find the movie quad's fragment program hash and adjust the gate; hook the engine's real video-decode events ([IDR]/[VDEC]) for frame sync.
 
 LOOKUP: upload_gxm_control_to_unit, P5D_MOVIE_ENGINE, [ABIMOVTEX], 960x544 movie texture, _frag_tex control block width/height, P5D_HIDEWINDOW, P5D_MOVIE_CLOCK=wall, P5D_MOVIE_CAPTURE -> §18.4520 [relevant: hidden window/offscreen], §18.4519 [relevant: real title picture]
+### 18.4522 PORT M977: page1 视频解码真凶（SceVideodecUser 是空桩）+ 离屏影片取证字节级验证
+
+1) 引擎在 `n≈6.147M` 自己创建 **3 张 960×544 影片纹理**：
+```
+[ABITEXI] tex=851CBB98 data=96900000 fmt=0C000000 960x544 mip=0 mask=60000000 n=6147163
+[ABITEXI] tex=851CBC48 data=96F00000 fmt=0C000000 960x544 mip=0 mask=60000000 n=6148516
+[ABITEXI] tex=851CBCF8 data=97600000 fmt=0C000000 960x544 mip=0 mask=60000000 n=6149862
+```
+2) **page1 开头调用视频解码 HLE**（`[H57M]`）：
+```
+va=812B21A0 lr=812A8D84 a0=00001001 a1=848562D8 a2=00000001 n=59562930   ← sceVideodecInitLibrary (F1AF65A3)
+va=812B2170 lr=812A8CC4 a0=00001001 a1=84856354 a2=84856350 n=59563748   ← sceAvcdecQueryDecoderMemSize (97E95EDB)
+```
+→ 我们的 AOT harness 对这两条是**无名通用空桩（返回 0）** ⇒ 解码器内存=0、永不产出帧 ⇒ 影片纹理空 ⇒ 画面黑。
+
+3) **权威导入表** `C:\dev\p5dsrc\docs\eboot_imports_with_nid.json`（410 条：stub_vaddr/module/func_nid）：
+```
+SceVideodecUser（stub VA 0x812B2120–0x812B21A0）：
+0x812B2120 25F31020  sceAvcdecDecodeFlush
+0x812B2130 3A5F4924  sceVideodecTermLibrary
+0x812B2140 441673E3  sceAvcdecDecodeAvailableSize
+0x812B2150 8A0E359E  sceAvcdecDeleteDecoder
+0x812B2160 9648D853  sceAvcdecDecodeStop
+0x812B2170 97E95EDB  sceAvcdecQueryDecoderMemSize
+0x812B2180 D6190A06  sceAvcdecDecode
+0x812B2190 E82BB69B  sceAvcdecCreateDecoder
+0x812B21A0 F1AF65A3  sceVideodecInitLibrary
+```
+4) **墙钟动画生效**：
+```
+[MOVIE] clock=wall start=300
+[MOVIE] frame=300/900 -> scratch=99C67790 set_texsrc_addr+set_frame
+[MOVIE] frame=367/900 -> scratch=99C67790 set_texsrc_addr+set_frame
+```
+5) **离屏取证字节级验证**（无需窗口/桌面截屏）：
+```
+p5d_moviecap_0.bmp 960x544 mean=15.31 max=255   → PNG sha256 前缀 312f3f63e81c52ea
+movie_frame_300.png（NV12 直接解码参考）        → sha256 前缀 312f3f63e81c52ea   ← 完全一致！
+```
+证据：`C:\dev\p5d_build\evidence_offscreen_movie_frame300.png`
+6) `[ABIMOVTEX] 0`：引擎影片纹理绑定走它自己的解码输出路径，不经过我们捕获的 Set* API
+   ⇒ **"引擎自绘影片"必须实现 SceVideodecUser HLE（假解码写 app 输出缓冲）**。
+   旧项目经验：`sceAvcdecDecode` 调用点参数 `r0=ctrl, r1=au, r2=pic`；`pp=SceAvcdecPicture` 在 app 栈 `sp+0x160`；
+   输出缓冲指针由 app 在 `pp->frame.pPicture[0]` 提供；把 NV12 帧写入该缓冲即可让 CRI 视为解码结果。
+NEXT：
+```
+① hle_call 按 stub VA 接 SceVideodecUser 9 API（0x812B2120..0x812B21A0）
+② Decode → 把预解码 NV12 帧写入 app 的 SceAvcdecPicture 输出缓冲（Y/UV 平面 + pitch）
+③ 验证 RT 截图（p5d_disp_*.bmp）出现影片内容 = 原版代码自绘成功
+```
+验证：`out80m_m1054engmov.txt`、`evidence_offscreen_movie_frame300.png`。
+
+ANTI-FORGETTING ENTRY. Keywords: M977 page1 video-decode root cause - the engine calls SceVideodecUser HLE at page1 start and our AOT harness has nameless generic stubs returning 0, so the decoder never produces frames and the movie textures stay empty. Evidence out80m_m1054engmov.txt: engine creates 3x 960x544 movie textures at n≈6.147M ([ABITEXI] tex=851CBB98 data=96900000 fmt=0C000000 960x544 n=6147163; tex=851CBC48 data=96F00000 n=6148516; tex=851CBCF8 data=97600000 n=6149862); at page1 start [H57M] va=812B21A0 pc=812B21A0 lr=812A8D84 a0=00001001 a1=848562D8 a2=00000001 n=59562930 = sceVideodecInitLibrary (NID F1AF65A3) and [H57M] va=812B2170 pc=812B2170 lr=812A8CC4 a0=00001001 a1=84856354 a2=84856350 n=59563748 = sceAvcdecQueryDecoderMemSize (NID 97E95EDB). Full import table C:\dev\p5dsrc\docs\eboot_imports_with_nid.json (410 imports with stub_vaddr/module/func_nid); SceVideodecUser stub VAs 0x812B2120-0x812B21A0: 25F31020 DecodeFlush, 3A5F4924 TermLibrary, 441673E3 DecodeAvailableSize, 8A0E359E DeleteDecoder, 9648D853 DecodeStop, 97E95EDB QueryDecoderMemSize, D6190A06 Decode, E82BB69B CreateDecoder, F1AF65A3 InitLibrary. Wall-clock animation works ([MOVIE] clock=wall start=300 -> frame=300/900 -> frame=367/900). Offscreen evidence byte-exact: p5d_moviecap_0.bmp 960x544 mean=15.31 max=255 converts to a PNG whose sha256 prefix 312f3f63e81c52ea equals movie_frame_300.png decoded directly from NV12; evidence file C:\dev\p5d_build\evidence_offscreen_movie_frame300.png. [ABIMOVTEX] 0 means the engine's movie-texture binding follows its own decode-output path, not our captured Set* texture APIs, so engine-drawn movie requires implementing the SceVideodecUser HLE (fake decode writing pre-decoded NV12 into the app-provided SceAvcdecPicture output buffers). Old-project knowledge (h145k80~k93): sceAvcdecDecode is called from our 0x812AA2A8 with r0=ctrl,r1=au,r2=pic; pp=SceAvcdecPicture on the app stack at sp+0x160; output buffer pointers are provided by the app in pp->frame.pPicture[0]; writing an NV12 frame into that buffer makes CRI publish it as the decode result. NEXT: in hle_call match the 9 SceVideodecUser stub VAs (0x812B2120..0x812B21A0); InitLibrary/TermLibrary/CreateDecoder/DeleteDecoder/Flush/Stop -> 0 + fake handle; QueryDecoderMemSize -> 0x200000; DecodeAvailableSize -> AU size (>= r7); Decode -> success + write pre-decoded NV12 into the app SceAvcdecPicture output buffers (Y/UV planes + pitch); then verify RT captures (p5d_disp_*.bmp) show movie content = original code draws it; then sync [IDR]/[VDEC] with the decoded frame index.
+
+LOOKUP: SceVideodecUser, 0x812B2120, 0x812B2170, 0x812B21A0, F1AF65A3, 97E95EDB, D6190A06, eboot_imports_with_nid.json, [H57M], 960x544 movie textures, p5d_moviecap_0.bmp, 312f3f63e81c52ea, evidence_offscreen_movie_frame300.png, P5D_MOVIE_CLOCK=wall, P5D_MOVIE_CAPTURE -> §18.4521 [relevant: engine-drawn movie], §18.4519 [relevant: real title picture]
