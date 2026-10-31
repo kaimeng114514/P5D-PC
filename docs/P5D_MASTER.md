@@ -990,6 +990,35 @@
 | M972 | §18.4517: ★★★★★★★★ **【窗口真实显示通路验证】`recomp_harness` 窗口（"P5D Native Port"，hwnd=8070000，976×583）经 Windows 屏幕捕获实测显示 **白色画面（mean=248.6、max=255，带黑边 letterbox）**——说明：①窗口/交换链/显示通路真实工作；②但交换链内容与我们 RT 截图（黑色）不同。同时发现：从 NV12 影片文件直接提取的 **title 影片第 0/1 帧本身就是黑色**（frame0 mean=0.0 max=4），所以白色**不是**影片帧内容 → 白色来自交换链 clear/未初始化 movie image blit/呈现图不匹配之一。`[MOVIEBLIT] 960x544 -> 960x544` 在 stderr 中已出现（影片层 blit 确实执行）**。证据：
 | M973 | §18.4518: ★★★★★★★★★★ **【真实画面首次上屏！】纯红诊断运行实测：窗口屏幕捕获 **31050/35624 采样像素为纯红**（SCREEN mean=100.6 max=249 red=31050）——证明「宿主影片层 BMP → `p5d_movie_set_frame` → `vkCmdBlitImage` 全屏 blit 到交换链 → `vkQueuePresentKHR` → 窗口 → 物理屏幕」整条**显示通路真实工作**。同时澄清两个假象：①`PrintWindow` 抓 Vulkan 窗口永远是**白色占位**（mean=246.9 red=0，GDI 无法抓 Vulkan surface）；②`save_screenshot` 对交换链读到**纯白**（`[SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp`）——它没正确读 presented image；③早前"白色窗口"判断是这两个假象之一造成，**以屏幕捕获为准**。另外已从 NV12 文件提取并确认 **title 影片第 300 帧 = P5D 真实标题画面**（红色城市剪影 + 彩色纸屑雨，`movie_frame_300.png`），已启动 `P5D_MOVIE_START=300` 运行，屏幕应显示**原版游戏真实标题画面**。证据：
 | M974 | §18.4519: ★★★★★★★★★★★ **【真实游戏画面】：屏幕捕获成功捕获到**原版 P5D 标题画面**（红色天空 + 城市剪影 + 彩色三角/星形纸屑雨）真实显示在 `recomp_harness` 窗口（976×583）中——与本项目从 NV12 直接解码的 title 影片第 300 帧（`movie_frame_300.png`）一致。这是本项目**第一次在屏幕上显示原版游戏的真实画面内容**。证据文件：`C:\dev\p5d_build\evidence_p5d_title_real.png`（窗口捕获）与 `evidence_p5d_title_frame300_ref.png`（NV12 原帧参考）。捕获方法（唯一可靠）：枚举 `recomp_harness` 的窗口 → `MoveWindow` 到干净位置 → `BringWindowToTop`/`SetForegroundWindow` → `CopyFromScreen` 抓窗口矩形；`PrintWindow`（GDI，Vulkan 白占位）与 `save_screenshot`（读交换链白图）均不可用。运行：`out80m_m1053title300.txt`：
+| M975 | §18.4520: **用户反馈「全屏打游戏时弹窗打扰」→ 已实现三项降低干扰/离屏取证能力（本轮只做代码+文档，不启动窗口、不做桌面截屏）**：
+1) **`P5D_HIDEWINDOW=1`**：backend 初始化后立即 `FindWindowA(0,"P5D Native Port")` + `ShowWindow(SW_HIDE)` —— 运行渲染时**不再弹出/显示窗口**，不会切掉用户全屏游戏画面；
+2) **`P5D_MOVIE_CLOCK=wall`**：影片帧按**墙钟 29.97fps** 推进（此前只在 DisplayQueueAddEvent 推进 1 帧 → 画面静止），让 title 影片真正播放；
+3) **`P5D_MOVIE_CAPTURE=1`**：**离屏证据**——每帧把影片 BGRA 写成 `p5d_moviecap_N.bmp`（项目自带 BMP 写入器，前 16 帧），**完全不需要窗口/桌面截屏**即可取证。
+实现（18.4520，`recomp_harness.cpp`）：
+```cpp
+static int g_hidewin_env = -1;
+static void p5d_maybe_hide_window(void) {
+  if (g_hidewin_env < 0) g_hidewin_env = (getenv("P5D_HIDEWINDOW") != nullptr) ? 1 : 0;
+  if (!g_hidewin_env) return;
+  HWND _hw = FindWindowA(nullptr, "P5D Native Port");
+  if (_hw) ShowWindow(_hw, 0);
+}
+static void p5d_write_bgra_bmp(const char* path, const void* bgra, int w, int h);   // 自带 54B 头 BMP
+// movie_advance_frame():
+{ static int _mw=-1; static long long _t0=-1; static long _start=-1;
+  if (_mw<0) { _mw = (getenv("P5D_MOVIE_CLOCK") && strstr(...,"wall")) ? 1 : 0; _start = ...P5D_MOVIE_START; }
+  if (_mw) { g_movie_frame = _start + (now_ms - _t0)*30000/1001/1000; } }
+{ if (g_moviecap_env<0) g_moviecap_env = (getenv("P5D_MOVIE_CAPTURE")!=nullptr)?1:0;
+  if (g_moviecap_env) p5d_write_bgra_bmp("p5d_moviecap_N.bmp", _dst, w, h); }
+main: if (!g_gxmabi) gxmvk_init(); p5d_maybe_hide_window();
+```
+编译：以 **Idle 优先级**运行 g++（`ProcessPriorityClass::Idle`，不抢用户游戏 CPU），exit=0，二进制含 `P5D_HIDEWINDOW`/`[MOVIECAP]`/`clock=wall` 三处标签。
+用户环境约定（写入项目规则）：**用户在全屏游戏时——禁止弹窗、禁止窗口置顶/移动/激活、禁止桌面屏幕捕获；证据优先用离屏捕获（MOVIECAP）**。
+NEXT（等用户允许/不在游戏时）：
+① `P5D_HIDEWINDOW=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_CAPTURE=1` 运行 → 离屏验证影片动画；
+② 影片内容接回引擎自己的影片 quad（TEXSRC 门控），实现"原版代码自己画"；
+③ `save_screenshot` 交换链读取修正（present 前 capture）。 |
+| §18.4520 | User feedback 'your popups disturb me while playing a fullscreen game' -> implemented three anti-disturbance / offscreen-evidence features (this round only code + docs; no window started, no desktop screen capture): (1) P5D_HIDEWINDOW=1: right after backend init call FindWindowA(0,"P5D Native Port") + ShowWindow(SW_HIDE) so rendering runs WITHOUT showing a window and never cuts off the user's fullscreen game; (2) P5D_MOVIE_CLOCK=wall: advance movie frames by wall clock at 29.97 fps (previously only 1 frame per DisplayQueueAddEvent -> static picture) so the title movie really plays; (3) P5D_MOVIE_CAPTURE=1: offscreen evidence - write each movie BGRA frame to p5d_moviecap_N.bmp with the project's own BMP writer (first 16 frames), needing NO window/desktop screen capture. Implementation 18.4520 in recomp_harness.cpp: static int g_hidewin_env; static void p5d_maybe_hide_window(void){ if(g_hidewin_env<0) g_hidewin_env=(getenv("P5D_HIDEWINDOW")!=nullptr)?1:0; if(!g_hidewin_env) return; HWND _hw=FindWindowA(nullptr,"P5D Native Port"); if(_hw) ShowWindow(_hw,0); }; static void p5d_write_bgra_bmp(const char* path,const void* bgra,int w,int h) (54-byte BMP header writer); movie_advance_frame(): static int _mw=-1; static long long _t0=-1; static long _start=-1; if(_mw<0){ _mw=(getenv("P5D_MOVIE_CLOCK")&&strstr(getenv("P5D_MOVIE_CLOCK"),"wall"))?1:0; _start=(getenv("P5D_MOVIE_START")?atol(getenv("P5D_MOVIE_START")):0); } if(_mw){ g_movie_frame=_start+(now_ms-_t0)*30000/1001/1000; if(g_movie_frame>=g_movie_frames) g_movie_frame=g_movie_frames-1; }; and if(g_moviecap_env) p5d_write_bgra_bmp("p5d_moviecap_N.bmp",_dst,w,h); main: if(!g_gxmabi) gxmvk_init(); p5d_maybe_hide_window(). Compiled at Idle priority (ProcessPriorityClass::Idle so the user's game CPU is not stolen), exit=0, binary contains the P5D_HIDEWINDOW/[MOVIECAP]/clock=wall tags. USER-ENVIRONMENT RULE: while the user plays fullscreen - NO popups, NO window topmost/move/activate, NO desktop screen capture; evidence must prefer offscreen capture (MOVIECAP). NEXT (when the user allows / is not gaming): (1) run with P5D_HIDEWINDOW=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_CAPTURE=1 to verify the movie animation offscreen; (2) wire movie content back into the engine's own movie quad (TEXSRC gating) for the final 'original code draws it' form; (3) fix save_screenshot swapchain reading (capture before present). |
 ```
 [MOVIE] P5D_MOVIE_START -> frame=300
 [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790
@@ -490723,3 +490752,47 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M974 REAL GAME PICTURE - screen capture successfully captured the ORIGINAL P5D TITLE PICTURE (red sky + city skyline silhouettes + colorful triangle/star confetti rain) really displayed in the recomp_harness window (976x583), matching title movie frame 300 decoded directly from the NV12. This is the FIRST time this project displays real original-game picture content on screen. Evidence files C:\dev\p5d_build\evidence_p5d_title_real.png (window capture) and evidence_p5d_title_frame300_ref.png (NV12 reference). Capture method (only reliable one): enumerate the recomp_harness window -> MoveWindow to clean position -> BringWindowToTop/SetForegroundWindow -> CopyFromScreen of the window rect; PrintWindow (GDI white placeholder for Vulkan) and save_screenshot (reads white swapchain image) are unusable. Run out80m_m1053title300.txt: [MOVIE] P5D_MOVIE_START -> frame=300; [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790; [MOVIE] frame=300/900 -> scratch=99C67790 set_texsrc_addr+set_frame; [PRESENT] #1 result=0; [ABIVTX] #1 vc=3 attrs=1; [ABITEX] unit=0 rc=0; WINDOW hwnd=17508452 976x583; CAP mean=82.6 max=255 nonblack=32312/35624 red=6649. Honest boundary: what is on screen is the HOST MOVIE LAYER demonstration path (pre-decoded NV12 -> BGRA -> p5d_movie_set_frame -> present fullscreen blit), proving the real-game-content->screen chain works; NOT yet the final form where the engine itself draws the movie quad. NEXT: (1) advance the movie layer by wall clock (currently 1 frame per DisplayQueueAddEvent -> static) so the title movie animation plays; (2) wire movie content back into the engine's own movie quad (P5D_TEXSRC gating / texture replacement, drawn by the original shaders); (3) fix save_screenshot swapchain reading (capture before present) so evidence works without a window.
 
 LOOKUP: evidence_p5d_title_real.png, evidence_p5d_title_frame300_ref.png, P5D_MOVIE_START=300, movie_frame_300, red=6649, nonblack=32312, [MOVIE] set_texsrc_addr+set_frame, CopyFromScreen, PrintWindow white, out80m_m1053title300.txt -> §18.4518 [relevant: screen capture proof], §18.4516 [relevant: host movie layer]
+### 18.4520 PORT M975: 用户全屏游戏被打扰 → 隐藏窗口 + 墙钟影片 + 离屏取证
+
+1) 用户反馈：全屏打游戏时，跑渲染会弹出/切走窗口，打扰游戏。
+   → 本轮**不启动任何窗口**、**不做桌面截屏**，只做代码与文档（编译也以 Idle 优先级运行，不抢游戏 CPU）。
+
+2) 三项实现（18.4520，`recomp_harness.cpp`）：
+```cpp
+// (a) 隐藏窗口：backend 初始化后立刻隐藏 "P5D Native Port"
+static int g_hidewin_env = -1;
+static void p5d_maybe_hide_window(void) {
+  if (g_hidewin_env < 0) g_hidewin_env = (getenv("P5D_HIDEWINDOW") != nullptr) ? 1 : 0;
+  if (!g_hidewin_env) return;
+  HWND _hw = FindWindowA(nullptr, "P5D Native Port");
+  if (_hw) ShowWindow(_hw, 0 /*SW_HIDE*/);
+}
+// main: if (!g_gxmabi) gxmvk_init(); p5d_maybe_hide_window();
+
+// (b) 墙钟推进影片帧（29.97fps），而非每个 DisplayQueueAddEvent 只 1 帧（原来画面静止）
+{movie_advance_frame() 内:
+  static int _mw=-1; static long long _t0=-1; static long _start=-1;
+  if (_mw<0) { _mw = (getenv("P5D_MOVIE_CLOCK") && strstr(getenv("P5D_MOVIE_CLOCK"),"wall")) ? 1 : 0;
+              _start = (getenv("P5D_MOVIE_START") ? atol(getenv("P5D_MOVIE_START")) : 0); }
+  if (_mw) { g_movie_frame = _start + (now_ms - _t0)*30000/1001/1000; }}
+
+// (c) 离屏证据：不依赖窗口/桌面截屏
+static void p5d_write_bgra_bmp(const char* path, const void* bgra, int w, int h);  // 自写 54B BMP 头
+if (g_moviecap_env) p5d_write_bgra_bmp("p5d_moviecap_N.bmp", _dst, w, h);          // P5D_MOVIE_CAPTURE=1
+```
+3) 编译：**Idle 优先级**（`System.Diagnostics.ProcessPriorityClass::Idle`）运行 g++，exit=0；
+   二进制含 `P5D_HIDEWINDOW` / `[MOVIECAP]` / `clock=wall` 标签。
+4) **项目环境规则（写入本文档作为长期约定）**：
+   > 用户在全屏游戏时：禁止弹窗、禁止窗口置顶/移动/激活、禁止桌面屏幕捕获；
+   > 证据优先用**离屏捕获**（`P5D_MOVIE_CAPTURE` / RT 截图）；窗口可见预览需用户同意。
+NEXT（等用户允许/不在游戏时）：
+```
+① P5D_HIDEWINDOW=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_CAPTURE=1 → 离屏验证影片动画（p5d_moviecap_*.bmp）
+② 影片内容接回引擎自己的影片 quad（P5D_TEXSRC 门控）→ "原版代码自己画"的最终形态
+③ save_screenshot 交换链读取修正（present 前 capture）
+```
+验证：编译日志 `link_err.txt`（无 error）、二进制标签检查。
+
+ANTI-FORGETTING ENTRY. Keywords: M975 user complained that popups disturb the fullscreen game -> implemented anti-disturbance and offscreen-evidence features. P5D_HIDEWINDOW=1: after backend init FindWindowA(nullptr,'P5D Native Port') + ShowWindow(hwnd,0/SW_HIDE) via p5d_maybe_hide_window() so no window ever shows over the user's game. P5D_MOVIE_CLOCK=wall: in movie_advance_frame advance movie frame by wall clock at 29.97fps (g_movie_frame = start + elapsed_ms*30000/1001/1000) instead of one frame per DisplayQueueAddEvent (which left the picture static). P5D_MOVIE_CAPTURE=1: offscreen evidence via p5d_write_bgra_bmp('p5d_moviecap_N.bmp', _dst, w, h) (self-written 54-byte BMP header, first 16 frames), needing NO window/desktop screen capture. Compiled at Idle priority (ProcessPriorityClass::Idle) so the user's game is not disturbed; exit=0; binary contains the P5D_HIDEWINDOW/[MOVIECAP]/clock=wall tags. PROJECT RULE: while the user plays fullscreen - NO popups, NO window topmost/move/activate, NO desktop screen capture; evidence must use offscreen capture (P5D_MOVIE_CAPTURE / RT screenshots); visible window preview requires user consent. NEXT (when user allows / not gaming): run P5D_HIDEWINDOW=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_CAPTURE=1 to verify movie animation offscreen; wire movie content back into the engine's own movie quad (TEXSRC gating) for the final 'original code draws it' form; fix save_screenshot swapchain reading (capture before present).
+
+LOOKUP: P5D_HIDEWINDOW, p5d_maybe_hide_window, FindWindowA P5D Native Port, P5D_MOVIE_CLOCK=wall, P5D_MOVIE_CAPTURE, p5d_write_bgra_bmp, p5d_moviecap_N.bmp, Idle priority compile -> §18.4519 [relevant: real title picture], §18.4516 [relevant: host movie layer]

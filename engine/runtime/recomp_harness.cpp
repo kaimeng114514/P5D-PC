@@ -734,6 +734,31 @@ extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); }   
 // The engine's own CRI decode is not emulated; we feed pre-decoded NV12 sequences into a guest BGRA scratch
 // buffer and set_texsrc_addr it, so the backend uploads the real movie frame as the sampled texture.
 static uint32_t g_movie_va = 0;
+static int g_hidewin_env = -1;                                  // 18.4520 M975: P5D_HIDEWINDOW=1 -> hide the game window
+static void p5d_maybe_hide_window(void) {
+  if (g_hidewin_env < 0) { g_hidewin_env = (getenv("P5D_HIDEWINDOW") != nullptr) ? 1 : 0; }
+  if (!g_hidewin_env) return;
+  HWND _hw = FindWindowA(nullptr, "P5D Native Port");
+  if (_hw) { ShowWindow(_hw, 0 /*SW_HIDE*/); }
+}
+static int g_moviecap_env = -1;                                 // 18.4520 M975: P5D_MOVIE_CAPTURE=1 -> dump movie BGRA to bmp
+static void p5d_write_bgra_bmp(const char* path, const void* bgra, int w, int h) {
+  FILE* _f = fopen(path, "wb"); if (!_f) return;
+  int _row = w * 4, _pad = (4 - (_row % 4)) % 4, _dsz = (_row + _pad) * h;
+  unsigned char _fh[54] = {0};
+  _fh[0]='B'; _fh[1]='M';
+  unsigned _tot = 54u + (unsigned)_dsz;
+  for (int i = 0; i < 4; ++i) _fh[2+i] = (unsigned char)((_tot >> (8*i)) & 0xFF);
+  _fh[10] = 54; _fh[14] = 40;
+  for (int i = 0; i < 4; ++i) { _fh[18+i] = (unsigned char)((w >> (8*i)) & 0xFF); _fh[22+i] = (unsigned char)((h >> (8*i)) & 0xFF); }
+  _fh[26] = 1; _fh[28] = 32;
+  for (int i = 0; i < 4; ++i) _fh[34+i] = (unsigned char)((_dsz >> (8*i)) & 0xFF);
+  fwrite(_fh, 1, 54, _f);
+  const unsigned char* _src = (const unsigned char*)bgra;
+  std::vector<unsigned char> _rowbuf((size_t)_row + (size_t)_pad, 0);
+  for (int y = h - 1; y >= 0; --y) { std::memcpy(_rowbuf.data(), _src + (size_t)y * _row, (size_t)_row); fwrite(_rowbuf.data(), 1, (size_t)_row + (size_t)_pad, _f); }
+  fclose(_f);
+}
 static FILE* g_movie_fp = nullptr;
 static long g_movie_frame = 0, g_movie_frames = 0;
 static unsigned g_movie_w = 960, g_movie_h = 544;
@@ -761,6 +786,16 @@ static void movie_advance_frame(void) {
   movie_maybe_init();
   if (!g_movie_fp || !g_movie_va || g_movie_frames <= 0) return;
   size_t _fsz = (size_t)g_movie_w * g_movie_h * 3u / 2u;
+  // 18.4520 M975: P5D_MOVIE_CLOCK=wall -> advance by wall clock (29.97 fps) instead of one frame per display event
+  { static int _mw = -1; static long long _t0 = -1; static long _start = -1;
+    if (_mw < 0) { _mw = (getenv("P5D_MOVIE_CLOCK") && std::strstr(getenv("P5D_MOVIE_CLOCK"), "wall")) ? 1 : 0;
+      const char* _ms = getenv("P5D_MOVIE_START"); _start = (_ms && *_ms) ? atol(_ms) : 0;
+      if (_mw) { printf("[MOVIE] clock=wall start=%ld\n", _start); fflush(stdout); } }
+    if (_mw) { long long _now = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+      if (_t0 < 0) _t0 = _now;
+      g_movie_frame = _start + (long)((_now - _t0) * 30000LL / 1001LL / 1000LL);
+      if (g_movie_frame >= g_movie_frames) g_movie_frame = g_movie_frames - 1; } }
   if (g_movie_frame >= g_movie_frames) g_movie_frame = 0;
   if (fseek(g_movie_fp, (long)(g_movie_frame * (long)_fsz), SEEK_SET) != 0) return;
   if (fread(g_movie_nv12.data(), 1, _fsz, g_movie_fp) != _fsz) return;
@@ -793,6 +828,12 @@ static void movie_advance_frame(void) {
       }
     }
     p5d::vulkan::set_texsrc_addr(g_movie_va);
+    // 18.4520 M975: offscreen evidence (no window/desktop capture needed)
+    { if (g_moviecap_env < 0) g_moviecap_env = (getenv("P5D_MOVIE_CAPTURE") != nullptr) ? 1 : 0;
+      if (g_moviecap_env) { static int _mc = 0; if (_mc < 16) { char _fn[64];
+          std::snprintf(_fn, sizeof(_fn), "p5d_moviecap_%d.bmp", _mc);
+          p5d_write_bgra_bmp(_fn, _dst, (int)g_movie_w, (int)g_movie_h);
+          printf("[MOVIECAP] saved %s frame=%ld\n", _fn, g_movie_frame); fflush(stdout); _mc++; } } }
     // 18.4516 M971: also feed the host movie layer - present_frame blits g_movie_img fullscreen over the
     // swapchain image (vkCmdBlitImage), so the real movie frame becomes visible regardless of engine shaders.
     p5d_movie_set_frame(_dst, (int)g_movie_w, (int)g_movie_h);
@@ -4975,6 +5016,7 @@ int main(int argc, char** argv) {
   int maxb = argc > 2 ? atoi(argv[2]) : 50000;
   if (!load_elf("C:\\dev\\p5d_build\\p5d_true.elf")) return 2;
   if (!g_gxmabi) gxmvk_init();
+  p5d_maybe_hide_window();   // 18.4520 M975: P5D_HIDEWINDOW=1 -> never show a window over the user's game
   init_job_pools();
   { uint32_t o = 0x8130CC68u - IMG_VA_BASE; uint32_t v = 0;
     if (o + 4 <= IMG_SIZE) std::memcpy(&v, g_img.data() + o, 4);
