@@ -26,6 +26,28 @@ static void hle_pump_win_messages(void) {}
 #include <string>
 #include <set>
 #include <vector>
+#include <cmath>
+#include <cstring>
+// 18.4500 M955: GXM vertex attribute -> float[4] decoder (formats per SceGxmAttributeFormat:
+// 0=UBYTE(norm),1=BYTE(norm),2=USHORT(norm),3=SHORT(norm),4=FLOAT,5=HALF,6=FIXED)
+static void abi_decode_attr(const unsigned char* p, unsigned int fmt, unsigned int comps, float* out) {
+  out[0]=out[1]=out[2]=out[3]=0.0f;
+  for (unsigned int c=0;c<comps && c<4;++c) {
+    if (fmt==4) { float f=0.f; std::memcpy(&f,p+c*4u,4); out[c]=f; }
+    else if (fmt==5) { unsigned short hh=0; std::memcpy(&hh,p+c*2u,2);
+      unsigned int s=(hh>>15)&1u,e=(hh>>10)&0x1Fu,m=hh&0x3FFu; float v;
+      if(e==0) v=(float)m*5.9604645e-8f;
+      else if(e==31) v=(m?1e30f:1e30f);
+      else v=std::ldexp((float)(m|0x400u),(int)e-25);
+      out[c]= s? -v : v; }
+    else if (fmt==0) out[c]=(float)p[c]/255.0f;
+    else if (fmt==1) { signed char b=(signed char)p[c]; out[c]=(float)b/127.0f; }
+    else if (fmt==2) { unsigned short u=0; std::memcpy(&u,p+c*2u,2); out[c]=(float)u/65535.0f; }
+    else if (fmt==3) { short s=0; std::memcpy(&s,p+c*2u,2); out[c]=(float)s/32767.0f; }
+    else if (fmt==6) { int sv=0; std::memcpy(&sv,p+c*4u,4); out[c]=(float)sv/65536.0f; }
+    else { float f=0.f; std::memcpy(&f,p+c*4u,4); out[c]=f; }
+  }
+}
 static int g_loadclear_env = 0;
 static int g_hostthreads = 0;
 static volatile int g_shutdown = 0;
@@ -1462,6 +1484,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       // 18.4480 M935: GXP->SPIR-V pipeline wiring (was only present in the old eboot_probe host)
       static std::map<unsigned long long,std::string> _abi_man; static int _abi_man_st = -1; static std::string _abi_spvdir;
       static std::string _abi_vspv, _abi_fspv;
+      // 18.4500 M955: real vertex stream capture: CreateVertexProgram attributes/streams + SetVertexStream guest VAs
+      struct AbiVAttr { uint32_t stream, offset, fmt, comps; };
+      struct AbiVStream { uint32_t stride, index; };
+      static std::map<uint32_t, std::vector<AbiVAttr> > _vobj2attrs;
+      static std::map<uint32_t, std::vector<AbiVStream> > _vobj2strms;
+      static std::map<uint32_t, uint32_t> _stm2va;
+      static uint32_t _cur_vobj = 0;
       if (_abi_man_st < 0) { _abi_man_st = 0;
         const char* _d = getenv("P5D_SPV_DIR"); _abi_spvdir = _d ? _d : "C:/dev/p5d_build/spv_all";
         std::string _mp = _abi_spvdir + "/gxp_manifest.txt";
@@ -1587,14 +1616,64 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           if (_it != _pid2spv.end()) { uint8_t* _q = GP(_stk[2]);
             if (_q) { std::memcpy(_q, &_nextobj, 4); (_frag ? _fobj2spv : _vobj2spv)[_nextobj] = _it->second;
               static int _n2=0; if (_n2++<12) printf("[ABIPGOBJ] %s obj=%08X spv=%s n=%u\n", _frag?"frag":"vert", _nextobj, _it->second.c_str(), g_main_n);
+              if (!_frag) {   // 18.4500 M955: parse SceGxmVertexAttribute[] / SceGxmVertexStream[]
+                uint32_t _ap = s->r[2], _ac = s->r[3], _sp2 = _stk[0], _sc = _stk[1];
+                std::vector<AbiVAttr> _av; std::vector<AbiVStream> _sv;
+                for (uint32_t _i = 0; _i < _ac && _i < 16u; ++_i) { uint8_t* _q2 = GP(_ap + _i*8u); if (!_q2) break;
+                  uint16_t _st=0,_of=0; std::memcpy(&_st,_q2,2); std::memcpy(&_of,_q2+2,2);
+                  AbiVAttr _a{}; _a.stream=_st; _a.offset=_of; _a.fmt=_q2[4]; _a.comps=_q2[5]; _av.push_back(_a); }
+                for (uint32_t _i = 0; _i < _sc && _i < 8u; ++_i) { uint8_t* _q2 = GP(_sp2 + _i*4u); if (!_q2) break;
+                  uint16_t _sd=0,_ix=0; std::memcpy(&_sd,_q2,2); std::memcpy(&_ix,_q2+2,2);
+                  AbiVStream _v{}; _v.stride=_sd; _v.index=_ix; _sv.push_back(_v); }
+                _vobj2attrs[_nextobj] = _av; _vobj2strms[_nextobj] = _sv;
+                printf("[ABIVFMT] obj=%08X attrN=%u streamN=%u n=%u\n", _nextobj, (unsigned)_av.size(), (unsigned)_sv.size(), g_main_n);
+                for (size_t _i=0;_i<_av.size() && _i<8;++_i) printf("[ABIVFMT]  attr%zu stream=%u off=%u fmt=%u comps=%u\n", _i, _av[_i].stream, _av[_i].offset, _av[_i].fmt, _av[_i].comps);
+                for (size_t _i=0;_i<_sv.size() && _i<8;++_i) printf("[ABIVFMT]  strm%zu stride=%u idx=%u\n", _i, _sv[_i].stride, _sv[_i].index);
+                fflush(stdout); }
               _nextobj += 0x40u; } } }
         else if (strstr(_ge->name, "PrecomputedVertexStateInit") || strstr(_ge->name, "PrecomputedFragmentStateInit") || strstr(_ge->name, "PrecomputedDrawInit")) {
           const bool _frag = strstr(_ge->name, "PrecomputedFragmentStateInit") != nullptr;
           uint32_t _obj = s->r[1];
+          if (!_frag) _cur_vobj = _obj;   // 18.4500 M955
           if (!_frag) { auto _it = _vobj2spv.find(_obj); if (_it != _vobj2spv.end() && _abi_vspv != _it->second) { _abi_vspv = _it->second;
               static int _n3=0; if (_n3++<10) printf("[ABIOBJ] vert obj=%08X spv=%s\n", _obj, _it->second.c_str()); } }
           else { auto _it = _fobj2spv.find(_obj); if (_it != _fobj2spv.end() && _abi_fspv != _it->second) { _abi_fspv = _it->second;
               static int _n4=0; if (_n4++<10) printf("[ABIOBJ] frag obj=%08X spv=%s\n", _obj, _it->second.c_str()); } } } }
+      // 18.4500 M955: capture stream guest VA (both SetVertexStream and PrecomputedDrawSetVertexStream use (obj,index,data))
+      if (strstr(_ge->name, "SetVertexStream")) {
+        uint32_t _si = s->r[1], _va = s->r[2]; _stm2va[_si] = _va;
+        static int _vsn=0; if (_vsn++<16) { printf("[ABIVS] %s idx=%u va=%08X n=%u\n", _ge->name, _si, _va, g_main_n); fflush(stdout); }
+      }
+      // 18.4500 M955: unpack the real GXM vertex streams into the pipeline layout (128B stride, loc0..7 vec4)
+      if (strncmp(_ge->name, "sceGxmDraw", 10) == 0) {
+        uint32_t _vc = _stk[0];   // sceGxmDraw(ctx,prim,indexType,indexData,indexCount): indexCount = first stack arg
+        auto _at = _vobj2attrs.find(_cur_vobj);
+        if (_at != _vobj2attrs.end() && !_at->second.empty() && _vc > 0u && _vc <= 65536u) {
+          const std::vector<AbiVAttr>& _av = _at->second;
+          auto _st = _vobj2strms.find(_cur_vobj);
+          static std::vector<float> _vtx;
+          _vtx.assign((size_t)_vc * 32u, 0.0f);
+          bool _ok = true;
+          for (uint32_t _i = 0; _i < _av.size() && _i < 8u; ++_i) {
+            uint32_t _stride = 0;
+            if (_st != _vobj2strms.end()) for (size_t _k=0;_k<_st->second.size();++_k) if (_st->second[_k].index == _av[_i].stream) { _stride=_st->second[_k].stride; break; }
+            auto _mp = _stm2va.find(_av[_i].stream);
+            if (!_stride || _mp == _stm2va.end() || !_mp->second) { _ok = false; break; }
+            for (uint32_t _v = 0; _v < _vc; ++_v) {
+              uint8_t* _src = GP(_mp->second + _v*_stride + _av[_i].offset);
+              if (!_src) { _ok = false; break; }
+              float _f[4]; abi_decode_attr(_src, _av[_i].fmt, _av[_i].comps, _f);
+              std::memcpy(&_vtx[(size_t)_v*32u + (size_t)_i*4u], _f, 16);
+            }
+            if (!_ok) break;
+          }
+          if (_ok) {
+            int _rr = p5d::vulkan::upload_vertex_stream(_vtx.data(), (unsigned)(_vc*128u), _vc);
+            static int _vn=0; if (_vn++<8) { printf("[ABIVTX] vc=%u attrs=%u rc=%d n=%u v0=(%.3f,%.3f,%.3f,%.3f) v1=(%.3f,%.3f,%.3f,%.3f)\n",
+              _vc, (unsigned)_av.size(), _rr, g_main_n, _vtx[0],_vtx[1],_vtx[2],_vtx[3], _vtx[32],_vtx[33],_vtx[34],_vtx[35]); fflush(stdout); }
+          } else { static int _fn=0; if (_fn++<6) { printf("[ABIVTX] FAIL vc=%u attrs=%u cur_obj=%08X streams=%zu n=%u\n", _vc,(unsigned)_av.size(),_cur_vobj,_stm2va.size(),g_main_n); fflush(stdout); } }
+        }
+      }
       auto _t0 = std::chrono::steady_clock::now();
       uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
       { auto _t1 = std::chrono::steady_clock::now(); long long _us = std::chrono::duration_cast<std::chrono::microseconds>(_t1-_t0).count();

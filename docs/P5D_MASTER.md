@@ -970,6 +970,30 @@
 | M952 | §18.4497: ★★★★★★★★ **重大发现：后端的 `P5D_ZFORCE` 开关注释里记录着上一个项目的"零像素"真凶——顶点变换后 `z > w`（超出 Vulkan 裁剪体 0≤Zc≤Wc），depthClampEnable=FALSE 时整个三角形被裁掉 → 即使管线/绑定/视口全对也一个像素都不写！** 关键原文（`vulkan_backend.cpp` 注释）：
 | M953 | §18.4498: ★★★★★★ **找到"内置 VS + 红 FS 仍黑"的原因：真实管线的顶点输入布局与测试三角形不匹配——`get_or_create_real_pipeline` 的 `vi` 是「单 binding stride=128（8×vec4），location 0..7 全部 R32G32B32A32」，而 `create_vertex_buffer` 里的 `test_triangle` 只有 28 字节步长 → 按 stride 128 读到的 vertex 1/2 全是垃圾 → 三角形退化/出屏**。证据（`out62m_m1035redz.txt`）：
 | M954 | §18.4499: ★★★★★★★★★★ **【GPU 渲染链路彻底打通——第一帧真实渲染画面（红色三角形）】`upload_vertex_stream`（128B 步长测试三角形）+ passthrough VS + 红 FS → RT 截图从全黑变为"黑底红色三角形"（nonblack=65,280 px，bbox=(240,136)-(719,406)，颜色 red (224..255,0,0)）；全链路 = 顶点上传 → 真实 Vulkan 管线（stride 128/loc0..7）→ 顶点着色器 → 光栅化 → 片元着色器 → RT(8D300000) → RT→swapchain 拷贝 → `vkQueuePresentKHR result=0` 全部工作！** 证据（`out62m_m1036tri.txt`）：
+| M955 | §18.4500: **实现真实 GXM 顶点流通路（第一版）：捕获 `SceGxmVertexAttribute[]/SceGxmVertexStream[]` 与 `SetVertexStream` 的 guest VA，在 draw 时按 128 字节步长布局解包并 `upload_vertex_stream`**。依据（Vita SDK 签名，来自 `gxm_abi.cpp` 的 guest ABI 注释）：
+```
+int sceGxmShaderPatcherCreateVertexProgram(SceGxmShaderPatcher *shaderPatcher, SceGxmShaderPatcherId programId,
+    const SceGxmVertexAttribute *attributes, unsigned int attributeCount,
+    const SceGxmVertexStream *streams, unsigned int streamCount, SceGxmVertexProgram **vertexProgram);
+int sceGxmSetVertexStream(SceGxmContext *context, unsigned int streamIndex, const void *streamData);
+int sceGxmPrecomputedDrawSetVertexStream(SceGxmPrecomputedDraw *precomputedDraw, unsigned int streamIndex, const void *streamData);
+```
+结构布局（8 字节属性 / 4 字节流）：
+```
+SceGxmVertexAttribute: +0 u16 streamIndex, +2 u16 offset, +4 u8 format, +5 u8 componentCount, +6 u8 regSet
+SceGxmVertexStream:    +0 u16 stride, +2 u16 streamIndex
+```
+实现（18.4500，`recomp_harness.cpp`）：
+1) `abi_decode_attr(src, fmt, comps, float out[4])`：支持 UBYTE/BYTE/USHORT/SHORT 归一化、FLOAT、HALF（IEEE half→float）、FIXED（/65536）；
+2) 在 `ShaderPatcherCreateVertexProgram` 分支（分配 fake obj 之后）解析 attributes（`r2`,`r3`）与 streams（`_stk[0]`,`_stk[1]`），存 `_vobj2attrs[_nextobj]` / `_vobj2strms[_nextobj]`，打印 `[ABIVFMT]`；
+3) `PrecomputedVertexStateInit/PrecomputedDrawInit` 记录当前顶点程序对象 `_cur_vobj`；
+4) 捕获 `*SetVertexStream`（两 API 参数同形 `(obj,index,data)`）→ `_stm2va[streamIndex]=guestVA`，打印 `[ABIVS]`；
+5) `sceGxmDraw` 时：`_vc = _stk[0]`（indexCount）+ `_vobj2attrs[_cur_vobj]` → 逐顶点逐属性按 `[{vobj2strms}[attr.stream].stride] + attr.offset` 从 guest 读取解码 → 写入 128B/顶点（loc i → offset i*16）→ `upload_vertex_stream(vc*128, vc)`；打印 `[ABIVTX]`（vc/attrs/rc/前两顶点），失败打印 `[ABIVTX] FAIL`。
+编译链接成功（二进制含 `[ABIVFMT]/[ABIVS]/[ABIVTX]`）；已启动 62M 诊断运行（`out62m_m1037vtx.txt`，真实着色器 + 红 FS）。
+NEXT：读 `[ABIVFMT]`（真实属性格式/流 stride）与 `[ABIVTX]`（解包结果/前两顶点），确认解包正确后：
+- 若顶点位置正确但被裁剪 → 按 M952 的 `z>w` 经验处理（真实 MVP 矩阵需要上传，见下一步）；
+- 补真实 uniform（USSE 映射区/默认 UBO）与纹理（`[TEXBIND] dummy=16`）。 |
+| §18.4500 | Implemented the first version of the real GXM vertex stream path: capture SceGxmVertexAttribute[]/SceGxmVertexStream[] and SetVertexStream guest VAs, unpack into the 128-byte-stride layout at draw time and upload_vertex_stream. Based on the Vita SDK signatures (from the guest ABI comments in gxm_abi.cpp): sceGxmShaderPatcherCreateVertexProgram(shaderPatcher, programId, attributes, attributeCount, streams, streamCount, vertexProgram); sceGxmSetVertexStream(context, streamIndex, streamData); sceGxmPrecomputedDrawSetVertexStream(precomputedDraw, streamIndex, streamData). Struct layouts: SceGxmVertexAttribute +0 u16 streamIndex, +2 u16 offset, +4 u8 format, +5 u8 componentCount, +6 u8 regSet (8 bytes); SceGxmVertexStream +0 u16 stride, +2 u16 streamIndex (4 bytes). Implementation 18.4500 in recomp_harness.cpp: (1) abi_decode_attr(src, fmt, comps, float out[4]) supports normalized UBYTE/BYTE/USHORT/SHORT, FLOAT, HALF (IEEE half->float), FIXED (/65536); (2) in the ShaderPatcherCreateVertexProgram branch (after allocating the fake obj) parse attributes (r2, r3) and streams (_stk[0], _stk[1]), store _vobj2attrs[_nextobj]/_vobj2strms[_nextobj], print [ABIVFMT]; (3) PrecomputedVertexStateInit/PrecomputedDrawInit record the current vertex program object _cur_vobj; (4) capture *SetVertexStream (both APIs have the same (obj,index,data) shape) -> _stm2va[streamIndex]=guestVA, print [ABIVS]; (5) at sceGxmDraw: _vc = _stk[0] (indexCount) + _vobj2attrs[_cur_vobj] -> per vertex/attribute read from guest at streamVA + v*stride + attr.offset, decode, write into 128B/vertex (loc i -> offset i*16) -> upload_vertex_stream(vc*128, vc); print [ABIVTX] (vc/attrs/rc/first two vertices), print [ABIVTX] FAIL on failure. Build+link OK (binary contains [ABIVFMT]/[ABIVS]/[ABIVTX]); 62M diagnostic run started (out62m_m1037vtx.txt, real shaders + red FS). NEXT: read [ABIVFMT] (real attribute formats/stream strides) and [ABIVTX] (unpacked result/first two vertices); once the unpacking is confirmed: if the vertex positions are correct but clipped, handle the z>w lesson from M952 (real MVP matrices must be uploaded - next step); add real uniforms (USSE mapped region / default UBO) and textures ([TEXBIND] dummy=16). |
 ```
 [ABITRI] upload_vertex_stream rc=0 (stride128,3 verts) n=59454976
 err: [REALVS-BUILTIN] passthrough vertex module ready
@@ -489193,3 +489217,60 @@ bbox 内主色 = red (224..255, 0, 0)
 ANTI-FORGETTING ENTRY. Keywords: M954 FIRST REAL RENDERED FRAME - GPU rendering chain fully proven: upload_vertex_stream (128-byte-stride test triangle) + passthrough VS + red FS produced a black background with a RED TRIANGLE (nonblack=65,280 px, bbox=(240,136)-(719,406), red (224..255,0,0)) and presented it (vkQueuePresentKHR result=0). Evidence out62m_m1036tri.txt: [ABITRI] upload_vertex_stream rc=0 (stride128,3 verts) n=59454976; [REALVS-BUILTIN] ready; [REALFS-RED] ready; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] vc=3 inrp=1 rp non-null vp=0,0,960,544; [PRESENT] #1 result=0; [CPYIMG] cd=8D300000 960x544; RT STATS mean=10.74 max=255 top=[((0,0,0),28516), ((15,0,0),4124)]; PNG p5d_rt_first_triangle.png shows the red triangle. Full chain: vertex upload -> real Vulkan pipeline (stride 128/loc0..7) -> vertex shader -> rasterization -> fragment shader -> RT(8D300000) -> RT->swapchain copy -> present. The two black-screen culprits are localized and verified: (1) vertex layout mismatch - real pipeline requires stride=128 (8 x vec4, loc 0..7) while built-in test_triangle is 28-byte stride (M953); (2) RT render architecture - BeginScene must go through begin_scene_pass(RT) (M947/M950) or draws land on the swapchain while display copies an empty RT (M946). NEXT three data paths for real content: (1) real GXM vertex stream unpacking - capture guest VAs from sceGxmSetVertexStream/PrecomputedDrawSetVertexStream, unpack per GXP attribute table into 128-byte-stride per-location vec4 (loc0=pos, loc1=color, loc2=uv...), then upload_vertex_stream (the first gate from triangle to real graphics); (2) real uniforms - sceGxmSetUniformDataF/SetDefaultUniformBuffer/Precomputed versions -> update_uniform_buffer(_raw) (RINIT zero table currently makes MVP zero); (3) textures - sceGxmTextureInit*/SetTexture/PrecomputedFragmentStateSetTexture -> backend upload_texture_to_unit/RT alias (currently [TEXBIND] dummy=16). Evidence files: p5d_rt_first_triangle.png, p5d_rt_first.bmp, out62m_m1036tri.txt.
 
 LOOKUP: upload_vertex_stream, stride=128, p5d_rt_first_triangle.png, [ABITRI], RT STATS mean=10.74, P5D_DBG_VS_BUILTIN, P5D_REALFS, out62m_m1036tri.txt -> §18.4498 [relevant: vertex layout diagnosis], §18.4492 [relevant: render architecture]
+### 18.4500 PORT M955: 真实 GXM 顶点流通路（第一版：捕获 + 128B 解包 + 上传）
+
+1) Vita SDK 签名（`gxm_abi.cpp` guest ABI 注释）：
+```c
+int sceGxmShaderPatcherCreateVertexProgram(SceGxmShaderPatcher *shaderPatcher, SceGxmShaderPatcherId programId,
+    const SceGxmVertexAttribute *attributes, unsigned int attributeCount,
+    const SceGxmVertexStream *streams, unsigned int streamCount, SceGxmVertexProgram **vertexProgram);
+int sceGxmSetVertexStream(SceGxmContext *context, unsigned int streamIndex, const void *streamData);
+int sceGxmPrecomputedDrawSetVertexStream(SceGxmPrecomputedDraw *precomputedDraw, unsigned int streamIndex, const void *streamData);
+```
+2) 结构布局：
+```
+SceGxmVertexAttribute (8B): +0 u16 streamIndex, +2 u16 offset, +4 u8 format, +5 u8 componentCount, +6 u8 regSet
+SceGxmVertexStream    (4B): +0 u16 stride, +2 u16 streamIndex
+```
+3) 实现（`recomp_harness.cpp`）：
+```cpp
+// (a) 解码器
+static void abi_decode_attr(const unsigned char* p, unsigned int fmt, unsigned int comps, float* out);
+// fmt: 0=UBYTE/255, 1=BYTE/127, 2=USHORT/65535, 3=SHORT/32767, 4=FLOAT, 5=HALF, 6=FIXED/65536
+
+// (b) CreateVertexProgram 捕获属性表/流表
+_vobj2attrs[_nextobj] = _av;  _vobj2strms[_nextobj] = _sv;
+printf("[ABIVFMT] obj=%08X attrN=%u streamN=%u\n", ...);
+for attr: printf("[ABIVFMT]  attr%zu stream=%u off=%u fmt=%u comps=%u\n", ...);
+for strm: printf("[ABIVFMT]  strm%zu stride=%u idx=%u\n", ...);
+
+// (c) 当前顶点程序对象
+if (!_frag) _cur_vobj = s->r[1];     // PrecomputedVertexStateInit / PrecomputedDrawInit
+
+// (d) 捕获 SetVertexStream（两个 API 同形）
+if (strstr(_ge->name, "SetVertexStream")) { _stm2va[s->r[1]] = s->r[2]; printf("[ABIVS] ..."); }
+
+// (e) draw 时解包 + 上传
+if (strncmp(_ge->name,"sceGxmDraw",10)==0) {
+    uint32_t _vc = _stk[0];
+    auto _at = _vobj2attrs.find(_cur_vobj);
+    if (_at != _vobj2attrs.end() && !_at->second.empty() && _vc>0 && _vc<=65536) {
+        static std::vector<float> _vtx; _vtx.assign(_vc*32, 0.0f);
+        for each attr i: find stride for attr.stream; find streamVA; for each vertex v:
+            uint8_t* _src = GP(streamVA + v*stride + attr.offset);
+            float _f[4]; abi_decode_attr(_src, attr.fmt, attr.comps, _f);
+            memcpy(&_vtx[v*32 + i*4], _f, 16);
+        upload_vertex_stream(_vtx.data(), _vc*128u, _vc);
+        printf("[ABIVTX] vc=%u attrs=%u rc=%d v0=(...) v1=(...)\n", ...);
+    }
+}
+```
+4) 编译链接成功（含 `[ABIVFMT]/[ABIVS]/[ABIVTX]`）；已启动 62M 诊断运行：`out62m_m1037vtx.txt`（真实着色器 + 红 FS）。
+NEXT：读 `[ABIVFMT]`（真实属性格式/流 stride）与 `[ABIVTX]`（解包结果/前两顶点）：
+- 解包正确 → 补真实 uniform（USSE 映射区/默认 UBO；M952 的 z>w 经验：MVP 矩阵必须真实上传）；再补纹理；
+- 解包错误 → 按日志修正属性布局/格式映射。
+验证：`out62m_m1037vtx.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M955 implemented the first version of the real GXM vertex stream path: capture SceGxmVertexAttribute[]/SceGxmVertexStream[] (CreateVertexProgram r2/r3 + _stk[0]/_stk[1]) and SetVertexStream guest VAs, unpack at draw time into the 128-byte-stride layout and upload_vertex_stream. Vita SDK signatures from gxm_abi.cpp guest ABI comments: sceGxmShaderPatcherCreateVertexProgram(shaderPatcher, programId, attributes, attributeCount, streams, streamCount, vertexProgram); sceGxmSetVertexStream(context, streamIndex, streamData); sceGxmPrecomputedDrawSetVertexStream(precomputedDraw, streamIndex, streamData). Struct layouts: SceGxmVertexAttribute (8B) +0 u16 streamIndex, +2 u16 offset, +4 u8 format, +5 u8 componentCount, +6 u8 regSet; SceGxmVertexStream (4B) +0 u16 stride, +2 u16 streamIndex. Implementation 18.4500 in recomp_harness.cpp: abi_decode_attr(src,fmt,comps,out) with 0=UBYTE/255, 1=BYTE/127, 2=USHORT/65535, 3=SHORT/32767, 4=FLOAT, 5=HALF, 6=FIXED/65536; CreateVertexProgram branch stores _vobj2attrs[_nextobj]/_vobj2strms[_nextobj] and prints [ABIVFMT] (object, attrN/streamN, each attr stream/off/fmt/comps, each strm stride/idx); PrecomputedVertexStateInit/PrecomputedDrawInit set _cur_vobj=obj; *SetVertexStream capture _stm2va[s->r[1]]=s->r[2] printing [ABIVS]; at sceGxmDraw: _vc=_stk[0] (indexCount), look up _vobj2attrs[_cur_vobj], for each attr find stride via _vobj2strms and guest VA via _stm2va, for each vertex read GP(streamVA + v*stride + attr.offset), decode, write to _vtx[v*32 + i*4] (loc i -> offset i*16), upload_vertex_stream(_vtx.data(), _vc*128u, _vc), print [ABIVTX] with vc/attrs/rc/first two vertices. Build+link OK (binary contains [ABIVFMT]/[ABIVS]/[ABIVTX]); 62M diagnostic run started out62m_m1037vtx.txt (real shaders + red FS). NEXT: read [ABIVFMT] (real attribute formats/stream strides) and [ABIVTX] (unpacked result/first two vertices); if unpacking is correct add real uniforms (USSE mapped region/default UBO; M952 z>w lesson: real MVP matrices must be uploaded) then textures; otherwise fix layout/format mapping from the logs.
+
+LOOKUP: sceGxmShaderPatcherCreateVertexProgram, SceGxmVertexAttribute, SceGxmVertexStream, sceGxmSetVertexStream, sceGxmPrecomputedDrawSetVertexStream, abi_decode_attr, [ABIVFMT], [ABIVS], [ABIVTX], out62m_m1037vtx.txt -> §18.4499 [relevant: first rendered frame], §18.4498 [relevant: vertex layout stride 128]
