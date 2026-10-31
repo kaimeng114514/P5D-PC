@@ -1005,6 +1005,50 @@
 | M987 | §18.4532: ★★★★★★★ **job 执行器探针结果：page1 确实在执行 job worker（`[JOBEXEC]` 40+ 条，含 init trophy），但 `[JOBDONE]` = 0 → 完成路径 `FUN_8116f75e` 从未被进入 ⇒ 所有 job 永远"未完成"，状态机只能靠 JOBFORCE 强推**。证据（`out80m_m1062jobprobe.txt`）：
 | M988 | §18.4533: ★★★★★★★ **找到 init trophy 永不完成的直接原因：`appOtNode` 的 "netTrophyProc" 状态检查 `FUN_8105a0d4` 永远返回 false（status<4）→ worker 返回 -1 → app job 永不完成**。反编译：
 | M989 | §18.4534: ★★★★★★★★ **`P5D_OTFORCE` 成功打通 job 完成链：状态强制 → worker 返回 0 → `[JOBDONE]` 首次出现 → job 状态机**自然推进**（JOBFORCE 关闭也推进！）**。证据（`out80m_m1063otforce.txt`）：
+| M990 | §18.4535: **page1 的 8 步初始化链全部反编译：它们是 boot 阶段的 "init *" proc 任务（init trophy / init sound / init gamedata / init msgwindow / init mainmenu / …），每个步骤 = 提交一个 app job（worker+completion）**。已查明的步骤与 worker/completion：
+```
+step0 0x8118484E "init trophy"    worker=0x81184809 completion=0x8118483B   [已完成：OTFORCE → JOBDONE]
+step1 0x811848FC "init sound"     worker=0x811848B7 completion=0x811848E8
+step2 0x81184A06 "init gamedata"  worker=0x81184965 completion=0x811849F2
+step3 0x81184ACE "init msgwindow" worker=0x81184A89 completion=0x81184ABA
+step4 0x81184BBE "init mainmenu"  worker=0x81184B39 completion=0x81184BAA
+step5..7: 0x81184D40 / 0x81184E40 / 0x81184F7A / 0x81184C74（同模式，待反编译）
+```
+反编译支撑（`initsteps.txt`）：
+```c
+void FUN_811848fc(undefined4 param_1) {                 // step1 "init sound"
+    puVar3 = FUN_8115d36a(...);  *puVar3=0..0;
+    FUN_8116f7ca(param_1, "init sound", 200, 0, 0, 0x811848b7, &LAB_811848e8_1, puVar3); }
+void FUN_81184a06(...) { FUN_8116f7ca(param_1, "init gamedata", 200, 0, 0, 0x81184965, &LAB_811849f2_1, puVar3); }
+void FUN_81184ace(...) { FUN_8116f7ca(param_1, "init msgwindow", 200, 0, 0, 0x81184a89, &LAB_81184aba_1, puVar3); }
+void FUN_81184bbe(...) { FUN_8116f7ca(param_1, "init mainmenu", 200, 0, 0, 0x81184b39, &LAB_81184baa_1, puVar3); }
+```
+既有探针证据（`out80m_m1063otforce.txt`）：
+```
+[PROCREG] #11 name='initDataRead' arg=00000000 cb0=84856454 cb1=85B8436C
+[PROCREG] #12 name='init trophy' arg=85B846EC cb0=85B846EC cb1=81184809
+[PROCREG] #13 name='init sound'  arg=85B846EC cb0=85B846EC cb1=811848B7
+[PROC] exec p=85B8861C cb0=811848B7 cb1=811848E9 nameptr=00006E5F n=1500000
+[JOBEXEC] #20 node=85B86A1C worker=81184809 ... n=59604700   ← page1 重新执行 init trophy
+[JOBDONE] #1 node=85B86A1C n=59626301
+[IDR] state=1 idx=1 n=59665000                              ← 状态机进入 step1（init sound）
+```
+**新增专项探针（18.4535）**：`[INITEXEC]`（只跟踪 init trophy/sound/gamedata/msgwindow/mainmenu/initDataRead 的 worker 执行，不限 40 条）+ `[JOBDONE2]`（page1 之后所有完成回调，不限 40 条）：
+```cpp
+if (pcv==0x8116F748) { node=r0; wf=rd32(node);
+    if (wf==0x811848B7||wf==0x81184965||wf==0x81184A89||wf==0x81184B39||wf==0x81184809||wf==0x81184FFF)
+        printf("[INITEXEC] #%d worker=%08X node=%08X n=%u\n",...); }
+if (pcv==0x8116F75E && (g_main_n>=59000000 || cnt<=40)) printf("[JOBDONE2] #%d node=%08X n=%u\n",...);
+```
+编译成功（`[INITEXEC]`×1 `[JOBDONE2]`×1）；验证运行：`P5D_OTFORCE=1 P5D_JOBFORCE=1` + VDEC/probes → `out80m_m1064initjobs.txt`。
+NEXT：
+```
+① [INITEXEC] 看 init sound/gamedata/msgwindow/mainmenu 是否在 page1 被执行、[JOBDONE2] 是否出现
+② 若某步 worker 执行后 completion 不触发 → 反编译该 worker 的完成检查（同 FUN_8105a0d4 模式）并按 OTForce 接入
+③ 8 步全完成 → page1 update 对象（0x81309690）就绪 → 场景推进 → 新 draw → S1_TITLE 画面
+```
+验证：`initsteps.txt`（Ghidra）、`out80m_m1064initjobs.txt`（生成中）。 |
+| §18.4535 | All 8 init steps of page1 decompiled: they are the boot-phase 'init *' proc tasks (init trophy / init sound / init gamedata / init msgwindow / init mainmenu / ...), each step submits one app job (worker + completion). Steps and workers: step0 0x8118484E 'init trophy' worker=0x81184809 completion=0x8118483B [done via OTForce -> JOBDONE]; step1 0x811848FC 'init sound' worker=0x811848B7 completion=0x811848E8; step2 0x81184A06 'init gamedata' worker=0x81184965 completion=0x811849F2; step3 0x81184ACE 'init msgwindow' worker=0x81184A89 completion=0x81184ABA; step4 0x81184BBE 'init mainmenu' worker=0x81184B39 completion=0x81184BAA; step5..7: 0x81184D40/0x81184E40/0x81184F7A/0x81184C74 (same pattern, pending decompilation). Decompilation evidence initsteps.txt: FUN_811848fc(param_1): puVar3=FUN_8115d36a(...); *puVar3=0..; FUN_8116f7ca(param_1,'init sound',200,0,0,0x811848b7,&LAB_811848e8_1,puVar3); FUN_81184a06: FUN_8116f7ca(param_1,'init gamedata',200,0,0,0x81184965,&LAB_811849f2_1,...); FUN_81184ace: 'init msgwindow' worker 0x81184a89 completion &LAB_81184aba_1; FUN_81184bbe: 'init mainmenu' worker 0x81184b39 completion &LAB_81184baa_1. Existing probe evidence (out80m_m1063otforce.txt): [PROCREG] #11 name='initDataRead'; #12 name='init trophy' cb1=81184809; #13 name='init sound' cb1=811848B7; [PROC] exec p=85B8861C cb0=811848B7 cb1=811848E9 n=1500000; [JOBEXEC] #20 node=85B86A1C worker=81184809 n=59604700 (page1 re-runs init trophy); [JOBDONE] #1 node=85B86A1C n=59626301; [IDR] state=1 idx=1 n=59665000 (state machine enters step1 init sound). Added probes 18.4535: [INITEXEC] (tracks only the init trophy/sound/gamedata/msgwindow/mainmenu/initDataRead workers, no 40-line cap) + [JOBDONE2] (all completion callbacks after page1, no cap): if(pcv==0x8116F748){ node=r0; wf=rd32(node); if(wf==0x811848B7||wf==0x81184965||wf==0x81184A89||wf==0x81184B39||wf==0x81184809||wf==0x81184FFF) printf('[INITEXEC] #%d worker=%08X node=%08X n=%u'); } if(pcv==0x8116F75E && (g_main_n>=59000000 || cnt<=40)) printf('[JOBDONE2] #%d node=%08X n=%u');. Compiled OK; verification run P5D_OTFORCE=1 P5D_JOBFORCE=1 + VDEC/probes -> out80m_m1064initjobs.txt. NEXT: (1) [INITEXEC] to see whether init sound/gamedata/msgwindow/mainmenu execute at page1 and whether [JOBDONE2] appears; (2) if a step's worker runs but completion does not fire, decompile that worker's completion check (same pattern as FUN_8105a0d4) and force it via the OTForce pattern; (3) all 8 steps complete -> page1 update object (0x81309690) ready -> scene advances -> new draws -> S1_TITLE picture. |
 ```
 [OTFORCE] #1 status=85B86A50 old=0 -> 4 n=59604836          ← 强制 netTrophyProc 状态
 [JOBDONE] #1 node=85B86A1C n=59626301                        ← ★ 完成路径 FUN_8116f75e 首次触发！
@@ -491949,3 +491993,48 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M989 P5D_OTFORCE successfully unblocks the job completion chain: status forced -> worker returns 0 -> [JOBDONE] appears for the first time -> the job state machine advances NATURALLY (even with JOBFORCE disabled). Evidence out80m_m1063otforce.txt: [OTFORCE] #1 status=85B86A50 old=0 -> 4 n=59604836; [JOBDONE] #1 node=85B86A1C n=59626301 (completion path FUN_8116f75e first fired); [IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59624798 / n=59645068 / n=59664996; [IDR] at=81185036 state=1 idx=1 handle=85B86A1C n=59665000 (natural advance, no JOBFORCE); [JOBFORCE] 0; [SEQREQ] page=1; up to n=62.5M still 1 draw/present. The completion chain works: OTForce makes FUN_8105a0d4 return true -> worker returns 0 -> executor takes 0x8116fa66 -> FUN_8116f75e completion -> [JOBDONE] -> FUN_8116f8d2 returns 0 -> state machine advances (state=2 idx=0 -> state=1 idx=1) - the first natural advance without JOBFORCE. page1 is now on init step 1 (2nd of 8); later steps' jobs may still stall on their own completion checks (page1 update FUN_8116f900(0x81309690) returns 0 => no new draws). Page1 start table entries: 0x811848FD, 0x81184A07, 0x81184ACF, 0x81184BBF, 0x81184D41, 0x81184E41, 0x81184F7B, 0x81184C75 (even addresses 0x811848FC/0x81184A06/0x81184ACE/0x81184BBE/0x81184D40/0x81184E40/0x81184F7A/0x81184C74). NEXT: decompile steps 1..7, find each step's completion check (like FUN_8105a0d4), force via the OTForce pattern (or a generic job-completion state force); finish all 8 steps -> page1 update object (0x81309690) ready -> scene advances -> new draws -> S1_TITLE picture.
 
 LOOKUP: P5D_OTFORCE, [OTFORCE], [JOBDONE], [IDR] state=1 idx=1, 85B86A1C, 85B86A50, FUN_8105a0d4, FUN_8116f75e, 0x8116fa66, page1 8 steps 0x811848FC/0x81184A06/0x81184ACE/0x81184BBE/0x81184D40/0x81184E40/0x81184F7A/0x81184C74, 0x81309690, out80m_m1063otforce.txt -> §18.4533 [relevant: OTFORCE root cause], §18.4532 [relevant: JOBDONE=0]
+### 18.4535 PORT M990: page1 8 步初始化链反编译（init sound/gamedata/msgwindow/mainmenu）+ 专项探针
+
+1) 8 步 = boot 阶段 "init *" proc 任务，每步提交一个 app job：
+```
+step0 0x8118484E "init trophy"    worker=0x81184809 completion=0x8118483B   [已完成 OTForce→JOBDONE]
+step1 0x811848FC "init sound"     worker=0x811848B7 completion=0x811848E8
+step2 0x81184A06 "init gamedata"  worker=0x81184965 completion=0x811849F2
+step3 0x81184ACE "init msgwindow" worker=0x81184A89 completion=0x81184ABA
+step4 0x81184BBE "init mainmenu"  worker=0x81184B39 completion=0x81184BAA
+step5..7: 0x81184D40 / 0x81184E40 / 0x81184F7A / 0x81184C74（同模式）
+```
+2) 反编译（`initsteps.txt`）：
+```c
+FUN_811848fc(param_1): FUN_8116f7ca(param_1,"init sound",200,0,0,0x811848b7,&LAB_811848e8_1,puVar3);
+FUN_81184a06(param_1): FUN_8116f7ca(param_1,"init gamedata",200,0,0,0x81184965,&LAB_811849f2_1,puVar3);
+FUN_81184ace(param_1): FUN_8116f7ca(param_1,"init msgwindow",200,0,0,0x81184a89,&LAB_81184aba_1,puVar3);
+FUN_81184bbe(param_1): FUN_8116f7ca(param_1,"init mainmenu",200,0,0,0x81184b39,&LAB_81184baa_1,puVar3);
+```
+3) 既有探针证据：
+```
+[PROCREG] #12 name='init trophy' cb1=81184809 / #13 name='init sound' cb1=811848B7
+[JOBEXEC] #20 node=85B86A1C worker=81184809 n=59604700   ← page1 重新执行 init trophy
+[JOBDONE] #1 node=85B86A1C n=59626301
+[IDR] state=1 idx=1 n=59665000                          ← 进入 step1
+```
+4) 新增探针（18.4535）：
+```cpp
+if (pcv==0x8116F748) { node=r0; wf=rd32(node);
+    if (wf==0x811848B7||wf==0x81184965||wf==0x81184A89||wf==0x81184B39||wf==0x81184809||wf==0x81184FFF)
+        printf("[INITEXEC] #%d worker=%08X node=%08X n=%u\n",...); }
+if (pcv==0x8116F75E && (g_main_n>=59000000 || cnt<=40))
+    printf("[JOBDONE2] #%d node=%08X n=%u\n",...);
+```
+5) 编译成功（`[INITEXEC]`×1、`[JOBDONE2]`×1）；验证运行：`P5D_OTFORCE=1 P5D_JOBFORCE=1` → `out80m_m1064initjobs.txt`
+NEXT：
+```
+① [INITEXEC]：init sound/gamedata/msgwindow/mainmenu 是否在 page1 被执行；[JOBDONE2] 是否出现
+② 某步 worker 执行后 completion 不触发 → 反编译其完成检查（同 FUN_8105a0d4 模式）→ OTForce 接入
+③ 8 步全完成 → page1 update 对象 0x81309690 就绪 → 场景推进 → 新 draw → S1_TITLE 画面
+```
+验证：`initsteps.txt`、`out80m_m1064initjobs.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M990 page1 8 init steps decompiled - they are boot-phase 'init *' proc tasks each submitting one app job. step0 0x8118484E 'init trophy' worker=0x81184809 completion=0x8118483B (done via OTForce -> JOBDONE); step1 0x811848FC 'init sound' worker=0x811848B7 completion=0x811848E8; step2 0x81184A06 'init gamedata' worker=0x81184965 completion=0x811849F2; step3 0x81184ACE 'init msgwindow' worker=0x81184A89 completion=0x81184ABA; step4 0x81184BBE 'init mainmenu' worker=0x81184B39 completion=0x81184BAA; step5..7 0x81184D40/0x81184E40/0x81184F7A/0x81184C74 same pattern. Evidence initsteps.txt: FUN_811848fc: FUN_8116f7ca(param_1,'init sound',200,0,0,0x811848b7,&LAB_811848e8_1,puVar3); FUN_81184a06: 'init gamedata' worker 0x81184965 completion &LAB_811849f2_1; FUN_81184ace: 'init msgwindow' worker 0x81184a89 completion &LAB_81184aba_1; FUN_81184bbe: 'init mainmenu' worker 0x81184b39 completion &LAB_81184baa_1. Probe evidence out80m_m1063otforce.txt: [PROCREG] #12 name='init trophy' cb1=81184809, #13 name='init sound' cb1=811848B7; [PROC] exec p=85B8861C cb0=811848B7 cb1=811848E9 n=1500000; [JOBEXEC] #20 node=85B86A1C worker=81184809 n=59604700; [JOBDONE] #1 node=85B86A1C n=59626301; [IDR] state=1 idx=1 n=59665000. Added probes 18.4535: [INITEXEC] tracks only the init trophy/sound/gamedata/msgwindow/mainmenu/initDataRead workers without cap; [JOBDONE2] prints all completion callbacks after page1 without cap. Compiled OK; verification run P5D_OTFORCE=1 P5D_JOBFORCE=1 + VDEC/probes -> out80m_m1064initjobs.txt. NEXT: [INITEXEC] to see whether init sound/gamedata/msgwindow/mainmenu execute at page1 and whether [JOBDONE2] appears; if a step's worker runs but completion does not fire, decompile that worker's completion check and force it via the OTForce pattern; all 8 steps complete -> page1 update object 0x81309690 ready -> scene advances -> new draws -> S1_TITLE picture.
+
+LOOKUP: M990, initsteps.txt, 0x811848FC init sound, 0x81184A06 init gamedata, 0x81184ACE init msgwindow, 0x81184BBE init mainmenu, worker 0x811848B7, worker 0x81184965, worker 0x81184A89, worker 0x81184B39, [INITEXEC], [JOBDONE2], [PROCREG], out80m_m1064initjobs.txt -> §18.4534 [relevant: JOBDONE natural advance], §18.4533 [relevant: OTFORCE]

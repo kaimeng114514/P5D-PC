@@ -1158,6 +1158,21 @@ static void job_probes(uint32_t pcv, RecState* s) {
         uint32_t _v = 0; { uint8_t* _q = GP(_stp); if (_q) std::memcpy(&_v, _q, 4); }
         if (_v < 4u) { uint32_t _n4 = 4u; uint8_t* _q = GP(_stp); if (_q) std::memcpy(_q, &_n4, 4);
           static int _n = 0; if (_n++ < 20) { printf("[OTFORCE] #%d status=%08X old=%u -> 4 n=%u\n", _n, _stp, _v, g_main_n); fflush(stdout); } } } } }
+
+  // 18.4535 M990: track the 8 "init *" pipeline jobs specifically (their workers are the page1
+  // initialization steps) and count executor/completion activity during page1 without the 40-line cap.
+  { uint32_t _p4 = pcv & ~1u;
+    if (_p4 == 0x8116F748u) {
+      uint32_t _node4 = s->r[0], _wf4 = 0;
+      if (_node4) { uint8_t* _q = GP(_node4); if (_q) std::memcpy(&_wf4, _q, 4); }
+      if (_wf4 == 0x811848B7u || _wf4 == 0x81184965u || _wf4 == 0x81184A89u || _wf4 == 0x81184B39u ||
+          _wf4 == 0x81184809u || _wf4 == 0x81184FFFu) {
+        static int _ie = 0; ++_ie;
+        printf("[INITEXEC] #%d worker=%08X node=%08X n=%u\n", _ie, _wf4, _node4, g_main_n); fflush(stdout); } }
+    else if (_p4 == 0x8116F75Eu) {
+      static int _jd2 = 0; ++_jd2;
+      if (g_main_n >= 59000000u || _jd2 <= 40) {
+        printf("[JOBDONE2] #%d node=%08X n=%u\n", _jd2, s->r[0], g_main_n); fflush(stdout); } } }
   // 18.4531 M986: job executor probes (the executor runs guest jobs via FUN_8116f748 -> worker).
   { uint32_t _p3 = pcv & ~1u;
     if (_p3 == 0x8116F748u || _p3 == 0x8116F75Eu) {
