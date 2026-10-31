@@ -1299,6 +1299,12 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
   { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _p1_env = -1; if (_p1_env < 0) { const char* _e = getenv("P5D_P1TICK"); _p1_env = (_e && atoi(_e)) ? 1 : 0; }
+    if (_p1_env && g_main_n >= 59500000u && (g_main_n % 1000000u) < 2000u) { static uint32_t _p1_last = 0;
+      if (g_main_n - _p1_last >= 1000000u) { _p1_last = g_main_n;
+        uint32_t _ctr=0,_seq=0,_cur=0,_str=0; { uint8_t* _q=GP(0x816CC63Cu); if(_q) std::memcpy(&_ctr,_q,4); }
+        { uint8_t* _q=GP(0x813B01A8u); if(_q) std::memcpy(&_seq,_q,4); }
+        printf("[P1] n=%u ctr=%u seq=%08X pc=%08X fib=%08X gxm(b/e/p)=%u/%u/%u\n", g_main_n, _ctr, _seq, g_cur_block, g_cur_fiber, g_gxm_begin_n, g_gxm_end_n, g_gxm_present_n); fflush(stdout); } } }
   { static int _wk_env = -1; if (_wk_env < 0) { const char* _e = getenv("P5D_WAKE57"); _wk_env = (_e && atoi(_e)) ? 1 : 0; }
     if (_wk_env && g_main_n >= 59500000u) { static uint32_t _wkc = 0;
       if ((++_wkc & 0x7FFu) == 0u) {   // 18.4467: wake the CRI loader workers waiting on event flags 60018000/6001A000/6001C000
