@@ -949,6 +949,44 @@
 | M931 | §18.4476: **RINIT 未触发（崩溃早于 59.5M 阈值）→ 改为在 `FUN_811EBF94` 入口自动初始化；并定位到真正初始化者 `FUN_811F043E`（fragment program setter）**。`out62m_m1014rinit.txt`（RINIT=1）：`[RINIT]` 0 条——因为崩溃发生在 **n≈59.454M**，而 RINIT 阈值是 `n>=59.5M`，太晚未触发。反编译找到渲染状态初始化链：
 | M932 | §18.4477: **探针判定：RINIT 的零表被 `FUN_811F043E` 覆盖回 0 —— 真正原因是 fragment state 对象字段为 0（shader program 未建立）；RINIT v2 同时写对象字段 +8/+idx*0xC+8**。`out62m_m1015rinit2.txt`（n=59,454,976，第一帧）探针：
 | M933 | §18.4478: ★★★★★ **RINIT v2 成功：BADMEM 消失（`[BADMEM]` 0），page1 恢复推进并持续产生 IDR 事件（n 59.45M→59.73M+），运行继续到 62M 上限**。`out62m_m1016rinit3.txt`（RINIT v2）关键证据：
+| M934 | §18.4479: ★★★★★★ **找到"首帧可见"缺失的整块拼图：SPIR-V 着色器资产与管线选择机制在磁盘上完整存在，只是我们的 AOT harness 从未接线**。证据与发现：
+1) `out62m_m1016rinit3.txt` err 尾部显示 **draw 已尝试**：
+```
+[FRAMEBEGIN] frame=1 img=0 cmd=...
+[WARN] [STUB] sceGxmSetViewport called - NOT IMPLEMENTED
+[ERROR] gxm_draw_arrays: no graphics pipeline bound      <- 唯一缺的就是 pipeline 绑定
+[WARN] [STUB] sceGxmDisplayQueueAddEntry called - NOT IMPLEMENTED
+```
+2) 后端 `vulkan_backend.cpp` 已有完整真实管线机制：
+   - `get_or_create_real_pipeline(vpath, fpath)`（加载两个 SPIR-V 文件 → vkCreateGraphicsPipelines，带混合/写掩码处理），
+     `select_real_pipeline(vpath,fpath)` 包装、`g_current_real_pipe` 全局供 draw 使用；
+   - `gxm_draw_arrays` 在 `g_current_real_pipe==0` 时报 "no graphics pipeline bound"。
+3) **磁盘上有完整 SPIR-V 资产**：`C:\dev\p5d_build\spv_all\` = **4,332 个 .spv** + `gxp_manifest.txt`（4,331 行 hash→文件名），格式：
+```
+# P5D GXP content-hash manifest (FNV-1a64 over first size bytes of SceGxmProgram)
+# hash stage spv
+26F80E96E57EB001 frag gxp_frag_0000.gxp.spv
+BEEA90FD4B545170 frag gxp_frag_0001.gxp.spv
+...
+```
+   `C:\dev\p5dsrc\assets\gxp_library\` 还有 4,331 对 .gxp+.spv。
+4) **哈希算法与接线原型**在 `p5dsrc\src\loader\eboot_probe.cpp`（前人完整实现）：
+   - `gxp_hash_cached(gxp)`：校验 `*(u32*)gxp == 0x00505847 ("GXP\0")`，取 `sz=*(u32*)(gxp+8)`，
+     对**程序字节前 sz 字节**做 **FNV-1a 64**（`h=0xcbf29ce484222325; h^=byte; h*=1099511628211`）；
+   - `h121_load_man()`：加载 `spv_all/gxp_manifest.txt` 到 `hash → spv 文件名` 映射；
+   - draw 时：`g_cur_vgxp`/`g_cur_fgxp`（来自 `sceGxmSetVertexProgram`/`SetFragmentProgram` 的
+     `SceGxm{Vertex,Fragment}Program.program @+0`）→ 哈希 → `select_real_pipeline("spv_all/"+name, ...)`；
+   - 另有 `set_fragment_blend` 按片元程序设置混合状态。
+5) 我们的 ABI 层现状：`SetVertexProgram`(0x812B12E0/NID 31FF8ABD)、`SetFragmentProgram`(NID AD2F48D9) 已调用后端；
+   但**没有**做 GXP 捕获/哈希/`select_real_pipeline`；`sce_gxm.cpp` 的 ShaderPatcher 系列本身是 STUB_LOG 占位，
+   因此 app 的 program 句柄为 0（`w4=0`），draw 时无 pipeline。
+**下一步实现（M935 起）**：
+  a) 在 `gxm_abi.cpp` 增加：manifest 懒加载（`spv_all/gxp_manifest.txt`，回退 `C:/dev/p5d_build/spv_all/`）；
+     `SetVertexProgram`/`SetFragmentProgram` 里从 guest program 对象取 program@+0 → FNV-1a64 → 记录当前 v/f 名字；
+  b) 在 draw 入口（`sceGxmDraw*` ABI 处理）先调用 `p5d::vulkan::select_real_pipeline("spv_all/v", "spv_all/f")`，
+     并 `set_fragment_blend`；
+  c) 跑 62M：预期 `[REAL-PIPE]` 出现、`[FRAMEBEGIN]`→draw→`EndScene`→present，得到**首帧可见画面**。 |
+| §18.4479 | Found the missing piece for the first visible frame: the SPIR-V shader assets and the pipeline-selection mechanism exist on disk, but our AOT harness never wired them. Evidence: out62m_m1016rinit3.txt err tail shows a draw attempt: [FRAMEBEGIN] frame=1; [WARN] [STUB] sceGxmSetViewport NOT IMPLEMENTED; [ERROR] gxm_draw_arrays: no graphics pipeline bound; [WARN] [STUB] sceGxmDisplayQueueAddEntry NOT IMPLEMENTED. The backend vulkan_backend.cpp already has the real pipeline machinery: get_or_create_real_pipeline(vpath,fpath) (loads two SPIR-V files -> vkCreateGraphicsPipelines with blend/writemask handling), select_real_pipeline(vpath,fpath), and the g_current_real_pipe global used by draws; gxm_draw_arrays logs 'no graphics pipeline bound' when g_current_real_pipe==0. The disk has the complete SPIR-V assets: C:\dev\p5d_build\spv_all\ = 4,332 .spv + gxp_manifest.txt (4,331 lines hash->filename, header '# P5D GXP content-hash manifest (FNV-1a64 over first size bytes of SceGxmProgram)' / '# hash stage spv', e.g. '26F80E96E57EB001 frag gxp_frag_0000.gxp.spv'); C:\dev\p5dsrc\assets\gxp_library\ also has 4,331 .gxp+.spv pairs. The hash algorithm and the wiring prototype live in p5dsrc\src\loader\eboot_probe.cpp: gxp_hash_cached(gxp) validates *(u32*)gxp==0x00505847 ('GXP\0'), takes sz=*(u32*)(gxp+8), FNV-1a64 over the first sz program bytes (h=0xcbf29ce484222325; h^=byte; h*=1099511628211); h121_load_man() loads spv_all/gxp_manifest.txt into a hash->spv-name map; at draw time g_cur_vgxp/g_cur_fgxp (captured in sceGxmSetVertexProgram/SetFragmentProgram from SceGxm{Vertex,Fragment}Program.program @+0) are hashed and select_real_pipeline('spv_all/'+name, ...) is called; there is also set_fragment_blend. Our ABI layer currently calls the backend for SetVertexProgram (0x812B12E0/NID 31FF8ABD) and SetFragmentProgram (NID AD2F48D9) but does NOT capture/hash the GXP or call select_real_pipeline, and sce_gxm.cpp's ShaderPatcher functions are STUB_LOG placeholders, so app program handles are 0 (w4=0) and draws have no pipeline. NEXT (M935+): (a) in gxm_abi.cpp add lazy manifest load (spv_all/gxp_manifest.txt, fallback C:/dev/p5d_build/spv_all/) and capture current v/f spv names from the guest program objects at SetVertex/FragmentProgram; (b) in the draw entry (sceGxmDraw* ABI handler) call p5d::vulkan::select_real_pipeline('spv_all/v','spv_all/f') plus set_fragment_blend; (c) run 62M and expect [REAL-PIPE], draw, EndScene, present -> first visible frame. |
 ```
 [RINIT] g2C was 0 -> set 85B85000; fragobj=84B33570(field+8), vertobj=84B33480(idx=0,+8) (n=59454976)
 [FUNC43E] #0 obj=84B33570 w4=00000000 w8=85B85000 w48=00000000 g28=00000000 g2C=85B85000
@@ -487770,3 +487808,53 @@ err: [FRAMEBEGIN] frame=1 img=0 cmd=...
 ANTI-FORGETTING ENTRY. Keywords: M933 RINIT v2 eliminated the BADMEM: out62m_m1016rinit3.txt (P5D_RINIT=1 v2) shows [RINIT] g2C was 0 -> set 85B85000; fragobj=84B33570(field+8), vertobj=84B33480(idx=0,+8); [FUNC43E] obj=84B33570 w4=0 w8=85B85000 w48=0 g28=0 g2C=85B85000; [HELPER6A] r0=85B85100 r1=0x1B r2=85B85000 (no longer 0); err [BADMEM] 0 lines; err [FRAMEBEGIN] frame=1; [IDR] 11 events at=81184FFE state=2 idx=0 handle=0xC8 r0=85B846EC at n=59452293/59472490/59493022/59513113/59533103/59553085/59573109...; [FRAMEDUMP] n=59640000 ctr=9 pc=8127BB28 blk=8127B370; [THREXIT] 0, [INDIRECT-MISS] 0. Conclusions: RINIT v2 cancels the FUN_811F043E/FUN_811EFD8E overwrites by writing the zero table into the state-object fields, so the BADMEM is gone and page1 resumes advancing with IDR events at ~20k n cadence; still no [FRAMEEND]/present because the app shader/program state remains 0 (w4=0 fragment program pointer) so real draw calls are skipped; the run continues to the 62M limit. NEXT: read final result (page1 completion/page switch via [SEQST] cur, [IDR] handle changes, [TITLEMOV]); and really fix GXM ShaderPatcher HLE (sceGxmShaderPatcherCreateFragmentProgram 0x812B1350/NID 4ED2E49D, CreateVertexProgram, RegisterProgram) to return nonzero fake handles written to their out params so the app render state program/uniform fields become nonzero -> real drawing/EndScene/present.
 
 LOOKUP: 0x84B33570, 0x84B33480, 0x816CD120, 0x816CCFB0, 0x811F043E, 0x811EFD8E, 0x812B1350, 0x4ED2E49D, out62m_m1016rinit3.txt -> §18.4477 [relevant: RINIT v2], §18.4476 [relevant: FUN_811F043E]
+### 18.4479 PORT M934: 首帧缺失拼图 = SPIR-V 资产 + 管线选择（磁盘已有，未接线）
+
+1) `out62m_m1016rinit3.txt` err 尾部：
+```
+[FRAMEBEGIN] frame=1 img=0 cmd=...
+[WARN] [STUB] sceGxmSetViewport called - NOT IMPLEMENTED
+[ERROR] gxm_draw_arrays: no graphics pipeline bound      <- 唯一缺的环节
+[WARN] [STUB] sceGxmDisplayQueueAddEntry called - NOT IMPLEMENTED
+```
+2) `vulkan_backend.cpp` 已具备真实管线机制：
+- `get_or_create_real_pipeline(vpath, fpath)`：加载两个 SPIR-V 文件 → 创建管线（含混合/写掩码处理）；
+- `select_real_pipeline(vpath,fpath)` = 其包装；`g_current_real_pipe` 供 draw 使用；
+- `gxm_draw_arrays`：`g_current_real_pipe==0` 时报 "no graphics pipeline bound"。
+3) 磁盘资产（已存在）：
+```
+C:\dev\p5d_build\spv_all\          4332 个 .spv + gxp_manifest.txt (4331 行)
+# P5D GXP content-hash manifest (FNV-1a64 over first size bytes of SceGxmProgram)
+# hash stage spv
+26F80E96E57EB001 frag gxp_frag_0000.gxp.spv
+BEEA90FD4B545170 frag gxp_frag_0001.gxp.spv
+...
+C:\dev\p5dsrc\assets\gxp_library\   4331 对 .gxp + .spv
+```
+4) 哈希与接线原型（`p5dsrc\src\loader\eboot_probe.cpp`，前人实现）：
+```cpp
+// gxp_hash_cached
+if (*(u32*)gxp == 0x00505847 /* "GXP\0" */) {
+    sz = *(u32*)(gxp + 8);
+    h = 0xcbf29ce484222325ull;
+    for (i=0;i<sz;i++) { h ^= bytes[i]; h *= 1099511628211ull; }   // FNV-1a 64
+}
+// h121_load_man：读 spv_all/gxp_manifest.txt -> hash => spv 文件名
+// draw 时：g_cur_vgxp/g_cur_fgxp -> hash -> select_real_pipeline("spv_all/"+name,...)
+// SetVertexProgram/SetFragmentProgram 里捕获 SceGxm{Vertex,Fragment}Program.program @+0
+```
+5) 我们 ABI 层现状：`SetVertexProgram`(0x812B12E0/NID 31FF8ABD)、`SetFragmentProgram`(NID AD2F48D9) 已调用后端，
+但**没有** GXP 捕获/哈希/`select_real_pipeline`；`sce_gxm.cpp` 的 ShaderPatcher 系列是 STUB_LOG 占位 →
+app 的 program 句柄为 0（`w4=0`）→ draw 无 pipeline。
+6) 实施计划（M935 起）：
+```
+a) gxm_abi.cpp：懒加载 spv_all/gxp_manifest.txt（回退 C:/dev/p5d_build/spv_all/）；
+   SetVertexProgram/SetFragmentProgram 从 guest program 对象取 program@+0，FNV-1a64 → 当前 v/f spv 名；
+b) draw 入口（sceGxmDraw* ABI 处理）先 select_real_pipeline("spv_all/v","spv_all/f") + set_fragment_blend；
+c) 62M 运行验证：[REAL-PIPE] 出现 → draw → EndScene → present → **首帧可见画面**。
+```
+验证：`out62m_m1016rinit3.txt`（draw 尝试/no pipeline）、`spv_all/gxp_manifest.txt`、`eboot_probe.cpp`（gxp_hash_cached/h121_load_man/select_real_pipeline）。
+
+ANTI-FORGETTING ENTRY. Keywords: M934 first-visible-frame missing piece found: SPIR-V assets + pipeline selection exist on disk but are not wired into the AOT harness. out62m_m1016rinit3.txt err tail: [FRAMEBEGIN] frame=1; [WARN] [STUB] sceGxmSetViewport NOT IMPLEMENTED; [ERROR] gxm_draw_arrays: no graphics pipeline bound; [WARN] [STUB] sceGxmDisplayQueueAddEntry NOT IMPLEMENTED. Backend vulkan_backend.cpp has get_or_create_real_pipeline(vpath,fpath)/select_real_pipeline(vpath,fpath)/g_current_real_pipe; disk has C:\dev\p5d_build\spv_all\ with 4,332 .spv and gxp_manifest.txt (4,331 lines 'hash stage spv'; header '# P5D GXP content-hash manifest (FNV-1a64 over first size bytes of SceGxmProgram)'), plus C:\dev\p5dsrc\assets\gxp_library\ 4,331 .gxp+.spv pairs. Hash/wiring prototype in p5dsrc\src\loader\eboot_probe.cpp: gxp_hash_cached validates *(u32*)gxp==0x00505847 ('GXP\0'), sz=*(u32*)(gxp+8), FNV-1a64 over first sz bytes (h=0xcbf29ce484222325; h^=byte; h*=1099511628211); h121_load_man loads spv_all/gxp_manifest.txt into hash->spv map; at draw time g_cur_vgxp/g_cur_fgxp (captured in SetVertexProgram/SetFragmentProgram from SceGxm{Vertex,Fragment}Program.program @+0) are hashed and select_real_pipeline('spv_all/'+name,...) is called; set_fragment_blend exists. Our ABI layer calls backend for SetVertexProgram (0x812B12E0/NID 31FF8ABD) and SetFragmentProgram (NID AD2F48D9) but does not capture/hash GXP or call select_real_pipeline, and sce_gxm.cpp ShaderPatcher functions are STUB_LOG placeholders so app program handles are 0 (w4=0) and draws have no pipeline. NEXT: (a) gxm_abi.cpp lazy-load the manifest (spv_all/gxp_manifest.txt, fallback C:/dev/p5d_build/spv_all/), capture current v/f spv names from the guest program objects in SetVertex/FragmentProgram; (b) in the draw entry (sceGxmDraw* ABI handler) call p5d::vulkan::select_real_pipeline('spv_all/v','spv_all/f') + set_fragment_blend; (c) run 62M expecting [REAL-PIPE], draw, EndScene, present -> first visible frame.
+
+LOOKUP: spv_all/gxp_manifest.txt, gxp_hash_cached, h121_load_man, select_real_pipeline, get_or_create_real_pipeline, 0x00505847, 0x812B12E0, 31FF8ABD, AD2F48D9, eboot_probe.cpp -> §18.4478 [relevant: draw attempt], §18.4477 [relevant: shader state 0]
