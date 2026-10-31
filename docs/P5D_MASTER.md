@@ -985,6 +985,38 @@
 | M967 | §18.4512: ★★★★★★ **定位并修复纹理上传 `rc=-3` 的根因：`upload_gxm_control_resolved` 内部 `translate(data_byte_addr)` 失败——因为 HLE 堆 arena（heapA 0x84600000-0x8C600000 / bigarena 0x8C600000-0xA0000000 / regionB 0xA0000000-0xA2000000 / tail 0xA2000000-0xB0000000）只被 `GP()`（g_img+offset 直映射）认识，**从未注册进 `p5d::mem` 地址空间注册表**，而后端的 `p5d::mem::translate/contains` 只认注册表 → 纹理数据指针（如 `0x90029580`，落在 bigarena）被判定为"不在地址空间" → `return -3`。已把这 4 个窗口注册进 p5d::mem**。证据：
 | M968 | §18.4513: ★★★★★★★ **纹理数据通路彻底打通：`[ABITEX] unit=0 rc=0`（纹理解析成功）、`[TEXENT]/[TEXAT]` 真实上传成功（`W=256 H=512 lin=65536`，即 256×512、65536 字节纹理数据被后端上传到 Vulkan unit 0）**。M967 的 HLE 堆区注册修复生效（`[MEMREG] registered HLE arenas`）。page1 首帧 RT 仍黑（`disp_1 mean=0`）——但这是**淡入黑场覆盖层**（单一全屏三角形、片元常量黑），需更深运行观察后续帧。证据（`out80m_m1048memreg.txt`）：
 | M969 | §18.4514: ★★★★★★★★★ **【真实画面路径打通】利用已有的离线预解码 CRI 影片序列（`C:\dev\p5d_movies\title_c_p5d001_nv12.raw` 900 帧 / `open_c_p5d000_nv12.raw` 3084 帧，NV12 960x544×1.5=783,360 B/帧），实现「预解码帧 → guest BGRA scratch 纹理源 → P5D_TEXSRC=AUTO → 后端上传为采样纹理」的完整演示链路**（旧 host 的 `P5D_MOVIE_PRELOAD`/`[FAKEREAL]` 思路）。page1 每帧 DisplayQueueAddEntry 时推进影片帧：NV12→BT.601 BGRA 转换写入 `g_movie_va`（hle_malloc 960×544×4）→ `set_texsrc_addr(g_movie_va)`；后端 `upload_gxm_control_resolved` 在 `P5D_TEXSRC=AUTO` 下用该地址作为纹理数据上传。证据：
+| M970 | §18.4515: **影片喂入 run 结果：`[MOVIE]` 帧推进与 `set_texsrc_addr` 已执行（`file=title_c_p5d001_nv12.raw 900 frames scratch=99C67790`、`frame=0/900`、`frame=1/900`），但纹理上传仍是应用自己的 256×512（`[TEXAT] #1 unit=0 W=256 H=512 lin=65536 rc=0`），AUTO 覆盖未生效——根因是后端 `upload_gxm_control_resolved` 的 **TEXSRC 门控**：`P5D_TEXSRC_MOVIEONLY` 默认=1，只有 guest 真正 openMovie 之后（`p5d::vulkan::g_movie_opened`）才允许覆盖；另外 `P5D_TEXSRC=AUTO` 模式只上传 **Y 平面（灰度）**（`[TEXSRC] uploaded ... Y-mean=...`）。已改用后端成熟的 **`P5D_TEXSRC=NV12` 模式**（直接读预解码 NV12 文件、BT.601 转彩色 RGBA、按引擎帧推进、自动/强制影片源）重跑**。证据（`out80m_m1049movie.txt`）：
+```
+[MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790
+[MOVIE] frame=0/900 -> scratch=99C67790 set_texsrc_addr
+[MOVIE] frame=1/900 -> scratch=99C67790 set_texsrc_addr
+[TEXSRC] mode=2 src=0x1 960x544          ← AUTO 模式初始化
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580
+[TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0    ← 仍是 app 纹理（未被影片帧替换）
+disp_1 STATS: mean=0.00 max=0
+```
+**后端 TEXSRC 门控（`vulkan_backend.cpp` upload_gxm_control_resolved）**：
+```cpp
+if(_ts==2) _ta=g_texsrc_auto;            // AUTO：用最新解码帧地址
+bool _allow=true;
+// ... P5D_TEXSRC_FH / UNIT / EXCL_FH(默认排除 present pass 57ABAA38F7202FA8) 门控 ...
+// ★ P5D_TEXSRC_MOVIEONLY 默认 1：guest 真正 openMovie 前不覆盖（保住 ATLUS/P-STUDIO/CRIWARE LOGO）
+if(_mo && !p5d::vulkan::g_movie_opened) _allow=false;
+if(_ts && p5d_movie_layer_active) _allow=false;
+if(_ts==3 && _allow){ ... NV12→RGBA 彩色路径（含自动切片源/帧推进/播完即停）... }
+```
+**重跑参数（18.4515）**：
+```
+P5D_TEXSRC=NV12
+P5D_TEXSRC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw
+P5D_TEXSRC_WH=960x544
+P5D_TEXSRC_MOVIEONLY=0        （解除 openMovie 门控）
+P5D_TEXSRC_SYNC=draw          （按引擎帧推进，避免墙钟导致时机错）
+P5D_TEXSRC_DIV=1
+```
+已启动 80M 运行：`out80m_m1050nv12.txt`。
+NEXT：`[TEXSRC-NV12] file=... frames=900`、`[TEXSRC-T0]`/`[TEXSRC]` 上传彩色帧 → RT/窗口出现**真实彩色影片画面**（title movie）→ page1 真实内容首次上屏。 |
+| §18.4515 | Movie-feed run result: [MOVIE] frame advance and set_texsrc_addr executed (file=title_c_p5d001_nv12.raw 900 frames scratch=99C67790; frame=0/900; frame=1/900) but the texture upload still used the app's own 256x512 ([TEXAT] #1 unit=0 W=256 H=512 lin=65536 rc=0) - the AUTO override did not take effect. Root cause: the backend upload_gxm_control_resolved TEXSRC gates: P5D_TEXSRC_MOVIEONLY defaults to 1 and only allows overriding after the guest really opens a movie (p5d::vulkan::g_movie_opened); additionally P5D_TEXSRC=AUTO only uploads the Y plane (grayscale) ([TEXSRC] uploaded ... Y-mean=...). Switched to the backend's mature P5D_TEXSRC=NV12 mode (reads the pre-decoded NV12 file directly, BT.601 converts to color RGBA, advances by engine frame, auto/forced movie source) for the rerun. Evidence (out80m_m1049movie.txt): [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790; [MOVIE] frame=0/900 -> scratch=99C67790 set_texsrc_addr; [MOVIE] frame=1/900 -> ...; [TEXSRC] mode=2 src=0x1 960x544 (AUTO init); [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580; [TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0 (still the app texture, not replaced); disp_1 STATS mean=0.00 max=0. Backend TEXSRC gates (vulkan_backend.cpp upload_gxm_control_resolved): if(_ts==2) _ta=g_texsrc_auto; bool _allow=true; ... P5D_TEXSRC_FH/UNIT/EXCL_FH (default excludes the present pass 57ABAA38F7202FA8) ... if(_mo && !p5d::vulkan::g_movie_opened) _allow=false; if(_ts && p5d_movie_layer_active) _allow=false; if(_ts==3 && _allow){ ... NV12->RGBA color path with auto movie switching/frame advance/stop-at-end ... }. RERUN PARAMS 18.4515: P5D_TEXSRC=NV12; P5D_TEXSRC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw; P5D_TEXSRC_WH=960x544; P5D_TEXSRC_MOVIEONLY=0 (lift the openMovie gate); P5D_TEXSRC_SYNC=draw (advance by engine frame); P5D_TEXSRC_DIV=1; 80M run started out80m_m1050nv12.txt. NEXT: [TEXSRC-NV12] file=... frames=900, [TEXSRC-T0]/[TEXSRC] color-frame upload -> the RT/window should show the REAL COLOR MOVIE picture (title movie) -> page1 real content on screen for the first time. |
 1) 影片文件（已有，离线解码产物）：
 ```
 C:\dev\p5d_movies\title_c_p5d001_nv12.raw   705,024,000 B = 900 帧 × 783,360 B
@@ -490332,3 +490364,49 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M969 movie feed path - using the already-existing offline-decoded CRI movie sequences C:\dev\p5d_movies\title_c_p5d001_nv12.raw (705,024,000 B = 900 frames x 783,360 B) and open_c_p5d000_nv12.raw (2,415,882,240 B = 3084 frames x 783,360 B), both NV12 960x544x1.5 per frame, implemented the demo chain pre-decoded frame -> guest BGRA scratch texture source -> P5D_TEXSRC=AUTO -> backend uploads it as the sampled texture (old host P5D_MOVIE_PRELOAD/[FAKEREAL] approach). Implementation 18.4514 in recomp_harness.cpp: static uint32_t g_movie_va; static FILE* g_movie_fp; static long g_movie_frame,g_movie_frames; static unsigned g_movie_w=960,g_movie_h=544; static std::vector<uint8_t> g_movie_nv12; movie_maybe_init() opens P5D_MOVIE_FILE (default title_c_p5d001_nv12.raw), computes frame count, allocates g_movie_va=hle_malloc(w*h*4), prints [MOVIE] file=... frames=... scratch=...; movie_advance_frame() reads one NV12 frame, converts BT.601 limited-range to BGRA (r=(298Y+409V+128)>>8, g=(298Y-100U-208V+128)>>8, b=(298Y+516U+128)>>8), writes into GP(g_movie_va), calls set_texsrc_addr(g_movie_va), prints [MOVIE] frame=...; the DisplayQueueAddEntry handler calls movie_advance_frame() before present_frame(_data). Backend cooperation: P5D_TEXSRC=AUTO + P5D_TEXSRC_WH=960x544 so upload_gxm_control_resolved uses the latest decoded frame address (g_movie_va) as the texture data and prints [TEXSRC] uploaded 960x544 ... Y-mean=.... Build+link OK (binary contains [MOVIE]); 80M run started out80m_m1049movie.txt. NEXT: [MOVIE] frame=N and [TEXSRC] uploaded 960x544 Y-mean=... should appear and the RT capture/window should show the real MOVIE picture (title/opening) - the first real original-game picture content in this project; afterwards gate with P5D_TEXSRC_FH to the movie draw and continue page1 -> title page.
 
 LOOKUP: [MOVIE], P5D_MOVIE_FILE, title_c_p5d001_nv12.raw, open_c_p5d000_nv12.raw, 783360, set_texsrc_addr, P5D_TEXSRC=AUTO, P5D_TEXSRC_WH, [TEXSRC] uploaded, out80m_m1049movie.txt -> §18.4513 [relevant: texture upload working], §18.4510 [relevant: texture control block]
+### 18.4515 PORT M970: 影片帧替换未生效的根因（TEXSRC 门控）+ 改用 NV12 彩色模式重跑
+
+1) `out80m_m1049movie.txt`：
+```
+[MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790
+[MOVIE] frame=0/900 -> scratch=99C67790 set_texsrc_addr
+[MOVIE] frame=1/900 -> scratch=99C67790 set_texsrc_addr
+[TEXSRC] mode=2 src=0x1 960x544
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580
+[TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0     ← 仍是 app 纹理
+disp_1 STATS: mean=0.00 max=0
+```
+2) 后端门控（`upload_gxm_control_resolved`）：
+```cpp
+if(_ts==2) _ta=g_texsrc_auto;        // AUTO 用 set_texsrc_addr 的地址（灰度 Y 平面）
+bool _allow=true;
+// P5D_TEXSRC_FH / P5D_TEXSRC_UNIT / P5D_TEXSRC_EXCL_FH（默认排除 present pass 57ABAA38F7202FA8）
+// ★ P5D_TEXSRC_MOVIEONLY 默认 1：guest 真正 openMovie 前不覆盖（保住 ATLUS/P-STUDIO/CRIWARE LOGO）
+if(_mo && !p5d::vulkan::g_movie_opened) _allow=false;
+if(_ts && p5d_movie_layer_active) _allow=false;
+if(_ts==3 && _allow){ /* NV12→RGBA 彩色、自动切片源、按帧推进、播完即停 */ }
+```
+→ 我们的 page1 尚未 openMovie（`g_movie_opened` 未置位）→ `_allow=false` → 不替换。
+3) **改用 `P5D_TEXSRC=NV12`**（后端自带成熟彩色路径，直接用预解码文件）：
+```
+P5D_TEXSRC=NV12
+P5D_TEXSRC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw
+P5D_TEXSRC_WH=960x544
+P5D_TEXSRC_MOVIEONLY=0
+P5D_TEXSRC_SYNC=draw
+P5D_TEXSRC_DIV=1
+```
+4) 已启动 80M 运行：`out80m_m1050nv12.txt`。
+NEXT：
+```
+[TEXSRC-NV12] file=... frames=900
+[TEXSRC-T0] movie clock started ...
+[TEXSRC] uploaded 960x544 ... (彩色)
+→ RT/窗口出现真实彩色影片画面（title movie）
+→ page1 真实内容首次上屏
+```
+验证：`out80m_m1049movie.txt`、`out80m_m1050nv12.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M970 movie-frame override did not take effect because of the backend TEXSRC gates: P5D_TEXSRC_MOVIEONLY defaults to 1 and only allows overriding after the guest really opens a movie (p5d::vulkan::g_movie_opened); and P5D_TEXSRC=AUTO only uploads the Y plane (grayscale). Evidence out80m_m1049movie.txt: [MOVIE] file=C:/dev/p5d_movies/title_c_p5d001_nv12.raw 960x544 frames=900 scratch=99C67790; [MOVIE] frame=0/900 -> scratch=99C67790 set_texsrc_addr; [MOVIE] frame=1/900; [TEXSRC] mode=2 src=0x1 960x544; [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580; [TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0 (still the app texture); disp_1 STATS mean=0.00 max=0. Backend gates in upload_gxm_control_resolved: if(_ts==2) _ta=g_texsrc_auto; bool _allow=true; P5D_TEXSRC_FH/UNIT/EXCL_FH (default excludes present pass 57ABAA38F7202FA8); if(_mo && !p5d::vulkan::g_movie_opened) _allow=false; if(_ts && p5d_movie_layer_active) _allow=false; if(_ts==3 && _allow){ NV12->RGBA color path with auto source switching/frame advance/stop-at-end }. SWITCHED TO NV12 MODE (backend's mature color path reading the pre-decoded file directly): P5D_TEXSRC=NV12; P5D_TEXSRC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw; P5D_TEXSRC_WH=960x544; P5D_TEXSRC_MOVIEONLY=0; P5D_TEXSRC_SYNC=draw; P5D_TEXSRC_DIV=1; 80M run started out80m_m1050nv12.txt. NEXT: [TEXSRC-NV12] file=... frames=900; [TEXSRC-T0] movie clock started; [TEXSRC] uploaded 960x544 color -> the RT/window should show the REAL COLOR MOVIE picture (title movie) -> page1 real content on screen for the first time.
+
+LOOKUP: P5D_TEXSRC_MOVIEONLY, g_movie_opened, P5D_TEXSRC=NV12, P5D_TEXSRC_RAW, [TEXSRC-NV12], [TEXSRC-T0], P5D_TEXSRC_SYNC, P5D_TEXSRC_DIV, 57ABAA38F7202FA8, out80m_m1050nv12.txt -> §18.4514 [relevant: movie feed], §18.4513 [relevant: texture upload]
