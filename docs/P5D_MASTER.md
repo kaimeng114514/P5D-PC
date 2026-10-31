@@ -981,6 +981,29 @@
 | M963 | §18.4508: **真实画面决战运行结果：真实顶点数据 + 真实绘制 + 片元默认 UBO 捕获都发生了，但**顶点默认 UBO 未被捕获**（`[ABIUBO]` 只有 frag 一行）→ 真实 VS 仍拿 0 UBO → RT 全黑。** `out62m_m1044real.txt`：
 | M964 | §18.4509: ★★★★★★★★★ **【关键突破】Ghidra 反编译 `FUN_811EF610`/`FUN_811EFD8E`/`FUN_811EFE6A` 揭示：引擎所有 uniform 都是通过 `sceGxmSetUniformDataF`(0x812B13B0, NID 0x65DD0C84) 写入的（`FUN_811EFE6A` 内部直接调用它），而我们的 ABI 表里它是 STUB → 默认 UBO 永远全 0——这就是真实画面最后一块拼图！已实现真实 `sceGxmSetUniformDataF`（把数据写入 guest 默认 UBO，配合 M962 的 draw 时上传）**。反编译证据（`C:\dev\p5d_build\ghidra_out\ubomgr2.txt`，来自完整分析的 Ghidra 工程 `P5D_FULL`）：
 | M965 | §18.4510: **补齐纹理数据通路：根据 Ghidra 反编译 + 旧 host 的 Vita3K 权威位域公式，实现真实 `sceGxmTextureInit*` 控制块编码、`SetFragmentTexture`/`PrecomputedFragmentStateSetTexture` 绑定捕获、draw 时 `upload_gxm_control_resolved` 解析上传**。同时确认 M964 的 uniform 试验结果：page1 该 pass **不调用 `sceGxmSetUniformDataF`**（`[ABIUFD]` 0 行）——因为 page1 是全屏背景 pass，顶点数据本身已是 NDC（v0=(-1,-1,1) v1=(3,-1,1)），VS 直接透传、真正决定画面的是**片元纹理**（此前 `[TEXBIND] dummy=16` → 全黑）。证据：
+| M966 | §18.4511: **纹理决战运行 v2 结果分析：page1 首个 pass 的绘制确实只有 1 发全屏三角形（`[ABIVTX] vc=3 v0=(-1,-1,1) v1=(3,-1,1)`），纹理绑定发生在更早的影片相位（`[ABITEXB] frag unit=0 ctrl=852275C0 w0=80000000 w1=25008009 n=7024811`），上传失败 `[ABITEX] unit=0 rc=-3`；RT 截图全黑 —— 结合旧 host 证据，这一发很可能就是**页面淡入的纯黑覆盖层**（vert_0014/frag_0079 类：顶点色 0 + 片元常量 (0,0,0,1) + 乘性混合），不是错误**。并已把 RT 截图改为**前 8 次 DisplayQueueAddEntry 各存一帧**（`p5d_disp_N.bmp`）+ draw 日志上限提到 40，用 80M 深度运行观察 page1 后续帧（此前 62M 只覆盖 page1 开头 2.5M 块）。证据（`out62m_m1046tex.txt`）：
+```
+[ABITEXI] tex=816CBD7C data=8CF00000 fmt=0C000000 1024x544 mip=0 mask=60000000 n=1717
+[ABITEXI] tex=816CBD98 data=8D300000 ...   tex=851BB990 data=90005380 fmt=85000000 512x512 mask=20000000
+[ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811     ← 影片相位绑定
+[ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560   ← 纹理解析/上传失败 rc=-3
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+RT STATS: mean=0.00 max=0
+```
+分析：
+1) **page1 第一帧只执行 1 发 draw**（全屏三角形），随后就 DisplayQueueAddEntry（present）→ 说明这一发就是整帧内容（此阶段是淡入黑场/过渡，符合旧 host 记录的 "vert_0014+frag_0079 全屏黑填充"）；
+2) **纹理上传 rc=-3**：`upload_gxm_control_resolved` 内部失败（大概率是纹理格式/布局解析失败，w0=0x80000000 → 需查 backend 的 -3 返回点）；
+3) 需要看 page1 后续帧（更多 draw/不同 vc）才能判断画面是否开始出现内容 → 已启动 80M 深度运行。
+**诊断增强（18.4511）**：
+- DisplayQueueAddEntry 前 8 次各保存 RT：`p5d_disp_0.bmp` … `p5d_disp_7.bmp`（`[ABIRT] disp=N saved ...`）；
+- `[ABIVTX]` 日志上限 8 → 40（带 draw 序号），观察 page1 后续 draw 数量/顶点数变化。
+已启动 80M 深度运行（`out80m_m1047deep.txt`，约 page1 后 20M 块）。
+NEXT：读取 `p5d_disp_*.bmp` 颜色统计与 `[ABIVTX] #N` 序列：
+- 若后续帧出现非黑内容/更多 draw ⇒ **page1 渲染正在正常推进**（黑帧=淡入）；
+- 同时修 `[ABITEX] rc=-3`（纹理格式解析失败）→ 内容帧才能采到纹理。 |
+| §18.4511 | Texture decisive run v2 analysis: page1's first pass really executes only ONE draw (full-screen triangle [ABIVTX] vc=3 v0=(-1,-1,1) v1=(3,-1,1)); the texture binding happened earlier in the movie phase ([ABITEXB] frag unit=0 ctrl=852275C0 w0=80000000 w1=25008009 n=7024811) and the upload failed ([ABITEX] unit=0 rc=-3); the RT capture is all black - combined with the old host evidence this draw is very likely the page's black fade-in overlay (vert_0014/frag_0079 type: vertex color 0 + fragment constant (0,0,0,1) + multiplicative blend), not an error. Changed the RT capture to save one frame for each of the first 8 DisplayQueueAddEntry events (p5d_disp_N.bmp) and raised the draw-log cap to 40, and started an 80M deep run to observe page1's later frames (the 62M runs only covered the first 2.5M blocks of page1). Evidence (out62m_m1046tex.txt): [ABITEXI] tex=816CBD7C data=8CF00000 fmt=0C000000 1024x544 mip=0 mask=60000000 n=1717; tex=816CBD98 data=8D300000; tex=851BB990 data=90005380 fmt=85000000 512x512 mask=20000000; [ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811; [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; RT STATS mean=0.00 max=0. Analysis: (1) page1's first frame executes only 1 draw (full-screen triangle) then DisplayQueueAddEntry (present) -> this draw IS the whole frame content (a fade-in black transition, matching the old host's record of the vert_0014+frag_0079 full-screen black fill); (2) the texture upload returns rc=-3 from upload_gxm_control_resolved (most likely a texture format/layout resolve failure; w0=0x80000000 -> need to check the backend's -3 return points); (3) we need page1's later frames (more draws/different vc) to judge whether content appears -> 80M deep run started. DIAGNOSTIC ENHANCEMENTS 18.4511: save the RT for each of the first 8 DisplayQueueAddEntry calls as p5d_disp_0.bmp ... p5d_disp_7.bmp ([ABIRT] disp=N saved ...); raise the [ABIVTX] log cap from 8 to 40 (with draw index) to observe page1's later draw count/vertex counts. 80M deep run started (out80m_m1047deep.txt, ~20M blocks into page1). NEXT: read the p5d_disp_*.bmp color stats and the [ABIVTX] #N sequence: if later frames show non-black content/more draws then page1 rendering is progressing normally (the black frames are the fade-in); meanwhile fix [ABITEX] rc=-3 (texture format resolve failure) so content frames can sample textures. |
 1) M964 决战运行 `out62m_m1045uniform.txt`：
 ```
 [ABIUBO] frag ubo=85B85100
@@ -490065,3 +490088,44 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M965 texture data path - implemented real sceGxmTextureInit* control-block encoding (16 bytes: w0=(fmt&0x80000000)|(((mip-1)&0xF)<<17); w1=(fmt&0x1F000000)|(typeMask&0xE0000000), for swizzled tp==1||2 w1|=(lh&0xF)|((lw&0xF)<<12) else w1|=((h-1)&0xFFF)|(((w-1)&0xFFF)<<12); w2=data&0xFFFFFFFC; w3=((fmt>>12)&7)<<28; typeMask linear=0x60000000 tiled=0x80000000 swizzled=0x20000000 strided=0xC0000000 cube=0x40000000), SetFragmentTexture/PrecomputedFragmentStateSetTexture/vertex-variant binding capture into _frag_tex[16][16]/_vert_tex[16][16], and draw-time upload_gxm_control_resolved(unit,_frag_tex[unit]) printing [ABITEX] with rc/w0/w1/data; [ABITEXI] prints texture init, [ABITEXB] prints bindings. Texture API signatures: sceGxmTextureInitLinear/Tiled(texture,data,texFormat,width,height,mipCount) 6 args; sceGxmSetFragmentTexture(context,textureIndex,texture); sceGxmPrecomputedFragmentStateSetTexture(state,index,texture); vertex variants same shape. Also confirmed M964's uniform run: page1's pass does NOT call sceGxmSetUniformDataF ([ABIUFD] 0 lines) because it is a full-screen background pass with NDC vertex data ((-1,-1,1)/(3,-1,1)), so the picture depends on the FRAGMENT TEXTURE (previously all dummy -> black). Evidence out62m_m1045uniform.txt: [ABIUBO] frag ubo=85B85100; [ABIUBO] upload frag ubo first=(0,0,0,0); [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIVP] SetVertexProgram obj=8540C000; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; [ABIUFD] 0; RT STATS mean=0.00 max=0. Build+link OK (binary contains [ABITEXI]/[ABITEXB]/[ABITEX]); 62M decisive run v2 started out62m_m1046tex.txt (real vertices + real textures + real uniforms + real shaders). NEXT: if the RT capture shows game picture elements the REAL PICTURE succeeded; if still black check the [ABITEX] rc (resolve failure), swizzle/tiled decoding, and whether the fragment shader needs uniforms.
 
 LOOKUP: sceGxmTextureInitLinear, abi_tex_encode, SceGxmTexture control block, typeMask 0x60000000/0x80000000/0x20000000, [ABITEXI], [ABITEXB], [ABITEX], upload_gxm_control_resolved, out62m_m1045uniform.txt, out62m_m1046tex.txt -> §18.4509 [relevant: SetUniformDataF], §18.4507 [relevant: UBO capture]
+### 18.4511 PORT M966: page1 首帧=淡入黑场（1 发全屏三角形）；多帧 RT 捕获 + 80M 深度运行
+
+1) `out62m_m1046tex.txt`：
+```
+[ABITEXI] tex=816CBD7C data=8CF00000 fmt=0C000000 1024x544 mip=0 mask=60000000 n=1717
+[ABITEXI] tex=816CBD98 data=8D300000 ...
+[ABITEXI] tex=851BB990 data=90005380 fmt=85000000 512x512 mask=20000000
+[ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811
+[ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+RT STATS: mean=0.00 max=0
+```
+2) 分析：
+- page1 第一帧只执行 **1 发 draw**（全屏三角形）就 present → 这一发就是整帧内容 = **淡入黑场/过渡**（旧 host 记录过的 vert_0014+frag_0079 全屏黑填充，属正常）；
+- 纹理上传 `rc=-3`：`upload_gxm_control_resolved` 内部失败（格式/布局解析），w0=0x80000000 需查 backend 返回点；
+- 需要 page1 后续帧（更多 draw/不同 vc）判断内容是否出现。
+
+3) 诊断增强（18.4511）：
+```cpp
+// (a) DisplayQueueAddEntry 前 8 次各保存一帧 RT
+static int _disp_n = 0;
+if (_disp_n < 8) {
+    char _fn[64]; std::snprintf(_fn, sizeof(_fn), "p5d_disp_%d.bmp", _disp_n);
+    int _rr = p5d::vulkan::save_rt_screenshot(_data, _fn);
+    printf("[ABIRT] disp=%d saved %s cd=%08X rc=%d n=%u\n", _disp_n, _fn, _data, _rr, g_main_n);
+    _disp_n++;
+}
+// (b) [ABIVTX] 日志上限 8 -> 40（带 #draw 序号）
+```
+4) 编译链接成功；已启动 **80M 深度运行**：`out80m_m1047deep.txt`（约 page1 后 20M 块，约 27 分钟）。
+NEXT：
+- 读 `p5d_disp_*.bmp` 颜色统计 + `[ABIVTX] #N` 序列：
+  - 后续帧出现非黑内容/更多 draw ⇒ page1 渲染正常推进（黑帧=淡入）；
+  - 同时修 `[ABITEX] rc=-3`（纹理格式解析失败）→ 内容帧才能采样到纹理。
+验证：`out62m_m1046tex.txt`、`out80m_m1047deep.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M966 page1's first frame executes only 1 draw (full-screen triangle vc=3 v0=(-1,-1,1) v1=(3,-1,1)) then presents - this is the black fade-in overlay (old host recorded vert_0014+frag_0079 full-screen black fill: vertex color 0 + fragment constant (0,0,0,1) + multiplicative blend), so an all-black first RT capture is expected, not an error. Evidence out62m_m1046tex.txt: [ABITEXI] tex=816CBD7C data=8CF00000 fmt=0C000000 1024x544 mask=60000000 n=1717; [ABITEXI] tex=851BB990 data=90005380 fmt=85000000 512x512 mask=20000000; [ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811 (movie phase binding); [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560 (texture resolve/upload failure rc=-3); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; RT STATS mean=0.00 max=0. DIAGNOSTIC ENHANCEMENTS 18.4511: multi-frame RT capture - for each of the first 8 DisplayQueueAddEntry calls save p5d_disp_N.bmp with printf '[ABIRT] disp=%d saved %s cd=%08X rc=%d n=%u'; raise the [ABIVTX] cap from 8 to 40 with a draw index. 80M deep run started out80m_m1047deep.txt (~20M blocks into page1, ~27 min). NEXT: read the p5d_disp_*.bmp stats and the [ABIVTX] #N sequence: if later frames show non-black content/more draws then page1 rendering is progressing (black frames = fade-in); meanwhile fix [ABITEX] rc=-3 (texture format resolve failure) so content frames can sample textures.
+
+LOOKUP: [ABITEXI], [ABITEXB], [ABITEX] rc=-3, payload w0=80000000, p5d_disp_N.bmp, [ABIRT] disp, out80m_m1047deep.txt -> §18.4510 [relevant: texture path], §18.4509 [relevant: SetUniformDataF]

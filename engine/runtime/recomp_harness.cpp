@@ -1624,8 +1624,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (_dq && _data) {
           p5d::vulkan::present_frame(_data);
           static int _rtcap_done = 0;
+          static int _disp_n = 0;
+          if (_disp_n < 8) {
+            char _fn[64]; std::snprintf(_fn, sizeof(_fn), "p5d_disp_%d.bmp", _disp_n);
+            int _rr = p5d::vulkan::save_rt_screenshot(_data, _fn);
+            printf("[ABIRT] disp=%d saved %s cd=%08X rc=%d n=%u\n", _disp_n, _fn, _data, _rr, g_main_n); fflush(stdout);
+            _disp_n++;
+          }
           if (!_rtcap_done) { int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
-            if (_rr == 0) { _rtcap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp cd=%08X n=%u\n", _data, g_main_n); }
+            if (_rr == 0) { _rtcap_done = 1; }
             else { static int _rt = 0; if (_rt++ < 8) printf("[ABIRT] cd=%08X rc=%d\n", _data, _rr); } fflush(stdout); }
         }
         static int _dn = 0; if (_dn++ < 16) { printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n); fflush(stdout); }
@@ -1808,7 +1815,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
               ((float*)_src)[0], ((float*)_src)[1], ((float*)_src)[2], ((float*)_src)[3], g_main_n); fflush(stdout); } } }
           if (_ok) {
             int _rr = p5d::vulkan::upload_vertex_stream(_vtx.data(), (unsigned)(_vc*128u), _vc);
-            static int _vn=0; if (_vn++<8) { printf("[ABIVTX] vc=%u attrs=%u rc=%d n=%u v0=(%.3f,%.3f,%.3f,%.3f) v1=(%.3f,%.3f,%.3f,%.3f)\n",
+            static int _vn=0; if (_vn++<40) { printf("[ABIVTX] #%d vc=%u attrs=%u rc=%d n=%u v0=(%.3f,%.3f,%.3f,%.3f) v1=(%.3f,%.3f,%.3f,%.3f)\n", _vn,
               _vc, (unsigned)_av.size(), _rr, g_main_n, _vtx[0],_vtx[1],_vtx[2],_vtx[3], _vtx[32],_vtx[33],_vtx[34],_vtx[35]); fflush(stdout); }
           } else { static int _fn=0; if (_fn++<6) { printf("[ABIVTX] FAIL vc=%u attrs=%u cur_obj=%08X streams=%zu n=%u\n", _vc,(unsigned)_av.size(),_cur_vobj,_stm2va.size(),g_main_n); fflush(stdout); } }
         }
