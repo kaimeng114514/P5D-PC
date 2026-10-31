@@ -1532,12 +1532,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (g_fdclass_log_n++ < 8) { float fv; std::memcpy(&fv, &b, 4); printf("[FDCLASS] bits=%08X x=%g -> %u (RTABI)\n", b, (double)fv, r0); fflush(stdout); }
       break; }
     case 0x812B28E0u: {                                               // 18.4272: sceKernelGetProcessTimeWide() -> 64-bit wall-clock us in r0/r1 (NO out pointer!)
-      uint64_t tick = hle_tick_us();
+      static int _vt_env = -1; if (_vt_env < 0) { const char* _e = getenv("P5D_VTIME"); _vt_env = (_e && atoi(_e)) ? 1 : 0; }
+      uint64_t tick = _vt_env ? (g_vtime_extra + 1000000ull) : hle_tick_us();
+      if (_vt_env) { static int _vc=0; if (_vc++ < 6) { printf("[VCLOCK] procTimeWide=%llu lr=%08X\n", (unsigned long long)tick, s->r[14]); fflush(stdout); } }
       s->r[1] = (uint32_t)(tick >> 32); r0 = (uint32_t)tick;
       if (g_tick_log_n++ < 12) { printf("[CLOCK] procTimeWide=%llu lr=%08X\n", (unsigned long long)tick, s->r[14]); fflush(stdout); }
       break; }
     case 0x812B1EA0u: {                                               // 18.4272: sceRtcGetCurrentTick(out) -> write 64-bit tick if out is a guest pointer
-      uint64_t tick = hle_tick_us();
+      static int _vt_env2 = -1; if (_vt_env2 < 0) { const char* _e = getenv("P5D_VTIME"); _vt_env2 = (_e && atoi(_e)) ? 1 : 0; }
+      uint64_t tick = _vt_env2 ? (g_vtime_extra + 1000000ull) : hle_tick_us();
       uint8_t* p = GP(s->r[0]); if (p) { std::memcpy(p, &tick, 8); if (g_tick_log_n++ < 12) { printf("[CLOCK] rtcTick=%llu out=%08X lr=%08X\n", (unsigned long long)tick, s->r[0], s->r[14]); fflush(stdout); } }
       r0 = 0; break; }
     case 0x812B1EB0u: {                                               // 18.4272: sceAudioOutOutput -> 0 (no PCM yet; must not self-spin the audio thread)
