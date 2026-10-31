@@ -1143,6 +1143,21 @@ static void job_probes(uint32_t pcv, RecState* s) {
             _p, s->r[0], s->r[1], s->r[2], s->r[3], s->r[13], g_main_n); fflush(stdout); } } } }
 
 
+
+  // 18.4533 M988: P5D_OTFORCE - force the appOtNode "netTrophyProc" status check to succeed.
+  // FUN_8105a0d4() returns 3 < **(int**)(DAT_8132f984 + 0x34); DAT_8132f984 is the low-level job
+  // node submitted by FUN_8105a0ee("netTrophyProc"). Our HLE never advances that status, so the
+  // init-trophy app job can never complete (worker returns -1 forever -> [JOBDONE]=0).
+  { static int _ot = -1;
+    if (_ot < 0) { const char* _e = getenv("P5D_OTFORCE"); _ot = (_e && atoi(_e)) ? 1 : 0; }
+    if (_ot && (pcv & ~1u) == 0x8105A0D4u) {
+      uint32_t _node = 0, _stp = 0;
+      { uint8_t* _q = GP(0x8132F984u); if (_q) std::memcpy(&_node, _q, 4); }
+      if (_node) { uint8_t* _q = GP(_node + 0x34u); if (_q) std::memcpy(&_stp, _q, 4); }
+      if (_stp) {
+        uint32_t _v = 0; { uint8_t* _q = GP(_stp); if (_q) std::memcpy(&_v, _q, 4); }
+        if (_v < 4u) { uint32_t _n4 = 4u; uint8_t* _q = GP(_stp); if (_q) std::memcpy(_q, &_n4, 4);
+          static int _n = 0; if (_n++ < 20) { printf("[OTFORCE] #%d status=%08X old=%u -> 4 n=%u\n", _n, _stp, _v, g_main_n); fflush(stdout); } } } } }
   // 18.4531 M986: job executor probes (the executor runs guest jobs via FUN_8116f748 -> worker).
   { uint32_t _p3 = pcv & ~1u;
     if (_p3 == 0x8116F748u || _p3 == 0x8116F75Eu) {

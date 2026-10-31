@@ -1003,6 +1003,40 @@
 | M985 | §18.4530: ★★★★★★ **job worker 真实执行点已反编译 + 实现 `P5D_JOBINLINE`（在强制完成前真正调用 worker 回调，让初始化工作真正发生）**。反编译：`FUN_8116f748(node)` = `DAT_815554c0=node; (*(code*)*node)(); DAT_815554c0=0;` → **job 节点的 [0] 字段就是 worker 回调（无参数调用）**；`FUN_8116f75e(node)` = `DAT_815554c0=node; (**(code**)(node+4))();` → **node[1] = 完成回调**，随后从 DAT_815554c4/c8 链表摘除并释放。job 节点（0x1C 字节）布局：`[0]=worker fn, [1]=completion fn, [2]=arg, [3]=FUN_8116f9dc 返回的池节点指针（完成状态）`。init trophy 提交：worker=`0x81184809`（FUN_81184808→FUN_8102d53c/FUN_8102d544 奖杯初始化）、completion=`0x8118483b`；page1 start 的 initDataRead：worker=`0x81184fff`、completion=`LAB_811850da_1`。**实现（18.4530，job_probes）**：当 `P5D_JOBINLINE=1` 且检测到 job 状态机在等未完成 job（state>=2、job+0xC!=0）时，先读 `node[0]`（worker）并 `call_guest_cb(s, worker, 0, 400000)` 真正执行，再让 JOBFORCE 清 `job+0xC` 推进：
 | M986 | §18.4531: **`P5D_JOBINLINE` 试验结果：worker 回调被递归调用导致挂死——但由此确认「job 执行器本来就在 guest 内运行」**。`out80m_m1061jobinline.txt`：
 | M987 | §18.4532: ★★★★★★★ **job 执行器探针结果：page1 确实在执行 job worker（`[JOBEXEC]` 40+ 条，含 init trophy），但 `[JOBDONE]` = 0 → 完成路径 `FUN_8116f75e` 从未被进入 ⇒ 所有 job 永远"未完成"，状态机只能靠 JOBFORCE 强推**。证据（`out80m_m1062jobprobe.txt`）：
+| M988 | §18.4533: ★★★★★★★ **找到 init trophy 永不完成的直接原因：`appOtNode` 的 "netTrophyProc" 状态检查 `FUN_8105a0d4` 永远返回 false（status<4）→ worker 返回 -1 → app job 永不完成**。反编译：
+1) `FUN_8105a0ee(param_1)`（trophy/otNode 初始化）：
+```c
+if (DAT_8132F984 == 0) {
+    DAT_8132F980 = 0;
+    iVar1 = FUN_811da534(0xdc);                 // 分配 0xDC 字节状态节点
+    SceLibc_6DC1F0D8(iVar1,0,0xdc);             // memset
+    if (iVar1 != 0) {
+        DAT_8132F984 = FUN_811dab8c(param_1,"netTrophyProc",0,0,0,0,
+                                    0x8105a261 /*worker*/,0,&LAB_8105a408_1 /*completion*/, iVar1);
+        return DAT_8132F984; } }
+return 0;
+```
+2) `FUN_8105a0d4()`（完成判定）：
+```c
+return 3 < **(int **)(DAT_8132F984 + 0x34);   // status 指针 = *(node+0x34)；要求 status[0] >= 4
+```
+3) 调用链：init trophy worker `0x81184809` → `FUN_81184808`：
+```c
+iVar2 = FUN_8102d544();          // → FUN_8102d55e → FUN_8105a0d4()
+if (iVar2 == 0) return 0;        // 成功
+return 0xffffffff;               // 失败 → app job 永不完成（[JOBDONE]=0 的根因）
+```
+4) **实现 `P5D_OTFORCE`（18.4533）**：在 guest 进入 `0x8105A0D4` 时把 status[0] 置为 4：
+```cpp
+if (P5D_OTFORCE && (pcv&~1u)==0x8105A0D4u) {
+    node = rd32(0x8132F984);                       // 低层 job 节点
+    stp  = node ? rd32(node+0x34) : 0;             // status 指针
+    if (stp && rd32(stp) < 4) { wr32(stp, 4); printf("[OTFORCE] status=%08X old=%u -> 4"); } }
+```
+→ `FUN_8105a0d4` 返回 true → worker 返回 0 → **app job 自然完成（走 0x8116fa66 → FUN_8116f75e 完成路径）** → `FUN_8116f8d2` 返回 0 → **page1 状态机自然推进（不再需要 JOBFORCE）**。
+编译成功（`[OTFORCE]`×1）；已启动验证运行：`P5D_OTFORCE=1`（JOBFORCE/JOBINLINE 全关 + VDEC/probes）→ `out80m_m1063otforce.txt`。
+NEXT：`[OTFORCE]` 出现 → `[JOBDONE]` 出现（完成路径打通）→ `[IDR] state/idx` 自然推进 → page1 新 draw/present → 场景对象出现 → S1_TITLE 画面。 |
+| §18.4533 | Found the direct reason init trophy never completes: the appOtNode 'netTrophyProc' status check FUN_8105a0d4 always returns false (status<4) -> the worker returns -1 -> the app job never completes. Decompiled: (1) FUN_8105a0ee(param_1) (trophy/otNode init): if (DAT_8132F984 == 0) { DAT_8132F980 = 0; iVar1 = FUN_811da534(0xdc) (alloc 0xDC-byte status node); SceLibc_6DC1F0D8(iVar1,0,0xdc) (memset); if (iVar1 != 0) { DAT_8132F984 = FUN_811dab8c(param_1,'netTrophyProc',0,0,0,0, 0x8105a261 /*worker*/,0,&LAB_8105a408_1 /*completion*/, iVar1); return DAT_8132F984; } } return 0;. (2) FUN_8105a0d4() (completion check): return 3 < **(int**)(DAT_8132F984 + 0x34); (status pointer = *(node+0x34); requires status[0] >= 4). (3) call chain: init trophy worker 0x81184809 -> FUN_81184808: iVar2=FUN_8102d544() (-> FUN_8102d55e -> FUN_8105a0d4()); if(iVar2==0) return 0; return 0xffffffff; (failure => app job never completes = root cause of [JOBDONE]=0). (4) P5D_OTFORCE (18.4533): at guest entry 0x8105A0D4 set status[0]=4: if(P5D_OTFORCE && (pcv&~1)==0x8105A0D4u){ node=rd32(0x8132F984); stp=node?rd32(node+0x34):0; if(stp && rd32(stp)<4){ wr32(stp,4); printf('[OTFORCE] status=%08X old=%u -> 4'); } } -> FUN_8105a0d4 returns true -> worker returns 0 -> the app job completes naturally (0x8116fa66 -> FUN_8116f75e completion path) -> FUN_8116f8d2 returns 0 -> page1 state machine advances naturally (no JOBFORCE needed). Compiled OK ([OTFORCE] x1); verification run P5D_OTFORCE=1 (JOBFORCE/JOBINLINE off + VDEC/probes) -> out80m_m1063otforce.txt. NEXT: [OTFORCE] appears -> [JOBDONE] appears (completion path works) -> [IDR] state/idx advances naturally -> page1 new draws/presents -> scene objects appear -> S1_TITLE picture. |
 ```
 [JOBEXEC] #8  node=85B846EC worker=81184FFF completion=811850DB n=59584015   ← initDataRead
 [JOBEXEC] #10 node=85B843AC worker=811857C3 completion=81185883 n=59585471
@@ -491810,3 +491844,49 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M987 job executor probe results: page1 really executes job workers ([JOBEXEC] 40+ entries incl. init trophy) but [JOBDONE] = 0 - the completion path FUN_8116f75e is never entered, so every job stays incomplete and the state machine can only be forced with JOBFORCE. Evidence out80m_m1062jobprobe.txt: [JOBEXEC] #8 node=85B846EC worker=81184FFF completion=811850DB n=59584015 (initDataRead); #10 node=85B843AC worker=811857C3 completion=81185883; #20 node=85B86A1C worker=81184809 completion=8118483B n=59604700 (init trophy really executed); #21 node=85A9E18C worker=811853C3; same nodes repeat periodically (#1~#12 node 85A8FC8C worker 81159CB1, #2~#13 node 85A9E13C worker 81185309) => the executor retries incomplete jobs every frame; [JOBDONE] 0; [JOBFORCE] #1 state=2 idx=0 job=85B86A1C old_j0C=84618110 -> 0 n=59624745; [SEQREQ] page=1; after that up to n=60.4M still 1 draw/present. Analysis: executor works (FUN_8116f748 executes workers incl. init trophy 0x81184809), same node repeats => retry loop, [JOBDONE]=0 => after the worker returns the executor still considers the job incomplete (very likely the worker returns an error code). init trophy worker chain: 0x81184809 -> FUN_81184808 -> FUN_8102d53c -> FUN_8102d554 -> FUN_8105a0ee(0); FUN_8102d544 -> FUN_8102d55e -> FUN_8105a0d4 ('appOtNode' trophy node module). FUN_81184808 logic: iVar2=FUN_8102d544(); if(iVar2==0) return 0; return -1; => if FUN_8105a0d4's underlying HLE returns an error the worker returns -1 => job never completes => infinite retry. NEXT: decompile FUN_8105a0ee/FUN_8105a0d4 to find the underlying HLE API and expected return values; fix that HLE (SceNpTrophy/SceNpManager/file) to return success so the worker returns 0 -> executor takes the 0x8116fa66 completion path -> [JOBDONE] appears; then FUN_8116f8d2 returns 0 -> page1 state machine advances naturally (no JOBFORCE) -> scene page update objects appear -> S1_TITLE picture.
 
 LOOKUP: [JOBEXEC], [JOBDONE], FUN_8116f748, FUN_8116f75e, 0x8116fa66, 0x81184809, FUN_81184808, FUN_8102d53c, FUN_8102d554, FUN_8105a0ee, FUN_8102d544, FUN_8102d55e, FUN_8105a0d4, appOtNode, out80m_m1062jobprobe.txt, trophyinit.txt -> §18.4531 [relevant: job executor], §18.4530 [relevant: worker callbacks]
+### 18.4533 PORT M988: init trophy 卡点根因 = netTrophyProc 状态检查恒 false；OTFORCE 强制完成
+
+1) `FUN_8105a0ee`（appOtNode trophy 初始化）反编译：
+```c
+if (DAT_8132F984 == 0) {
+    DAT_8132F980 = 0;
+    iVar1 = FUN_811da534(0xdc);                  // 0xDC 字节状态节点
+    SceLibc_6DC1F0D8(iVar1,0,0xdc);              // memset
+    if (iVar1 != 0) {
+        DAT_8132F984 = FUN_811dab8c(param_1,"netTrophyProc",0,0,0,0,
+                                    0x8105a261 /*worker*/,0,&LAB_8105a408_1 /*completion*/,iVar1);
+        return DAT_8132F984; } }
+return 0;
+```
+2) `FUN_8105a0d4`（完成判定）：
+```c
+return 3 < **(int **)(DAT_8132F984 + 0x34);      // status[0] 必须 >= 4
+```
+3) 失败链：
+```
+init trophy worker 0x81184809
+  → FUN_81184808
+      → FUN_8102d544 → FUN_8102d55e → FUN_8105a0d4()  // false ⇒
+      → return 0xFFFFFFFF                             // job 永不完成 ⇒ [JOBDONE]=0
+```
+4) **`P5D_OTFORCE`（18.4533）实现**：
+```cpp
+if (P5D_OTFORCE && (pcv & ~1u) == 0x8105A0D4u) {
+    node = rd32(0x8132F984);
+    stp  = node ? rd32(node + 0x34) : 0;
+    if (stp && rd32(stp) < 4) { wr32(stp, 4);
+        printf("[OTFORCE] #%d status=%08X old=%u -> 4 n=%u\n", ...); } }
+```
+→ `FUN_8105a0d4` 返回 true → worker 返回 0 → **app job 走正常完成路径**（0x8116fa66 → FUN_8116f75e）→ `FUN_8116f8d2` 返回 0 → **page1 状态机自然推进**
+5) 编译成功（`[OTFORCE]`×1）；验证运行：`P5D_OTFORCE=1`（JOBFORCE/JOBINLINE 全关）→ `out80m_m1063otforce.txt`
+NEXT：
+```
+① [OTFORCE] 出现 → [JOBDONE] 出现（完成路径打通）
+② [IDR] state/idx 自然推进（无需 JOBFORCE）
+③ page1 新 draw/present → 场景对象出现 → S1_TITLE 画面
+```
+验证：`otnode.txt`（Ghidra 反编译）、`out80m_m1063otforce.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M988 init trophy never completes because the appOtNode 'netTrophyProc' status check FUN_8105a0d4 always returns false (status<4) -> worker returns -1 -> app job never completes. FUN_8105a0ee(param_1): if(DAT_8132F984==0){ DAT_8132F980=0; iVar1=FUN_811da534(0xdc); SceLibc_6DC1F0D8(iVar1,0,0xdc); if(iVar1!=0){ DAT_8132F984=FUN_811dab8c(param_1,'netTrophyProc',0,0,0,0, 0x8105a261 worker,0,&LAB_8105a408_1 completion,iVar1); return DAT_8132F984; } } return 0;. FUN_8105a0d4(): return 3 < **(int**)(DAT_8132F984 + 0x34); (status pointer = *(node+0x34), requires status[0]>=4). Chain: init trophy worker 0x81184809 -> FUN_81184808 -> FUN_8102d544 -> FUN_8102d55e -> FUN_8105a0d4(); FUN_81184808: if(FUN_8102d544()==0) return 0; return 0xffffffff; (failure => job never completes => [JOBDONE]=0). P5D_OTFORCE (18.4533): if(P5D_OTFORCE && (pcv&~1)==0x8105A0D4u){ node=rd32(0x8132F984); stp=node?rd32(node+0x34):0; if(stp && rd32(stp)<4){ wr32(stp,4); printf('[OTFORCE] #%d status=%08X old=%u -> 4 n=%u'); } } -> FUN_8105a0d4 returns true -> worker returns 0 -> app job completes naturally (0x8116fa66 -> FUN_8116f75e) -> FUN_8116f8d2 returns 0 -> page1 state machine advances naturally (no JOBFORCE). Compiled OK ([OTFORCE] x1); verification run P5D_OTFORCE=1 (JOBFORCE/JOBINLINE off) -> out80m_m1063otforce.txt. NEXT: [OTFORCE] appears -> [JOBDONE] appears -> [IDR] state/idx advances naturally -> page1 new draws/presents -> scene objects appear -> S1_TITLE picture.
+
+LOOKUP: M988, P5D_OTFORCE, [OTFORCE], FUN_8105a0ee, FUN_8105a0d4, DAT_8132F984, DAT_8132F980, 0x8132F984, netTrophyProc, 0x8105a261, LAB_8105a408_1, FUN_8102d544, FUN_8102d55e, FUN_81184808, 0x81184809, out80m_m1063otforce.txt, otnode.txt -> §18.4532 [relevant: JOBDONE=0], §18.4531 [relevant: job executor]
