@@ -943,6 +943,47 @@
 | M925 | §18.4470: **BT57 栈回溯探针放错位置（在 hle_call 里，pacer 内无 HLE 调用 → 0 条）→ 移入 job_probes（有 pcv+sp），n≥60M 抽 6 次主栈样本；已重启 62M 长跑**。前一次 62M 长跑（`out62m_m1006bt57.txt`，P5D_BT57=1）：n 推进到 **60,865,000**（page1 内），但 `[BT57]` **0 条** —— 原因：BT57 代码被插在 `hle_call` 里且判定 `g_cur_block == 0x8127BB30`，而 CRI 帧节拍器 `FUN_8127BB30` 内部**不调用任何 HLE**（睡眠包装 `FUN_8127C0E8` 调用的是 `0x812B2A80`，此时 g_cur_block=0x812B2A80）→ 条件永不满足。**修复（18.4470）**：把 BT57 移到 `job_probes(pcv, s)`（每个执行块都调用，能拿到真实 pcv 与 s->r[13]），改为 `g_main_n >= 60,000,000` 后每 400k n 抽样一次（共 6 次），打印 pc/fib/thr/sp 并从 sp 向上扫描 0x800 字节，输出落在 `0x80600000..0x81260000`（app/底层代码区）的返回地址，用于还原 page1 驱动调用链。已重启 62M 长跑（`out62m_m1007bt57b.txt`）。NEXT: 读取 `[BT57]` 6 组栈样本 → 还原 page1 驱动函数 → 反编译定位等待条件 → 修复。 |
 | M926 | §18.4471: ★★★★★ **BT57 栈回溯成功 → 反编译定位 page1 卡点：`FUN_8122D91C` 是 CRI 异步加载驱动，`while(FUN_8128E9BC(op,&st), st==1) { ...; DelayThreadCB(10); }` —— page1 卡在 CRI 加载 op 状态永远为 1（busy）**。`[BT57]`（`out62m_m1007bt57b.txt`，n=60M..62M 共 5 组，高度一致）主栈返回链：
 | M927 | §18.4472: **CRIOP 首份数据：page1 在 n=59,634,683 提交了一个 CRI 异步加载 op（`op=84DAB768`），但状态查询函数 pc 落在基本块边界之外 → 改进探针为"记录 submit 的 op 指针 + 每 300k n dump op 结构 16 字"**。`out62m_m1008criop.txt`：
+| M928 | §18.4473: ★★★★★★ **重大根因：GFD job worker 线程因"信号量 token 不对齐"而死 → 反编译 `FUN_811E68C8` 证明 worker 取到 NULL 任务函数指针（`INDIRECT-MISS reg1=0 target=0 block=811E6928`，`[THREXIT] pc=FFFFFFFD lr=811E6936`，5 个线程 40012000–40016000 在 n=59,454,348 全死）；修复 WaitSema/SignalSema token 转移**。证据与推理链：
+1) `out62m_m1009criop2.txt` 中 `[THREXIT]`（5 条，n 定位 59,454,348）：
+```
+[TCREATE2] tid=40012000..40016000 entry=811E68C9 (GFD job workers)
+[SCREATE] obj=50013000 init=0 name='gfdJobCountSema'
+[SCREATE] obj=50014000 init=10240 name='gfdJobEmptySema'
+[SCREATE] obj=50015000 init=0 name='gfdJobCountSema'
+[SCREATE] obj=50016000 init=8 name='gfdJobEmptySema'
+[SEM] wait obj=50013000 need=1 have=0 thr=40012000
+[INDIRECT-MISS] reg1=00000000 target=00000000 block=811E6928
+[THREXIT] badblock tid=40012000 pc=FFFFFFFD lr=811E6936
+```
+2) 反编译 **`FUN_811E68C8`（GFD job worker）**：
+```c
+puVar2 = *(u32**)(param_2 + 4);            // 任务系统对象
+if (puVar2[4] != 2) {                       // +0x10 = stop flag
+  do {
+    FUN_812b27a0(*puVar2, 1, 0);            // WaitSema(gfdJobCountSema, 1, NULL)
+    FUN_81207344(puVar2 + 3);               // lock mutex(+0xC)
+    iVar3 = puVar2[7];                      // +0x1C read index
+    FUN_811e6a4c(&local_40, puVar2[5] + iVar3*0x20, 0x20);  // 复制 32 字节 job entry
+    ... iVar3++, wrap at puVar2[6](+0x18)
+    FUN_81207352(puVar2 + 3);               // unlock
+    (*local_40)(auStack_3c);                // ← job entry 第 1 个字 = 函数指针
+    puVar2[0xb] = puVar2[0xb] - 1;
+  } while (puVar2[4] != 2);
+}
+```
+→ job entry 首字为 0 ⇒ worker 调用 NULL。**根因**：我们 WaitSema 在无 token 时把线程标 blocked、置 waiting，但 **SignalSema 唤醒等待者时只置 ready，没有把 token 从计数器里扣掉**（而唤醒后的 guest 不会再 decrement）→ 计数虚高 → worker 被"多出来"的计数唤醒 → 队列空位 → NULL 任务 → 线程死亡。page1 的 CRI 加载 op 完成回调（`0x8128D503`，由 `FUN_81290a60(op+0xc, ..., 0x8128D503, op)` 注册）因此永远无人执行 → op 状态恒为 1。
+3) **修复（18.4473）**：
+```cpp
+// WaitSema 阻塞分支（guest 线程）：
+g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = need; g_thr_wait_mode = 0x5E4Au;
+g_thr_wake_vt.erase(g_cur_thr);         // 禁止 deadline 伪唤醒 sema 等待者
+// SignalSema 唤醒：
+if (kv.second.wait_mode == 0x5E4Au) { uint32_t need = kv.second.wait_bits ?: 1;
+  if (count >= need) { count -= need; waiting=0; ready=1; break; }   // 转移 token
+} else { waiting=0; ready=1; }
+```
+4) 2.5M 冒烟（`out2m_m1010sematok.txt`）：`[CRIFSHLE] binit_after=816A0BA0`、`[THREXIT]` **0**、`[INDIRECT-MISS]` **0**、`[PREEMPT]` 10、exit=0、BADMEM=0。已启动 62M 长跑（`out62m_m1011sematok.txt`，P1TICK）。NEXT: 看 `[THREXIT]`/`[INDIRECT-MISS]` 是否归零、page1 是否推进（`ctr`/`[IDR]`/`[GXM]`）。 |
+| §18.4473 | MAJOR ROOT CAUSE: the GFD job worker threads die because of 'semaphore token misalignment' -> decompiling FUN_811E68C8 proves workers pull a NULL job function pointer (INDIRECT-MISS reg1=0 target=0 block=811E6928, [THREXIT] pc=FFFFFFFD lr=811E6936, 5 threads 40012000-40016000 all die at n=59,454,348); fixed WaitSema/SignalSema token transfer. Evidence chain: (1) out62m_m1009criop2.txt [THREXIT] (5 lines, at n=59,454,348); [TCREATE2] tid=40012000..40016000 entry=811E68C9 (GFD job workers); [SCREATE] obj=50013000 init=0 name='gfdJobCountSema', obj=50014000 init=10240 name='gfdJobEmptySema', obj=50015000 init=0 gfdJobCountSema, obj=50016000 init=8 gfdJobEmptySema; [SEM] wait obj=50013000 need=1 have=0 thr=40012000; [INDIRECT-MISS] reg1=00000000 target=00000000 block=811E6928; [THREXIT] badblock tid=40012000 pc=FFFFFFFD lr=811E6936. (2) Decompiled FUN_811E68C8 (GFD job worker): puVar2 = *(u32**)(param_2+4); if (puVar2[4] != 2) { do { FUN_812b27a0(*puVar2,1,0) (WaitSema gfdJobCountSema); lock mutex(puVar2+3); iVar3 = puVar2[7] (read index +0x1C); FUN_811e6a4c(&local_40, puVar2[5] + iVar3*0x20, 0x20) (copy 32-byte job entry from queue at +0x14); iVar3++, wrap at puVar2[6] (+0x18); unlock; (*local_40)(auStack_3c) (job entry first word = function pointer); puVar2[0xb]--; } while (puVar2[4] != 2); } => job entry first word 0 means worker calls NULL. ROOT CAUSE: our WaitSema marks the thread blocked + waiting with no token, but SignalSema only sets the waiter ready without deducting the token from the count (and the woken guest does not decrement on resume) -> inflated count -> worker woken by 'extra' counts -> empty queue slot -> NULL job -> thread death. Therefore page1's CRI load-op completion callback (0x8128D503, registered by FUN_81290a60(op+0xc, ..., 0x8128D503, op)) never runs -> op status stays 1. FIX 18.4473: WaitSema guest block branch sets g_thr_wait_bits=need, g_thr_wait_mode=0x5E4A, erases g_thr_wake_vt[g_cur_thr] (no spurious deadline wake); SignalSema transfers the token (if wait_mode==0x5E4A: if count>=need { count-=need; ready=1; break; }) else old behavior. 2.5M smoke out2m_m1010sematok.txt: binit_after=816A0BA0, [THREXIT] 0, [INDIRECT-MISS] 0, [PREEMPT] 10, exit=0, BADMEM=0. 62M run started out62m_m1011sematok.txt (P1TICK); NEXT: check [THREXIT]/[INDIRECT-MISS] gone, whether page1 advances (ctr/[IDR]/[GXM]). |
 ```
 [CRIOP] submit op=84DAB768 a1=00000000 a2=84856078 a3=00000000 n=59634683
 [FRAMEDUMP] n=60290000 ctr=9 pc=8127B85C blk=8127B7D8
@@ -487347,3 +487388,62 @@ NEXT：读 `[CRIOP] dump` 序列 → 找出 op 结构里**恒定的状态字**�
 ANTI-FORGETTING ENTRY. Keywords: M927 CRIOP first data in out62m_m1008criop.txt: [CRIOP] submit op=84DAB768 a1=00000000 a2=84856078 a3=00000000 n=59634683 (page1 CRI async load op submitted, heap op object 0x84DAB768, FUN_8128E394) but [CRIOP] poll 0 lines because AOT basic-block boundaries differ from the function entry of FUN_8128E9BC (internal loop splits into 0x8128EAxx), pcv == 0x8128E9BC too narrow. Fix 18.4472: record _cop = s->r[0] at 0x8128E394 then every 300k n dump the first 16 words of the op struct ([CRIOP] dump n=... op=...: w0..w15) without needing a specific pc; 62M run started out62m_m1009criop2.txt (P5D_CRIOP=1). NEXT: read the [CRIOP] dump series -> find the never-changing status word and where completion should be written -> compare with decompiled FUN_8128E9BC status check -> add HLE completion delivery -> page1 completes -> title page.
 
 LOOKUP: 0x84DAB768, 0x8128E394, 0x8128E9BC, 0x8122D91C, P5D_CRIOP, out62m_m1009criop2.txt -> §18.4471 [relevant: CRI op busy], §18.4470 [relevant: BT57]
+### 18.4473 PORT M928: GFD job worker 因信号量 token 不对齐死亡 → 修复 token 转移
+
+1) 证据（`out62m_m1009criop2.txt`）：
+```
+[TCREATE2] tid=40012000..40016000 entry=811E68C9        <- GFD job worker ×5
+[SCREATE] obj=50013000 init=0     name='gfdJobCountSema'
+[SCREATE] obj=50014000 init=10240 name='gfdJobEmptySema'
+[SCREATE] obj=50015000 init=0     name='gfdJobCountSema'
+[SCREATE] obj=50016000 init=8     name='gfdJobEmptySema'
+[SEM] wait obj=50013000 need=1 have=0 thr=40012000
+[INDIRECT-MISS] reg1=00000000 target=00000000 block=811E6928
+[THREXIT] badblock tid=40012000 pc=FFFFFFFD lr=811E6936
+... 40013000/40014000/40015000/40016000 同样
+```
+2) 反编译 **`FUN_811E68C8`（GFD job worker，156 字节）**：
+```c
+puVar2 = *(undefined4 **)(param_2 + 4);          // 任务系统对象
+if (puVar2[4] != 2) {                             // +0x10 stop flag
+  do {
+    FUN_812b27a0(*puVar2, 1, 0);                  // WaitSema(gfdJobCountSema(50013000), 1, NULL)
+    FUN_81207344(puVar2 + 3);                     // LockMutex(+0xC)
+    iVar3 = puVar2[7];                            // +0x1C 读索引
+    FUN_811e6a4c(&local_40, puVar2[5] + iVar3 * 0x20, 0x20);   // 复制 32B job entry（队列 +0x14）
+    iVar3++; puVar2[7] = iVar3; if (iVar3 == puVar2[6]) puVar2[7] = 0;   // +0x18 队列长度回绕
+    FUN_81207352(puVar2 + 3);                     // Unlock
+    local_24 = puVar2;
+    (*local_40)(auStack_3c);                      // ← job entry 第 1 个字 = 函数指针
+    puVar2[0xb] = puVar2[0xb] - 1;
+  } while (puVar2[4] != 2);
+}
+```
+3) 根因：`INDIRECT-MISS target=0` = worker 从**空槽**取到 NULL 函数指针。我们的
+`WaitSema` 在无 token 时把线程标 blocked/waiting **但不扣计数**；`SignalSema` 只把等待者置 ready
+**也不扣计数**，而唤醒后的 guest 不会再 decrement → **计数虚高** → worker 被多余计数唤醒 → 取空槽 → 调 NULL → 线程死亡。
+page1 的 CRI 加载 op 完成回调 `0x8128D503`（`FUN_81290a60(op+0xc, ..., 0x8128D503, op)` 注册）因此永远不执行 → op 状态恒为 1。
+4) 修复（18.4473）：
+```cpp
+// WaitSema 阻塞（guest 线程）
+g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = need; g_thr_wait_mode = 0x5E4Au;
+g_thr_wake_vt.erase(g_cur_thr);          // 禁止 deadline 伪唤醒 sema 等待者
+// SignalSema 唤醒
+for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) {
+  if (kv.second.wait_mode == 0x5E4Au) { uint32_t need = kv.second.wait_bits ? kv.second.wait_bits : 1u;
+    uint32_t cnt = g_sema[obj]; if (cnt >= need) { g_sema[obj] = cnt - need; kv.second.waiting=0; kv.second.ready=1; break; } }
+  else { kv.second.waiting = 0; kv.second.ready = 1; } }
+```
+5) 2.5M 冒烟（`out2m_m1010sematok.txt`）：
+```
+[CRIFSHLE] criFs_Initialize -> 0 n=5000 binit_after=816A0BA0
+[THREXIT] 0     [INDIRECT-MISS] 0     [PREEMPT] 10
+done: blocks=2500000 ... exit=0；BADMEM 0
+```
+6) 已启动 62M 长跑：`out62m_m1011sematok.txt`（P1TICK + VTIME + 全部调度修复）。
+NEXT：检查 `[THREXIT]`/`[INDIRECT-MISS]` 是否彻底消失、page1 是否推进（`ctr`/`[IDR]`/`[SEQST]`/`[GXM]` BeginScene）。
+验证：`out62m_m1009criop2.txt`（THREXIT/INDIRECT-MISS 证据）、`out2m_m1010sematok.txt`、`true_seg0_final.c`（FUN_811E68C8）、`out62m_m1011sematok.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M928 GFD job worker death root cause + sema token fix: out62m_m1009criop2.txt shows 5 [THREXIT] badblock tid=40012000..40016000 pc=FFFFFFFD lr=811E6936 at n=59,454,348; threads entry 811E68C9 = GFD job workers; [SCREATE] obj=50013000 init=0 name='gfdJobCountSema', 50014000 init=10240 'gfdJobEmptySema', 50015000 init=0 'gfdJobCountSema', 50016000 init=8 'gfdJobEmptySema'; [SEM] wait obj=50013000 need=1 have=0; [INDIRECT-MISS] reg1=00000000 target=00000000 block=811E6928. Decompiled FUN_811E68C8: puVar2 = *(u32**)(param_2+4); if (puVar2[4]!=2) do { WaitSema(*puVar2,1,0); lock mutex puVar2+3; iVar3=puVar2[7] (read idx +0x1C); FUN_811e6a4c(&local_40, puVar2[5]+iVar3*0x20, 0x20) (32-byte job entry from queue at +0x14); idx++ wrap at puVar2[6] (+0x18); unlock; (*local_40)(auStack_3c) (job entry word0 = function pointer); puVar2[0xb]--; } while (puVar2[4]!=2). ROOT CAUSE: our WaitSema blocks a thread without deducting the token and SignalSema wakes a waiter without deducting the token either (and the resumed guest does not decrement), so the count is inflated -> workers wake on extra counts -> dequeue empty slot -> call NULL (INDIRECT-MISS target=0) -> threads die; hence page1 CRI load-op completion callback 0x8128D503 (registered via FUN_81290a60(op+0xc,...,0x8128D503,op)) never runs -> op status forever 1. FIX 18.4473: WaitSema guest-block sets g_thr_wait_bits=need, g_thr_wait_mode=0x5E4A, erases g_thr_wake_vt[g_cur_thr]; SignalSema transfers the token (if wait_mode==0x5E4A: if count>=need { count-=need; waiting=0; ready=1; break; }) else old behavior. 2.5M smoke out2m_m1010sematok.txt: binit_after=816A0BA0, [THREXIT] 0, [INDIRECT-MISS] 0, [PREEMPT] 10, exit=0, BADMEM=0. 62M run started out62m_m1011sematok.txt; NEXT: check THREXIT/INDIRECT-MISS gone and page1 advances (ctr/[IDR]/[SEQST]/[GXM] BeginScene).
+
+LOOKUP: 0x811E68C8, 0x811E6928, 0x811E68C9, 0x50013000, 0x50014000, 0x50015000, 0x50016000, 0x8128D503, 0x5E4A, out62m_m1011sematok.txt -> §18.4472 [relevant: CRIOP], §18.4471 [relevant: CRI op busy], §18.4272 [relevant: sema HLE]

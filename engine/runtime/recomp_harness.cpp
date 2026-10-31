@@ -2185,7 +2185,8 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           static int _sr=0; if (_sr++ < 40) { printf("[SEMREC] self-re-wait obj=%08X need=%u have=%u tok=%08X lr=%08X blk=%08X n=%u -> success (no decrement)\n", obj, need, have, _mytok, s->r[14], g_cur_block, g_blkcnt_total); fflush(stdout); }
           r0 = 0; break; } }
       if (have >= need) { if (it != g_sema.end()) it->second = have - need; { uint32_t _tok = g_cur_thr ? g_cur_thr : (0xF0000000u | (g_cur_fiber & 0xFFFFFFu)); g_sema_owner[obj] = _tok; g_sema_owner_lr[obj] = s->r[14]; } r0 = 0; }
-      else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = 0; r0 = 0; }
+      else if (g_cur_thr) { g_thr_blocked = 1; g_thr_wait_obj = obj; g_thr_wait_bits = need; g_thr_wait_mode = 0x5E4Au; r0 = 0;
+        g_thr_wake_vt.erase(g_cur_thr); }   // 18.4473 M928: token transfer on wake; never spurious-wake a sema waiter
       else {   // main-block-pump: main thread must BLOCK by running workers until sema satisfied
         int _spins = 0;
         while (_spins++ < 4000) {
@@ -2208,7 +2209,14 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       { uint32_t _tok = g_cur_thr ? g_cur_thr : (0xF0000000u | (g_cur_fiber & 0xFFFFFFu)); g_sema_owner[obj] = _tok; g_sema_owner_lr[obj] = s->r[14]; }
       if (g_thr_log_n++ < 80) printf("[SEM] signal obj=%08X count=%u cur_thr=%08X lr=%08X\n", obj, g_sema[obj], g_cur_thr, s->r[14]);
       if (g_sig2_n++ < 60) { printf("[SIG2] obj=%08X count=%u thr=%08X lr=%08X\n", obj, g_sema[obj], g_cur_thr, s->r[14]); fflush(stdout); }
-      for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) { kv.second.waiting = 0; kv.second.ready = 1; }
+      { bool _xfer = false;
+        for (auto& kv : g_thr) if (kv.second.waiting && kv.second.wait_obj == obj) {
+          if (kv.second.wait_mode == 0x5E4Au) {   // 18.4473 M928: sema waiter - transfer the token (it does not decrement on resume)
+            uint32_t _need = kv.second.wait_bits ? kv.second.wait_bits : 1u;
+            uint32_t _cnt = g_sema.count(obj) ? g_sema[obj] : 0u;
+            if (_cnt >= _need) { g_sema[obj] = _cnt - _need; kv.second.waiting = 0; kv.second.ready = 1; _xfer = true; break; } }
+          else { kv.second.waiting = 0; kv.second.ready = 1; } }
+        (void)_xfer; }
       r0 = 0; break; }
     case 0x812B2890u: {                                               // sceKernelCreateEventFlag
       uint32_t init = s->r[2];   // 18.4232: sceKernelCreateEventFlag(name,attr,initPattern,opt) - init pattern is r2
