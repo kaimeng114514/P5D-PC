@@ -994,6 +994,50 @@
 | M976 | §18.4521: **实现「引擎自绘影片」通路：当 draw 绑定的片元纹理控制块声明尺寸 = 960×544（影片纹理）时，把预解码 BGRA 影片帧通过 `upload_gxm_control_to_unit(unit, ctrl16, hostPixels, bytes)` 直接上传为该单元内容 → 原版片元着色器自己采样并绘制影片帧（不再依赖宿主全屏 blit 演示层）**。开关 `P5D_MOVIE_ENGINE=1`；日志 `[ABIMOVTEX]`。实现位置：harness 的 draw 时纹理上传块之前（18.4521）：
 | M977 | §18.4522: ★★★★★★★ **【page1 视频解码真凶定位】引擎在 page1 开头调用硬件视频解码 HLE（当前为通用空桩返回 0）→ 影片内容永远不出现；同时确认 3 张 960×544 影片纹理、墙钟动画、离屏取证全部就绪**。证据（`out80m_m1054engmov.txt`）：
 | M978 | §18.4523: ★★★★★★★★ **实现 `SceVideodecUser` HLE（AOT harness 版）：9 个视频解码 API（stub 0x812B2120–0x812B21A0）从"无名空桩"变为真实假解码——把预解码 NV12 影片帧写入 app 提供的 `SceAvcdecPicture` 输出缓冲，并按 Vita3K 语义回填 `numOfOutput`/frame 尺寸/`info.pts`，让 CRI 认为解码成功并发布帧 → 引擎自己的影片纹理与绘制路径将拿到真实画面（"原版代码自己画"的关键打通）**。实现依据：旧 host `eboot_probe.cpp` 的 `n_avc_*` 实现（h145k80~k949 经验）+ Vita3K `SceVideodecUser.cpp` 权威语义。实现（18.4523，`recomp_harness.cpp`，文件级 `p5d_vdec_hle()`，在 hle_call 入口按 stub VA 分派）：
+| M979 | §18.4524: **Ghidra 反编译 CRI 视频驱动（0x812A8000–0x812AD000，173 个函数）+ 运行验证：视频 HLE 已被调用（`[AVDEC] InitLibrary n=59562930`、`QueryMem 960x544 ref=3 -> 0x240000 n=59563748`），但 **CreateDecoder/Decode 从未被调用**（到 n=62.9M 仍只有 2 条）——CRI 影片管线在"创建解码器"之前就停住了；已反编译出解码器创建/解码驱动的准确调用形态，供下一步定位卡点**。反编译证据（`C:\dev\p5d_build\ghidra_out\vdec_range.txt`，Ghidra 全量分析工程 P5D_FULL）：
+```c
+// FUN_812a8d14 (172B)：sceVideodecInitLibrary 封装（DAT_81540820 初始化计数守卫）
+iVar1 = SceVideodecUser_F1AF65A3(0x1001, &local_30);   // type=0x1001(HW AVC), info struct 0x14 字节
+if (iVar1 < 0) FUN_81279486(0,"E10120801M:Failed sceVideodecInitLibrary() err=0x%x.");
+
+// FUN_812a8c98 (88B) / FUN_812a8ed8 (286B)：sceAvcdecQueryDecoderMemSize 封装
+iVar1 = SceVideodecUser_97E95EDB(0x1001, &local_1c /*{w,h,ref}*/, &local_20 /*frameMemSize out*/);
+
+// FUN_812a9140 (1136B) / FUN_812a9836 (352B)：解码器创建（★ 我们缺的就是这一步没被调用）
+*(undefined4 *)(iVar1 + 0xd0) = 0;
+*(undefined4 *)(iVar1 + 0xd4) = *(undefined4 *)(iVar1 + 0xf8);
+*(undefined4 *)(iVar1 + 0xd8) = *(undefined4 *)(iVar1 + 0xfc);
+iVar4 = SceVideodecUser_E82BB69B(0x1001, iVar1 + 0xd0 /*SceAvcdecCtrl*/, &local_48 /*query*/);
+if (iVar4 < 0) FUN_81278ee0(0,"E10120805M : Failed sceAvcdecCreateDecoder() err=0x%x.");
+
+// FUN_812a9fae (968B)：每帧解码驱动
+iVar3 = SceVideodecUser_441673E3(param_1 + 0xd0);                    // DecodeAvailableSize(ctrl)
+iVar1 = SceVideodecUser_9648D853(param_1 + 0xd0, local_1b4);         // DecodeStop(ctrl, ArrayPicture)
+iVar1 = SceVideodecUser_D6190A06(param_1 + 0xd0, &local_19c /*SceAvcdecAu*/, local_1a8, 0);  // Decode(ctrl,au,pic,0)
+// AU pts 计算：*(param_1+0x4C) * *(param_1+0x28) * 90000  → 每帧 3003 ticks
+```
+运行验证（`out80m_m1055vdec.txt`，`P5D_VDEC=1 P5D_VDEC_RAW=title_c_p5d001_nv12.raw`）：
+```
+[AVDEC] InitLibrary r0=00001001 r1=848562D8 n=59562930       ← 我们的 HLE 生效
+[AVDEC] QueryMem 960x544 ref=3 -> 0x240000 n=59563748        ← 正确返回 2.25MB（对齐后 0x240000）
+# 之后到 n=62.9M：CreateDecoder=0、Decode=0、[IDR] 每 ~20k 继续
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1,-1,1) v1=(3,-1,1)
+窗口捕获：mean=29.3 max=254 nonblack=4582/35624（画面仍黑，仅浏览器边缘杂色）
+```
+结论：
+1) **视频 HLE 生效**（Init/Query 正确），但引擎 CRI 在 QueryMem 后**没有走到 CreateDecoder**（FUN_812a9140/812a9836 从未被调用）；
+2) 卡点在"创建解码器之前"——按 CRI 播放器结构，创建解码器之前需要 **stream 数据/AU 可用**（读影片文件、demux、CRI FS 完成）以及解码器内存块分配；
+3) 我们的 `sceKernelAllocMemBlock`/mceFios2 HLE 可能让该前置条件永不满足（旧 host h145k946 也记录过"CreateDecoder 前的卡点"并靠 svclog 定位）。
+NEXT：
+```
+① 给 CRI 播放器前置路径加探针：FUN_812a9140/812a9836 的调用条件（guest 侧打印其入口）；
+② 检查解码器内存分配（0x240000）是否成功：sceKernelAllocMemBlock/kernel memblock 语义；
+③ 检查影片 AU 数据可得性（mceFios2 读文件路径/事件），必要时把 title 影片 AU 数据喂给 CRI；
+④ 一旦 CreateDecoder 被调用，我方 Decode 假解码即会写入真实 NV12 帧 → 引擎自绘影片。
+```
+验证：`C:\dev\p5d_build\ghidra_out\vdec_range.txt`、`out80m_m1055vdec.txt`、窗口捕获 `p5d_vdec_cap_0.png`。 |
+| §18.4524 | Ghidra decompiled the CRI video driver (0x812A8000-0x812AD000, 173 functions) + runtime verification: the video HLE IS called ([AVDEC] InitLibrary n=59562930, QueryMem 960x544 ref=3 -> 0x240000 n=59563748) but CreateDecoder/Decode are NEVER called (only 2 lines up to n=62.9M) - the CRI movie pipeline stalls BEFORE creating the decoder; the exact call shapes of the decoder-creation/decode-driver were decompiled for the next debugging step. Decompilation evidence (C:\dev\p5d_build\ghidra_out\vdec_range.txt from the full-analysis project P5D_FULL): FUN_812a8d14 (172B) = sceVideodecInitLibrary wrapper (DAT_81540820 init-count guard) calls SceVideodecUser_F1AF65A3(0x1001,&local_30) with error string 'E10120801M:Failed sceVideodecInitLibrary() err=0x%x.'; FUN_812a8c98 (88B)/FUN_812a8ed8 (286B) = sceAvcdecQueryDecoderMemSize wrappers SceVideodecUser_97E95EDB(0x1001,&local_1c{w,h,ref},&local_20); FUN_812a9140 (1136B)/FUN_812a9836 (352B) = decoder creation (the missing step): *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc); iVar4=SceVideodecUser_E82BB69B(0x1001, iVar1+0xd0 /*SceAvcdecCtrl*/, &local_48 /*query*/) with error string 'E10120805M : Failed sceAvcdecCreateDecoder() err=0x%x.'; FUN_812a9fae (968B) = per-frame decode driver: DecodeAvailableSize(param_1+0xd0) then DecodeStop(param_1+0xd0,local_1b4) then Decode(param_1+0xd0,&local_19c /*SceAvcdecAu*/,local_1a8,0), AU pts = *(param_1+0x4C)* *(param_1+0x28)*90000 -> 3003 ticks/frame. Runtime (out80m_m1055vdec.txt with P5D_VDEC=1 P5D_VDEC_RAW=title_c_p5d001_nv12.raw): [AVDEC] InitLibrary r0=00001001 r1=848562D8 n=59562930; [AVDEC] QueryMem 960x544 ref=3 -> 0x240000 n=59563748; then up to n=62.9M CreateDecoder=0 Decode=0 [IDR] continues every ~20k; [PRESENT] #1 result=0; [ABIVTX] #1 vc=3 attrs=1 v0=(-1,-1,1) v1=(3,-1,1); window capture mean=29.3 nonblack=4582/35624 (still black, only browser edge noise). Conclusions: (1) video HLE works (Init/Query correct) but the engine's CRI never reaches CreateDecoder (FUN_812a9140/812a9836 never called); (2) the stall is before decoder creation - per the CRI player structure, creating the decoder requires stream data/AU availability (movie file read, demux, CRI FS completion) and decoder memory-block allocation; (3) our sceKernelAllocMemBlock/mceFios2 HLE may leave that precondition unsatisfied (the old host h145k946 recorded the same 'stall before CreateDecoder' and located it with svclog). NEXT: (1) add probes for the call conditions of FUN_812a9140/812a9836 (guest-side entry print); (2) check whether the 0x240000 decoder memblock allocation succeeds (sceKernelAllocMemBlock/kernel memblock semantics); (3) check movie AU data availability (mceFios2 file read path/events), feed title movie AU data to CRI if needed; (4) once CreateDecoder is called our Decode fake decoder will write real NV12 frames -> engine-drawn movie. |
 ```cpp
 // 状态
 static int g_vdec_on=-1; static FILE* g_vdec_fp=nullptr; static long g_vdec_frames=0,g_vdec_frame=0;
@@ -491082,3 +491126,52 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M978 SceVideodecUser HLE for the AOT harness - the 9 video-decode APIs (stubs 0x812B2120-0x812B21A0) changed from nameless stubs into a real fake decoder: write pre-decoded NV12 movie frames into the app-provided SceAvcdecPicture output buffers and fill numOfOutput/frame size/info.pts per Vita3K semantics so CRI publishes the frame. Basis: old host eboot_probe.cpp n_avc_* handlers (h145k80~k949) + Vita3K SceVideodecUser.cpp. Implementation 18.4523 in recomp_harness.cpp: file-scope p5d_vdec_hle(stub_va, s) dispatched at the top of hle_call; state g_vdec_on/g_vdec_fp/g_vdec_frames/g_vdec_frame/g_avc_qw/g_avc_qh/g_avc_hid/g_avc_handle/g_avc_stopped/g_avc_lw/lh/lpU/lpL; helpers gv_rd32/gv_wr32 via GP. Dispatch details: InitLibrary -> r0=0; QueryMem(type,qinfo,dinfo): qw=rd(qinfo),qh=rd(qinfo+4),ref=rd(qinfo+8)||1; sz=((u64)qw*qh*3/2*ref+0x3FFFF)&~0x3FFFF; wr32(dinfo,sz); CreateDecoder(type,ctrl,query): hid=g_avc_hid++; wr32(ctrl,hid); g_avc_handle[ctrl]=hid; qw/qh=rd(query/query+4); DecodeAvailableSize -> qw*qh*3/2 (783360/0xBF400); Flush -> g_avc_stopped=true; Stop(ctrl,pic): arr=rd(pic+8); pp=arr?rd(arr):0; out=!g_avc_stopped; if(out&&pp){wr32(pp+0x14,lw);wr32(pp+0x18,lh);wr32(pp+0x5C,lpU);wr32(pp+0x60,lpL);} wr32(pic,out); g_avc_stopped=true; Delete -> erase; Decode(ctrl,au,pic): source P5D_VDEC_RAW (default title_c_p5d001_nv12.raw) with P5D_VDEC_START; arr=rd(pic+8); pp=arr?rd(arr):0; pw=rd(pp+0xC); ph=rd(pp+0x10); b0=rd(pp+0x3C); b1=rd(pp+0x40); read one NV12 frame (783360 B); Y->b0, UV->b1 (or contiguous b0+Y); wr32(pic,1) numOfOutput=1; wr32(pp+0x14,pw); wr32(pp+0x18,ph); wr32(pp+0x44,1); wr32(pp+0x48,90000); info.fixedFrameRateFlag@0x4C=1; pts.upper@0x5C/lower@0x60=AU pts (au+0/au+4); ++g_vdec_frame. Structures: SceAvcdecArrayPicture{numOfOutput@0,numOfElm@4,pPicture@8}; SceAvcdecPicture{size@0,frame@4,info@0x44}(0x64); SceAvcdecFrame{pixelType@0,pitch@4,W@8,H@0xC,horiz@0x10,vert@0x14,...,pPicture[2]@0x38,0x3C}->relative Picture base W@0xC H@0x10 pPic[0]@0x3C pPic[1]@0x40; SceAvcdecInfo{numUnitsInTick@0,timeScale@4,fixedFrameRateFlag@8,...,pts.upper@0x18,pts.lower@0x1C}->relative Picture base 0x44/0x48/0x4C/0x5C/0x60. Compiled OK (Idle priority); binary contains [AVDEC] x12 / P5D_VDEC x3. Verification run started with visible window (user closed the game): P5D_VDEC=1 P5D_VDEC_RAW=C:\dev\p5d_movies\title_c_p5d001_nv12.raw P5D_VDEC_START=0 -> out80m_m1055vdec.txt. Expected at n≈59.5M: [AVDEC] InitLibrary/QueryMem/CreateDecoder/AvailSize/Decode#N -> CRI publishes real frames -> the engine's own draws sample movie content -> p5d_disp_*.bmp shows the picture. NEXT: read [AVDEC] Decode#N and [VDEC] logs to confirm frame advance; read RT captures (movie content = original code drawn); if the engine still does not draw, use the old host's [AUCHK]/[TEXMEAN] experience to check AU size/output buffers/pixelType.
 
 LOOKUP: SceVideodecUser HLE, p5d_vdec_hle, 0x812B2120, 0x812B2130, 0x812B2140, 0x812B2150, 0x812B2160, 0x812B2170, 0x812B2180, 0x812B2190, 0x812B21A0, [AVDEC], P5D_VDEC, P5D_VDEC_RAW, P5D_VDEC_START, SceAvcdecPicture pp+0x3C/0x40, numUnitsInTick=1 timeScale=90000, out80m_m1055vdec.txt -> §18.4522 [relevant: video decode root cause], §18.4521 [relevant: engine-drawn movie]
+### 18.4524 PORT M979: CRI 视频驱动反编译 + 运行验证（视频 HLE 已生效，但 CreateDecoder 未到达）
+
+1) Ghidra 反编译（`C:\dev\p5d_build\ghidra_out\vdec_range.txt`，0x812A8000–0x812AD000，173 个函数）：
+```c
+// FUN_812a8d14 (172B)：sceVideodecInitLibrary 封装（DAT_81540820 初始化计数守卫）
+iVar1 = SceVideodecUser_F1AF65A3(0x1001, &local_30);
+if (iVar1 < 0) FUN_81279486(0,"E10120801M:Failed sceVideodecInitLibrary() err=0x%x.");
+
+// FUN_812a8c98 (88B) / FUN_812a8ed8 (286B)：sceAvcdecQueryDecoderMemSize 封装
+iVar1 = SceVideodecUser_97E95EDB(0x1001, &local_1c /*{w,h,ref}*/, &local_20 /*frameMemSize*/);
+
+// ★ FUN_812a9140 (1136B) / FUN_812a9836 (352B)：解码器创建（我们缺的这一步）
+*(undefined4 *)(iVar1 + 0xd0) = 0;
+*(undefined4 *)(iVar1 + 0xd4) = *(undefined4 *)(iVar1 + 0xf8);
+*(undefined4 *)(iVar1 + 0xd8) = *(undefined4 *)(iVar1 + 0xfc);
+iVar4 = SceVideodecUser_E82BB69B(0x1001, iVar1 + 0xd0 /*SceAvcdecCtrl*/, &local_48 /*query*/);
+if (iVar4 < 0) FUN_81278ee0(0,"E10120805M : Failed sceAvcdecCreateDecoder() err=0x%x.");
+
+// FUN_812a9fae (968B)：每帧解码驱动
+iVar3 = SceVideodecUser_441673E3(param_1 + 0xd0);                 // DecodeAvailableSize
+iVar1 = SceVideodecUser_9648D853(param_1 + 0xd0, local_1b4);      // DecodeStop
+iVar1 = SceVideodecUser_D6190A06(param_1 + 0xd0, &local_19c, local_1a8, 0);  // Decode(ctrl,au,pic,0)
+// AU pts = *(param_1+0x4C) * *(param_1+0x28) * 90000 → 每帧 3003 ticks
+```
+2) 运行验证（`out80m_m1055vdec.txt`）：
+```
+[AVDEC] InitLibrary r0=00001001 r1=848562D8 n=59562930       ← HLE 生效
+[AVDEC] QueryMem 960x544 ref=3 -> 0x240000 n=59563748        ← 返回 2.25MB（对齐 0x240000）
+（n 到 62.9M：CreateDecoder=0、Decode=0、[IDR] 每 ~20k 继续）
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1,-1,1) v1=(3,-1,1)
+窗口捕获：mean=29.3 max=254 nonblack=4582/35624（画面仍黑，仅浏览器边缘杂色）
+```
+3) 结论：
+- 视频 HLE 生效（Init/Query 正确），但引擎 CRI 在 QueryMem 后**没有走到 CreateDecoder**（FUN_812a9140/812a9836 从未调用）；
+- 卡点在"创建解码器之前"：需 stream/AU 数据可得（影片文件读取、demux、CRI FS 完成）+ 解码器内存块分配（0x240000）；
+- 我们的 `sceKernelAllocMemBlock`/mceFios2 HLE 可能让前置条件永不满足（旧 host h145k946 记录过同样卡点）。
+NEXT：
+```
+① 给 FUN_812a9140/812a9836 的调用条件加探针（guest 入口打印）；
+② 检查 0x240000 解码器内存块分配是否成功（sceKernelAllocMemBlock 语义）；
+③ 检查影片 AU 数据可得性（mceFios2 读文件/事件），必要时喂 title 影片 AU；
+④ CreateDecoder 一旦被调用，我方假解码即写真实 NV12 → 引擎自绘影片。
+```
+验证：`vdec_range.txt`、`out80m_m1055vdec.txt`、`p5d_vdec_cap_0.png`。
+
+ANTI-FORGETTING ENTRY. Keywords: M979 Ghidra decompiled the CRI video driver (0x812A8000-0x812AD000, 173 functions) and runtime verification: video HLE IS called ([AVDEC] InitLibrary n=59562930; [AVDEC] QueryMem 960x544 ref=3 -> 0x240000 n=59563748) but CreateDecoder/Decode are never called (only 2 lines up to n=62.9M) - the CRI movie pipeline stalls before creating the decoder. Decompilation evidence C:\dev\p5d_build\ghidra_out\vdec_range.txt: FUN_812a8d14 = sceVideodecInitLibrary wrapper (guard DAT_81540820, call SceVideodecUser_F1AF65A3(0x1001,&local_30), error 'E10120801M:Failed sceVideodecInitLibrary() err=0x%x.'); FUN_812a8c98/FUN_812a8ed8 = sceAvcdecQueryDecoderMemSize wrappers SceVideodecUser_97E95EDB(0x1001,&local_1c{w,h,ref},&local_20); FUN_812a9140/FUN_812a9836 = decoder creation (the missing step): *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc); SceVideodecUser_E82BB69B(0x1001, iVar1+0xd0, &local_48), error 'E10120805M : Failed sceAvcdecCreateDecoder() err=0x%x.'; FUN_812a9fae = per-frame decode driver: DecodeAvailableSize(param_1+0xd0), DecodeStop(param_1+0xd0,local_1b4), Decode(param_1+0xd0,&local_19c,local_1a8,0); AU pts = *(param_1+0x4C)* *(param_1+0x28)*90000 -> 3003 ticks/frame. Runtime out80m_m1055vdec.txt: after QueryMem up to n=62.9M CreateDecoder=0 Decode=0 [IDR] continues every ~20k; [PRESENT] #1 result=0; [ABIVTX] #1 vc=3 attrs=1 v0=(-1,-1,1) v1=(3,-1,1); window capture mean=29.3 nonblack=4582/35624 (still black). Conclusions: video HLE works but CRI never reaches CreateDecoder; the stall is before decoder creation - requires stream/AU availability (movie file read, demux, CRI FS completion) + decoder memblock allocation (0x240000); our sceKernelAllocMemBlock/mceFios2 HLE may leave that precondition unsatisfied. NEXT: add probes for the call conditions of FUN_812a9140/FUN_812a9836; check the 0x240000 memblock allocation; check movie AU data availability (mceFios2 file read), feed title AU if needed; once CreateDecoder is called our fake decoder writes real NV12 -> engine-drawn movie.
+
+LOOKUP: vdec_range.txt, FUN_812a8d14, FUN_812a8c98, FUN_812a8ed8, FUN_812a9140, FUN_812a9836, FUN_812a9fae, E10120801M, E10120805M, SceVideodecUser_E82BB69B, [AVDEC] InitLibrary, [AVDEC] QueryMem, 0x240000, out80m_m1055vdec.txt, p5d_vdec_cap_0.png -> §18.4523 [relevant: video HLE port], §18.4522 [relevant: video decode root cause]
