@@ -979,6 +979,50 @@
 | M961 | §18.4506: ★★★★★★★★ **introspection HLE 生效！引擎成功构建真实顶点属性表：`[ABIVARG] r3`（attrCount）从 0 变为 1/2/3，`[ABIVFMT] attrN=1/2/3`，且格式与 stride 完全自洽：`attr0 fmt=9(F32) comps=3 → 12B`、`attr1 fmt=8(F16) comps=3 → 6B`、`stride=12/18/26` 精确吻合（12 / 12+6 / 12+6+8）**。同时修正属性解码映射为 **vitasdk 真实 `SceGxmAttributeFormat` 枚举**（0=U8,1=S8,2=U16,3=S16,4=U8N,5=S8N,6=U16N,7=S16N,8=F16,9=F32,10=FIXED）。证据（`out62m_m1042introspect.txt`）：
 | M962 | §18.4507: ★★★★★★★ **page1 真实绘制序列完整打通：`sceGxmSetVertexProgram(8540C000)` → `sceGxmSetFragmentProgram(8540C040)` → `sceGxmSetVertexStream(0, 0x8E500000)` → `sceGxmDraw`（索引 3 个顶点）；`[ABIVTX]` 首次成功解包真实顶点数据：`vc=3 attrs=1 rc=0 v0=(-1,-1,1) v1=(3,-1,1)`（**全屏背景三角形**），`[ABIIDX] icount=3 maxvc=3`；但 RT 仍黑——原因定位为：**真实顶点着色器需要真实默认 UBO，而我们 ReserveVertex/FragmentDefaultUniformBuffer 返回的 guest UBO 内容从未上传到 Vulkan（后端 update_uniform_buffer* 系列无人调用）**。已实现默认 UBO 捕获+上传。** 证据（`out62m_m1043realtri.txt`）：
 | M963 | §18.4508: **真实画面决战运行结果：真实顶点数据 + 真实绘制 + 片元默认 UBO 捕获都发生了，但**顶点默认 UBO 未被捕获**（`[ABIUBO]` 只有 frag 一行）→ 真实 VS 仍拿 0 UBO → RT 全黑。** `out62m_m1044real.txt`：
+| M964 | §18.4509: ★★★★★★★★★ **【关键突破】Ghidra 反编译 `FUN_811EF610`/`FUN_811EFD8E`/`FUN_811EFE6A` 揭示：引擎所有 uniform 都是通过 `sceGxmSetUniformDataF`(0x812B13B0, NID 0x65DD0C84) 写入的（`FUN_811EFE6A` 内部直接调用它），而我们的 ABI 表里它是 STUB → 默认 UBO 永远全 0——这就是真实画面最后一块拼图！已实现真实 `sceGxmSetUniformDataF`（把数据写入 guest 默认 UBO，配合 M962 的 draw 时上传）**。反编译证据（`C:\dev\p5d_build\ghidra_out\ubomgr2.txt`，来自完整分析的 Ghidra 工程 `P5D_FULL`）：
+```c
+// FUN_811efe6a(param_1, param_2, param_3) - uniform 写入 helper
+iVar1 = *(int *)(param_3 + param_2 * 4);
+if (iVar1 != 0) {
+  SceGxm_65DD0C84(param_1, iVar1, 0, *(undefined4 *)(&DAT_815142f4 + param_2 * 0x48),
+                  param_2 * 0x48 + -0x7eaebd ...);   // <- sceGxmSetUniformDataF!
+}
+// NID 映射（gxm_abi.cpp 表）：
+//   0x65DD0C84 = sceGxmSetUniformDataF      int sceGxmSetUniformDataF(void *uniformBuffer,
+//               const SceGxmProgramParameter *parameter, unsigned componentOffset,
+//               unsigned componentCount, const float *sourceData)
+//   0x31FF8ABD = sceGxmSetVertexProgram
+//   0xA949A803 = sceGxmShaderPatcherGetProgramFromId   0x633CAA54 = ProgramFindParameterBySemantic
+//   0x5C79D59A = ProgramParameterGetResourceIndex
+```
+同时 Ghidra 反编译 **`FUN_811EF610`（属性表构建）证实我们的语义/格式映射完全正确**：
+```c
+// position:  SceGxm_633CAA54(prog,0xb,0)  fmt=9(F32) comps=3/4  (flags&0x400000 ? 4 : 3)
+// texcoord0: SceGxm_633CAA54(prog,0x9,0)  fmt=8(F16) comps=3   offset = 0xc (或 0x10)
+// texcoord1: SceGxm_633CAA54(prog,0x3,0)  fmt=8(F16) comps=3   offset = +6
+// color:     SceGxm_633CAA54(prog,0x6,0)  fmt=4(U8N) comps=4   offset = +4
+// (0x10000): SceGxm_633CAA54(prog,0xe,0)  fmt=8(F16) comps=2
+// blendW:    SceGxm_633CAA54(prog,0x5,0)  fmt=4(U8N) comps=4   blendI: semantic 0x4 fmt=0(U8) comps=4
+// == sem enum: POSITION=0xb, TEXCOORD0=0x9, TEXCOORD1=0x3, COLOR=0x6, TEXCOORDx=0xe, BLENDWEIGHTS=0x5, BLENDINDICES=0x4
+// 属性表项写入: [i*8+0]=stream(0), [i*8+2]=offset, [i*8+4]=format, [i*8+5]=componentCount, [i*8+6]=resourceIndex
+```
+**实现（18.4509，`recomp_harness.cpp`）**：
+```cpp
+if (strncmp(_ge->name, "sceGxmSetUniformDataF", 21) == 0) {
+    uint32_t _ubo=s->r[0], _par=s->r[1], _coff=s->r[2], _ccnt=s->r[3], _src=_stk[0];
+    uint8_t* _pq=GP(_par); uint32_t _res=0; if (_pq) std::memcpy(&_res,_pq+0xC,4);
+    uint8_t* _dst=GP(_ubo); uint8_t* _ssrc=GP(_src);
+    if (_dst && _ssrc && _ccnt && _ccnt<=64) {
+        size_t _off = (size_t)_res*16u + (size_t)_coff*4u;   // vec4 寄存器槽 + 分量偏移
+        if (_off + _ccnt*4 <= 0x1000) std::memcpy(_dst+_off,_ssrc,_ccnt*4);
+        printf("[ABIUFD] ubo=%08X res=%u coff=%u cnt=%u first=(%.3f,%.3f,%.3f,%.3f)\n",...);
+    }
+    s->r[0]=0; return s->r[14];
+}
+```
+编译链接成功（二进制含 `[ABIUFD]`）；已启动 62M 决战运行（`out62m_m1045uniform.txt`：真实顶点+真实 uniform+真实着色器）。
+NEXT：RT 截图/窗口出现**游戏真实画面**（page1 背景→标题渲染）！ |
+| §18.4509 | KEY BREAKTHROUGH: Ghidra decompilation of FUN_811EF610/FUN_811EFD8E/FUN_811EFE6A revealed that ALL engine uniforms are written through sceGxmSetUniformDataF (0x812B13B0, NID 0x65DD0C84) - FUN_811EFE6A calls it directly - while our ABI table had it as a STUB, so the default UBO stayed all zero; this is the last piece of the real-picture puzzle. Implemented the real sceGxmSetUniformDataF (writes the data into the guest default UBO, combined with M962's draw-time upload). Decompilation evidence (C:\dev\p5d_build\ghidra_out\ubomgr2.txt from the fully analyzed Ghidra project P5D_FULL): FUN_811efe6a(param_1,param_2,param_3): iVar1=*(int*)(param_3+param_2*4); if (iVar1!=0) SceGxm_65DD0C84(param_1,iVar1,0,*(undefined4*)(&DAT_815142f4+param_2*0x48),param_2*0x48+-0x7eaebd...) which is sceGxmSetUniformDataF. NID mapping (gxm_abi.cpp): 0x65DD0C84=sceGxmSetUniformDataF; 0x31FF8ABD=sceGxmSetVertexProgram; 0xA949A803=GetProgramFromId; 0x633CAA54=ProgramFindParameterBySemantic; 0x5C79D59A=ProgramParameterGetResourceIndex. Also the decompiled FUN_811EF610 (attribute table builder) confirms our semantic/format mapping: position SceGxm_633CAA54(prog,0xb,0) fmt=9(F32) comps=3/4 (flags&0x400000 ? 4:3); texcoord0 semantic 0x9 fmt=8(F16) comps=3 offset 0xc/0x10; texcoord1 semantic 0x3 fmt=8 comps=3 offset +6; color semantic 0x6 fmt=4(U8N) comps=4 offset +4; (0x10000) semantic 0xe fmt=8 comps=2; blendweights semantic 0x5 fmt=4 comps=4 and blendindices semantic 0x4 fmt=0(U8) comps=4; attribute entry layout [i*8+0]=stream(0), [i*8+2]=offset, [i*8+4]=format, [i*8+5]=componentCount, [i*8+6]=resourceIndex. Semantic enum: POSITION=0xb, TEXCOORD0=0x9, TEXCOORD1=0x3, COLOR=0x6, TEXCOORDx=0xe, BLENDWEIGHTS=0x5, BLENDINDICES=0x4. Implementation 18.4509 in recomp_harness.cpp: if (strncmp(_ge->name,'sceGxmSetUniformDataF',21)==0) { uint32_t _ubo=s->r[0],_par=s->r[1],_coff=s->r[2],_ccnt=s->r[3],_src=_stk[0]; uint8_t* _pq=GP(_par); uint32_t _res=0; if(_pq) memcpy(&_res,_pq+0xC,4); uint8_t* _dst=GP(_ubo); uint8_t* _ssrc=GP(_src); if(_dst&&_ssrc&&_ccnt&&_ccnt<=64){ size_t _off=(size_t)_res*16u+(size_t)_coff*4u; if(_off+_ccnt*4<=0x1000) memcpy(_dst+_off,_ssrc,_ccnt*4); printf('[ABIUFD] ubo=%08X res=%u coff=%u cnt=%u first=(%.3f,%.3f,%.3f,%.3f)',...); } s->r[0]=0; return s->r[14]; }. Build+link OK (binary contains [ABIUFD]); 62M decisive run started (out62m_m1045uniform.txt: real vertices + real uniforms + real shaders). NEXT: the RT capture/window should show the GAME'S REAL PICTURE (page1 background -> title rendering)! |
 ```
 [ABIUBO] frag ubo=85B85100 n=59586560
 [ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000) n=59586560   ← 只有 frag，且首值 0
@@ -489838,3 +489882,65 @@ rea analyze C:\dev\p5d_rom\eboot_true.elf --provider ghidra \
 ANTI-FORGETTING ENTRY. Keywords: M963 real-picture decisive run (out62m_m1044real.txt): real vertex data + real draw + fragment default UBO capture all work but the VERTEX default UBO was not captured ([ABIUBO] only has one frag line) -> the real VS still gets a zero UBO -> RT all black (RT STATS mean=0.00 max=0). Evidence: [ABIUBO] frag ubo=85B85100 n=59586560; [ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000); [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIVP] SetVertexProgram obj=8540C000; [ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59607044; [PRESENT] #1 result=0. The vertex UBO source is likely not ReserveVertexDefaultUniformBuffer but PrecomputedVertexStateSetDefaultUniformBuffer/SetAllUniformBuffers or the engine writing the uniform buffer address into the precomputed state object. rea TIMEOUT SOLVED: dist/config/providerStartupTimeout.js has DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS = 330_000 and dist/config/parseConfig.js reads env.REA_GHIDRA_STARTUP_TIMEOUT_MS -> set REA_GHIDRA_STARTUP_TIMEOUT_MS=3600000 (1 hour, persisted to the user environment), then rea analyze C:\dev\p5d_rom\eboot_true.elf --provider ghidra --snapshot C:\dev\p5d_build\rea_snapshots\p5d_true.json (background). Once the snapshot exists rea decompile --snapshot ... should be second-level. NEXT: decompile 0x811EBF94/0x811EFD8E/0x811F043E/0x811EFE6A via the rea snapshot to find the real vertex UBO source; add capture+upload for PrecomputedVertexStateSetDefaultUniformBuffer/SetAllUniformBuffers/PrecomputedDrawSetParams; once connected the real picture appears.
 
 LOOKUP: REA_GHIDRA_STARTUP_TIMEOUT_MS, DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS, providerStartupTimeout.js, rea snapshot, [ABIUBO], 0x811EBF94, 0x811EFD8E, 0x811F043E, 0x811EFE6A, out62m_m1044real.txt -> §18.4507 [relevant: UBO capture], §18.4506 [relevant: real attribute tables]
+### 18.4509 PORT M964: Ghidra 反编译揭示 uniform 真凶 = sceGxmSetUniformDataF 是 STUB；已实现真实版本
+
+1) **Ghidra 完整分析工程已就绪**：`rea` 超时问题解决后（`REA_GHIDRA_STARTUP_TIMEOUT_MS=3600000` + snapshot），
+   另用 `analyzeHeadless C:\dev\ghidra_projects_new P5D_FULL -import eboot_true.elf` 建了完整分析工程，
+   用 `P5DDecompOne.java` 秒级反编译（输出 `C:\dev\p5d_build\ghidra_out\ubomgr2.txt`）。
+
+2) `FUN_811efe6a`（uniform 写入 helper）反编译：
+```c
+void FUN_811efe6a(undefined4 param_1,int param_2,int param_3)
+{
+  iVar1 = *(int *)(param_3 + param_2 * 4);
+  if (iVar1 != 0) {
+    SceGxm_65DD0C84(param_1,iVar1,0,*(undefined4 *)(&DAT_815142f4 + param_2 * 0x48),
+                    param_2 * 0x48 + -0x7eaebd ...);
+  }
+}
+```
+`SceGxm_65DD0C84` → **`sceGxmSetUniformDataF`**（NID 映射自 gxm_abi.cpp）：
+```c
+int sceGxmSetUniformDataF(void *uniformBuffer, const SceGxmProgramParameter *parameter,
+                          unsigned int componentOffset, unsigned int componentCount,
+                          const float *sourceData);
+```
+→ 引擎所有 uniform 都走这个 API；我们的 ABI 实现是 STUB → 默认 UBO 永远全 0 → 真实 VS w=0 → 黑屏。
+
+3) `FUN_811EF610`（属性表构建）反编译——**证实我们的语义/格式映射完全正确**：
+```c
+// POSITION:   SceGxm_633CAA54(prog,0xb,0)  fmt=9(F32) comps=3/4  (flags&0x400000 ? 4 : 3)
+// TEXCOORD0:  SceGxm_633CAA54(prog,0x9,0)  fmt=8(F16) comps=3   offset=0xc/0x10
+// TEXCOORD1:  SceGxm_633CAA54(prog,0x3,0)  fmt=8(F16) comps=3   offset=+6
+// COLOR:      SceGxm_633CAA54(prog,0x6,0)  fmt=4(U8N) comps=4   offset=+4
+// (0x10000):  SceGxm_633CAA54(prog,0xe,0)  fmt=8(F16) comps=2
+// BLENDW:     SceGxm_633CAA54(prog,0x5,0)  fmt=4(U8N) comps=4
+// BLENDI:     SceGxm_633CAA54(prog,0x4,0)  fmt=0(U8)  comps=4  (offset=+4)
+// 属性项写入: [i*8+0]=stream(0) [i*8+2]=offset [i*8+4]=format [i*8+5]=componentCount [i*8+6]=resourceIndex
+```
+语义枚举（权威）：`POSITION=0xb, TEXCOORD0=0x9, TEXCOORD1=0x3, COLOR=0x6, TEXCOORDx=0xe, BLENDWEIGHTS=0x5, BLENDINDICES=0x4`
+
+4) 实现（18.4509）：
+```cpp
+if (strncmp(_ge->name, "sceGxmSetUniformDataF", 21) == 0) {
+    uint32_t _ubo=s->r[0], _par=s->r[1], _coff=s->r[2], _ccnt=s->r[3], _src=_stk[0];
+    uint8_t* _pq=GP(_par); uint32_t _res=0; if (_pq) std::memcpy(&_res,_pq+0xC,4);
+    uint8_t* _dst=GP(_ubo); uint8_t* _ssrc=GP(_src);
+    if (_dst && _ssrc && _ccnt && _ccnt<=64) {
+        size_t _off = (size_t)_res * 16u + (size_t)_coff * 4u;      // vec4 槽 + 分量偏移
+        if (_off + (size_t)_ccnt*4u <= 0x1000u)
+            std::memcpy(_dst + _off, _ssrc, (size_t)_ccnt*4u);
+        printf("[ABIUFD] ubo=%08X res=%u coff=%u cnt=%u first=(%.3f,%.3f,%.3f,%.3f)\n", ...);
+    }
+    s->r[0]=0; return s->r[14];
+}
+```
+（配合 M962 在 draw 时 `update_uniform_buffer_raw`/`update_fragment_uniform_buffer_raw` 上传 guest UBO。）
+
+5) 编译链接成功（含 `[ABIUFD]`）；已启动 62M 决战运行：`out62m_m1045uniform.txt`。
+NEXT：page1 RT 截图/窗口应出现**游戏真实画面**。
+验证：`C:\dev\p5d_build\ghidra_out\ubomgr2.txt`（Ghidra 反编译）、`out62m_m1045uniform.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M964 Ghidra decompilation of FUN_811efe6a shows uniforms go through SceGxm_65DD0C84 = sceGxmSetUniformDataF (NID 0x65DD0C84, VA 0x812B13B0), which was a STUB in our ABI table, so the default UBO stayed all zero -> real VS w=0 -> black. Implemented real sceGxmSetUniformDataF in recomp_harness.cpp: signature int sceGxmSetUniformDataF(void *uniformBuffer, const SceGxmProgramParameter *parameter, unsigned componentOffset, unsigned componentCount, const float *sourceData); code: _ubo=s->r[0], _par=s->r[1], _coff=s->r[2], _ccnt=s->r[3], _src=_stk[0]; _res=*(u32*)(GP(_par)+0xC); _dst=GP(_ubo); _ssrc=GP(_src); _off=_res*16+_coff*4; memcpy(_dst+_off,_ssrc,_ccnt*4) if within 0x1000; print [ABIUFD]; return 0. Also the decompiled FUN_811EF610 (attribute builder) confirms our semantic/format mapping: POSITION semantic 0xb fmt 9(F32) comps 3/4; TEXCOORD0 semantic 0x9 fmt 8(F16) comps 3 offsets 0xc/0x10; TEXCOORD1 semantic 0x3 fmt 8 comps 3 offset +6; COLOR semantic 0x6 fmt 4(U8N) comps 4 offset +4; 0x10000 -> semantic 0xe fmt 8 comps 2; BLENDWEIGHTS semantic 0x5 fmt 4 comps 4; BLENDINDICES semantic 0x4 fmt 0(U8) comps 4; attribute entry layout [i*8+0]=stream, [i*8+2]=offset, [i*8+4]=format, [i*8+5]=componentCount, [i*8+6]=resourceIndex; gxm_abi.cpp NID map: 0x65DD0C84=sceGxmSetUniformDataF, 0x31FF8ABD=sceGxmSetVertexProgram, 0xA949A803=GetProgramFromId, 0x633CAA54=ProgramFindParameterBySemantic, 0x5C79D59A=ProgramParameterGetResourceIndex. Ghidra full analysis project P5D_FULL at C:\dev\ghidra_projects_new (built via analyzeHeadless -import eboot_true.elf) + P5DDecompOne.java gives fast decompiles; output C:\dev\p5d_build\ghidra_out\ubomgr2.txt. rea timeout also solvable via REA_GHIDRA_STARTUP_TIMEOUT_MS. Build+link OK (binary contains [ABIUFD]); 62M decisive run started out62m_m1045uniform.txt (real vertices + real uniforms + real shaders). NEXT: the RT capture/window should show the GAME'S REAL PICTURE.
+
+LOOKUP: FUN_811efe6a, sceGxmSetUniformDataF, 0x65DD0C84, 0x812B13B0, [ABIUFD], FUN_811EF610, semantics POSITION=0xb TEXCOORD0=0x9 TEXCOORD1=0x3 COLOR=0x6 BLENDWEIGHTS=0x5 BLENDINDICES=0x4, P5D_FULL, ubomgr2.txt, out62m_m1045uniform.txt -> §18.4508 [relevant: vertex UBO missing], §18.4507 [relevant: UBO capture]

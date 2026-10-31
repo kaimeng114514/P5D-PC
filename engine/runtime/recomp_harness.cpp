@@ -1786,6 +1786,23 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           } else { static int _fn=0; if (_fn++<6) { printf("[ABIVTX] FAIL vc=%u attrs=%u cur_obj=%08X streams=%zu n=%u\n", _vc,(unsigned)_av.size(),_cur_vobj,_stm2va.size(),g_main_n); fflush(stdout); } }
         }
       }
+      // 18.4509 M964: REAL sceGxmSetUniformDataF - the engine writes ALL uniforms through this call
+      // (FUN_811EFE6A -> sceGxmSetUniformDataF). Our ABI table body was a STUB, so the reserved UBO stayed zero.
+      // guest ABI: int sceGxmSetUniformDataF(void *uniformBuffer, const SceGxmProgramParameter *parameter,
+      //                                     unsigned int componentOffset, unsigned int componentCount,
+      //                                     const float *sourceData)
+      if (strncmp(_ge->name, "sceGxmSetUniformDataF", 21) == 0) {
+        uint32_t _ubo = s->r[0], _par = s->r[1], _coff = s->r[2], _ccnt = s->r[3], _src = _stk[0];
+        uint8_t* _pq = GP(_par); uint32_t _res = 0; if (_pq) std::memcpy(&_res, _pq + 0xC, 4);
+        uint8_t* _dst = GP(_ubo); uint8_t* _ssrc = GP(_src);
+        if (_dst && _ssrc && _ccnt && _ccnt <= 64u) {
+          size_t _off = (size_t)_res * 16u + (size_t)_coff * 4u;
+          if (_off + (size_t)_ccnt * 4u <= 0x1000u) {
+            std::memcpy(_dst + _off, _ssrc, (size_t)_ccnt * 4u);
+            static int _un=0; if (_un++<16) { printf("[ABIUFD] ubo=%08X res=%u coff=%u cnt=%u src=%08X first=(%.3f,%.3f,%.3f,%.3f) n=%u\n",
+              _ubo, _res, _coff, _ccnt, _src, ((float*)_ssrc)[0], ((float*)_ssrc)[1], ((float*)_ssrc)[2], ((float*)_ssrc)[3], g_main_n); fflush(stdout); } } }
+        s->r[0] = 0; return s->r[14];
+      }
       // 18.4507 M962: capture the reserved default UBO out-pointer, read its value after dispatch
       if (strstr(_ge->name, "ReserveVertexDefaultUniformBuffer")) { _pend_vout = s->r[1]; }
       if (strstr(_ge->name, "ReserveFragmentDefaultUniformBuffer")) { _pend_fout = s->r[1]; }
