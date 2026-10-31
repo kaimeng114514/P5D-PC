@@ -1487,6 +1487,24 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
       // 18.4484 M939: EndScene / DisplayQueueAddEntry -> submit + present (backend end_frame does both)
+      // 18.4494 M949: real ColorSurfaceInit / DepthStencilSurfaceInit so BeginScene receives a filled surface.
+      if (strncmp(_ge->name, "sceGxmColorSurfaceInit", 22) == 0) {
+        uint32_t _surf = s->r[0], _fmt = s->r[1], _type = s->r[2], _scale = s->r[3];
+        uint32_t _osz = _stk[0], _w = _stk[1], _h = _stk[2], _stride = _stk[3], _data = _stk[4];
+        uint8_t* _q = GP(_surf);
+        const bool _sane = (_w >= 64u && _w <= 2048u && _h >= 64u && _h <= 2048u && _stride >= 64u && _stride <= 4096u);
+        if (_q && _sane) { uint32_t _z = 0;
+          std::memcpy(_q + 0, &_z, 4); std::memcpy(_q + 4, &_w, 4); std::memcpy(_q + 8, &_h, 4);
+          std::memcpy(_q + 0xC, &_stride, 4); std::memcpy(_q + 0x10, &_data, 4);
+          std::memcpy(_q + 0x14, &_fmt, 4); std::memcpy(_q + 0x18, &_type, 4);
+          std::memcpy(_q + 0x1C, &_scale, 4); std::memcpy(_q + 0x20, &_osz, 4); }
+        static int _cs_n = 0; if (_cs_n++ < 16) { printf("[ABICS] init surf=%08X fmt=%u type=%u scale=%u osz=%u w=%u h=%u stride=%u data=%08X sane=%d\n",
+          _surf, _fmt, _type, _scale, _osz, _w, _h, _stride, _data, (int)_sane); fflush(stdout); }
+        s->r[0] = 0; return s->r[14];
+      }
+      // 18.4495 M950: DepthStencilSurfaceInit interception REVERTED - it wrote wrong fields at boot
+      // (0x812B1660 in init loop 0x811EAAE4) and the harness stalled at n=347993.  Depth is not needed for the
+      // red-FS verification, so keep the old stub behavior for it.
       // 18.4492 M947: REAL render architecture (same as the old eboot_probe host):
       //   BeginScene(colorSurface on the guest stack at sp+8) -> begin_scene_pass(RT data,w,h)  (draws go INTO the RT,
       //   pipeline render pass matches g_cur_pass_rp) ; DisplayQueueAddEntry -> end_scene_pass() + present_frame(RT)
