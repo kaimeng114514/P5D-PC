@@ -975,6 +975,47 @@
 | M957 | §18.4502: **确认 `CreateVertexProgram` 的原始参数：`r2=attributes(0x84856114)`、`r3=attributeCount=0`、`stk0=streams(0x848560F0)`、`stk1=streamCount=1`、`stk2=out`——引擎确实传 `attributeCount=0`；属性布局必须从 GXP program 的 `SceGxmProgramParameter` 表隐式推导（GXP 参数表：+0x24 pcount、+0x28 param offset、参数 16B：+0 name偏移、+4 u16 flags(cat=0 ATTRIBUTE,type,comp)、+8 array、+0xC resource index）。已实现：GXP 参数表解析 → 隐式 packed 布局（offset 累加）→ 128B 解包；同时索引绘制用 index buffer 求 max(index)+1 作顶点数；非 Precomputed 路径用 `sceGxmSetVertexProgram` 记录当前 program**。`out62m_m1038vtxdiag.txt` 证据：
 | M958 | §18.4503: **GXP 参数表解析第一版结果：`pcount=1..6`、`pbase=0xE0/0xF0/0x138/0x1E8/0x1F8` 都能读到，但**没有任何 `cat==0` 的 ATTRIBUTE 项**（`[ABIGXPP]` 只打印出 pcount 行，没有 ATTR 行）→ 说明属性不在 GXP 参数表的 category 0 里（或 category/type 位域解读有误）。已加更深诊断：GXP 参数表原始 16B 项（name/w0 hex/cat/typ/cmp/res/arr）+ `r2-0x40` 内存窗口 + `r2-0x48` 处 8 字节 `SceGxmVertexAttribute` 候选解析（旧 host VATTR 的提示）**。`out62m_m1039vtx2.txt` 证据：
 | M959 | §18.4504: **找到 GXP 参数表解析一直无结果的 bug：`pbase = 0x28 + parameter_offset` 是 **GXP 文件内偏移**，但代码里却用 `GP(_pbase + i*16)` 把它当 **guest VA** 去翻译 → 永远返回 null → 循环立即 break → 既无 `[ABIGXPP] P[]` 也无属性项。已修复为 `_g + _pbase + i*16`（`_g` 是 GXP 的 host 指针），并加 GXP size 边界检查、name 指针用 `_g + offset`。** `out62m_m1040gxpp.txt` 证据：
+| M960 | §18.4505: ★★★★★★★ **重大突破：GXP 参数表解析成功（M959 修复偏移 bug 后），拿到所有顶点程序的**真实属性名/类型/分量数**；并且定位到 attrCount=0 的**最终原因**：引擎自己用 `GetProgramFromId`/`FindParameterByName` 构建 `SceGxmVertexAttribute[]`，而这两个 API 一直返回 0（STUB）→ 引擎只能生成 0 个属性。已实现 **GXM 程序 introspection HLE**（GetProgramFromId 返回 GXP VA；FindParameterByName/Semantic 返回 GXP 内参数项 guest VA；GetCategory/GetResourceIndex 从参数项读字段）**。证据：
+1) `out62m_m1041gxpfix.txt`（GXP 解析修复后）真实参数表：
+```
+[ABIGXPP]  P[0] name=vertex.position      w0=0400 cat=0 typ=0 cmp=4 res=0 arr=1
+[ABIGXPP]  P[1] name=mtxWorldLightViewProj w0=E401 cat=1 typ=0 cmp=4 res=0 arr=4
+[ABIGXPP]  P[1] name=vertex.texcoord       w0=0400 cat=0 typ=0 cmp=4 res=4 arr=1
+[ABIGXPP]  P[1] name=vertex.color          w0=0400 cat=0 typ=0 cmp=4 res=4 arr=1
+[ABIGXPP]  P[1] name=vertex.weights        ... cat=0 ... P[2] vertex.indices res=8
+[ABIGXPP]  P[1] name=mtxLocalToWorld ... cat=1 ... P[2] mtxViewProj res=16
+[ABIGXPP]  P[1] name=bloomPitch w0=E211 cat=1 typ=1 cmp=2
+[ABIGXPP]  ATTR[0] name=vertex.position typ=0 comp=4 -> implicit off=0 fmt=4
+[ABIGXPP]  ATTR[1] name=vertex.texcoord typ=0 comp=4 -> implicit off=16 fmt=4
+[ABIGXPP]  ATTR[1] name=vertex.color    typ=0 comp=4 -> implicit off=16 fmt=4
+```
+2) 关联调用链（`[GXMABI]` 日志）：
+```
+sceGxmShaderPatcherCreateVertexProgram(...)
+sceGxmShaderPatcherGetProgramFromId r0=programId  → 我们之前返回 0
+sceGxmProgramFindParameterByName(program=0, "vertex.position"/"vertex.texcoord"/...) → 返回 0
+→ 引擎构建属性表得到 attrCount=0（[ABIVARG] r3=00000000）
+```
+3) 语义：引擎的 0x811EF610 用 GetProgramFromId + FindParameterByName 从 GXP 取参数项（name/res/type），
+填充 `SceGxmVertexAttribute[]` 与 `SceGxmVertexStream[]`，再调用 CreateVertexProgram；
+属性表 count 在栈 `sp+0x10`、数组在 `sp+0x3C`；streams 数组在 `sp+0x18`、`[sp+4]=streamCount`、`[sp+8]=out`。
+4) **实现（18.4505）**：
+```cpp
+// GetProgramFromId(programId) -> GXP VA
+if (strncmp(name,"sceGxmShaderPatcherGetProgramFromId",35)==0) { s->r[0]=_pid2gxp[s->r[0]]; return; }
+// FindParameterByName(program, name) -> GXP 内参数项 guest VA
+auto _gxp_find_by_name = [](uint32_t gxpVA, const char* name)->uint32_t {
+  uint8_t* g=GP(gxpVA); if(!g) return 0;
+  uint32_t pc,po,gsz; memcpy(&pc,g+0x24,4); memcpy(&po,g+0x28,4); memcpy(&gsz,g+8,4);
+  uint32_t pb=0x28+po;
+  for (i<pc) { p=g+pb+i*16; nameoff=rd32(p); if name matches -> return gxpVA+pb+i*16; }
+  return 0; };
+// FindParameterBySemantic(program, semantic, index) -> 按语义名映射（position/normal/texcoord[0/1]/color/weights/indices）
+// GetCategory(param) -> u16@+4 & 0xF；GetResourceIndex(param) -> u32@+0xC
+```
+5) 编译链接成功（含 `[ABIPROG]/[ABIPARAM]`）；已启动 62M 验证运行（`out62m_m1042introspect.txt`，真实着色器+红 FS）。
+NEXT：看 `[ABIPROG]/[ABIPARAM]`（GetProgramFromId 返回 GXP、FindParameterByName 命中）→ `[ABIVARG] r3`（attrCount）应 >0 → `[ABIVFMT] attrN>0` → `[ABIVTX]` 解包真实顶点 → **RT 出现游戏真实几何**。 |
+| §18.4505 | MAJOR BREAKTHROUGH: after the M959 offset fix the GXP parameter table parses correctly and we now have every vertex program's real attribute names/types/component counts; also localized the FINAL cause of attrCount=0: the engine builds the SceGxmVertexAttribute[] itself via GetProgramFromId/FindParameterByName, but both APIs always returned 0 (STUB), so the engine could only produce 0 attributes. Implemented the GXM program introspection HLE (GetProgramFromId returns the GXP VA; FindParameterByName/BySemantic return the guest VA of the GXP parameter entry; GetCategory/GetResourceIndex read fields from the parameter entry). Evidence: (1) out62m_m1041gxpfix.txt real parameter tables: [ABIGXPP] P[0] name=vertex.position w0=0400 cat=0 typ=0 cmp=4 res=0 arr=1; P[1] name=mtxWorldLightViewProj w0=E401 cat=1 typ=0 cmp=4 arr=4; P[1] name=vertex.texcoord w0=0400 cat=0 cmp=4 res=4; P[1] name=vertex.color w0=0400 cat=0 cmp=4 res=4; P[1] name=vertex.weights ... P[2] vertex.indices res=8; P[2] mtxLocalToWorld/mtxViewProj/mtxWorldLightViewProj uniforms; bloomPitch w0=E211 cat=1 typ=1 cmp=2; ATTR[0] vertex.position typ=0 comp=4 implicit off=0 fmt=4; ATTR[1] vertex.texcoord/vertex.color off=16. (2) call chain ([GXMABI]): CreateVertexProgram; GetProgramFromId r0=programId (we returned 0); FindParameterByName(program=0,'vertex.position'/'vertex.texcoord'/...) -> 0; so the engine produced attrCount=0 ([ABIVARG] r3=00000000). (3) semantics: the engine's 0x811EF610 uses GetProgramFromId + FindParameterByName to fetch parameter entries (name/res/type), fills SceGxmVertexAttribute[] and SceGxmVertexStream[], then calls CreateVertexProgram; the attribute count is at stack sp+0x10, the array at sp+0x3C; the streams array at sp+0x18, [sp+4]=streamCount, [sp+8]=out. (4) Implementation 18.4505: GetProgramFromId(programId)->GXP VA via _pid2gxp printing [ABIPROG]; FindParameterByName(program,name)->GXP parameter entry guest VA by scanning the GXP parameter table (pc=g+0x24, po=g+0x28, gsz=g+8, pb=0x28+po, entry 16B, name at entry+nameOffset) printing [ABIPARAM]; FindParameterBySemantic(program,semantic,index)->semantic-name mapping (position/normal/texcoord[0/1]/color/weights/indices); GetCategory(param)->u16@+4 & 0xF; GetResourceIndex(param)->u32@+0xC. (5) Build+link OK (binary contains [ABIPROG]/[ABIPARAM]); 62M verification run started (out62m_m1042introspect.txt, real shaders+red FS). NEXT: [ABIPROG]/[ABIPARAM] should show GXP returns and parameter hits -> [ABIVARG] r3 (attrCount) should be >0 -> [ABIVFMT] attrN>0 -> [ABIVTX] unpacks real vertices -> REAL GAME GEOMETRY appears in the RT. |
 ```
 [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717      ← 只有 pcount 行
 [ABIGXPP] gxp=8153D318 pcount=2 pbase=F0
@@ -489525,3 +489566,53 @@ NEXT：应打印 `[ABIGXPP] P[]`（cat/typ/cmp）与 `ATTR[]`；若存在 ATTRIB
 ANTI-FORGETTING ENTRY. Keywords: M959 the GXP parameter parsing bug - pbase = 0x28 + parameter_table_offset is a FILE OFFSET inside the GXP but the code used GP(_pbase + i*16) treating it as a guest VA, so GP always returned null and the loop broke immediately; neither [ABIGXPP] P[] nor attribute entries were ever printed. Evidence out62m_m1040gxpp.txt: [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717; gxp=8153D318 pcount=2 pbase=F0; no P[]/ATTR lines; [ABIVARG] r2-0x40: 811EFAF6 848560F0 00000001 84B33484 ... (callback stack frame, no attribute array); [ABIVARG] attrCand@r2-0x48: {13440,33971,...} code-area garbage; [ABIVARG] stk0words: 0000000C 00000000 00000045 00000002 (streams[0]={stride=12,index=0}). FIX 18.4504: compute _gsz=*(u32*)(_g+8); _pbase=0x28+_po; loop with bounds check (_pbase+_i*16+16<=_gsz), read _p=_g+_pbase+_i*16, name at _g+_pbase+_i*16+_no. Build+link OK; 62M verification run started out62m_m1041gxpfix.txt. NEXT: [ABIGXPP] P[] (cat/typ/cmp) and ATTR[] should now print; if ATTRIBUTE entries exist the implicit attribute layout takes effect -> [ABIVTX] unpacks real vertices -> real geometry in the RT.
 
 LOOKUP: [ABIGXPP], pbase file offset, GP, parameter_table_offset, [ABIVARG] r2-0x40, out62m_m1041gxpfix.txt -> §18.4503 [relevant: GXP param diagnostics], §18.4502 [relevant: implicit attr layout]
+### 18.4505 PORT M960: GXP 参数表解析成功 + 定位 attrCount=0 最终原因（引擎依赖 introspection API，而我们全是 STUB）
+
+1) `out62m_m1041gxpfix.txt` 真实参数表（M959 修复偏移 bug 后）：
+```
+[ABIGXPP]  P[0] name=vertex.position       w0=0400 cat=0 typ=0 cmp=4 res=0 arr=1
+[ABIGXPP]  P[1] name=mtxWorldLightViewProj w0=E401 cat=1 typ=0 cmp=4 res=0 arr=4
+[ABIGXPP]  P[1] name=vertex.texcoord       w0=0400 cat=0 typ=0 cmp=4 res=4 arr=1
+[ABIGXPP]  P[1] name=vertex.color          w0=0400 cat=0 typ=0 cmp=4 res=4 arr=1
+[ABIGXPP]  P[1] name=vertex.weights        w0=0400 cat=0 ...  P[2] vertex.indices res=8
+[ABIGXPP]  P[1] name=mtxLocalToWorld       w0=E401 cat=1 ...  P[2] mtxViewProj res=16
+[ABIGXPP]  P[1] name=bloomPitch            w0=E211 cat=1 typ=1 cmp=2
+[ABIGXPP]  ATTR[0] name=vertex.position typ=0 comp=4 -> implicit off=0 fmt=4
+[ABIGXPP]  ATTR[1] name=vertex.texcoord typ=0 comp=4 -> implicit off=16 fmt=4
+[ABIGXPP]  ATTR[1] name=vertex.color    typ=0 comp=4 -> implicit off=16 fmt=4
+```
+2) 关联调用链：
+```
+sceGxmShaderPatcherCreateVertexProgram(...)
+sceGxmShaderPatcherGetProgramFromId(programId) → 之前 STUB 返回 0
+sceGxmProgramFindParameterByName(program=0, "vertex.position") → 0
+→ 引擎构建属性表得到 attrCount = 0（[ABIVARG] r3=00000000）
+```
+3) 引擎内部流程（AOT 反推 `0x811EF610`/`blk_811EFADA`/`blk_811EFAF6`）：
+- 属性数组在栈 `sp+0x3C`、count 在 `sp+0x10`；streams 数组在 `sp+0x18`、`[sp+4]=streamCount`、`[sp+8]=out`；
+- 引擎先通过 **GetProgramFromId + FindParameterByName** 从 GXP 取参数（name/res/type），
+  自己填 `SceGxmVertexAttribute[]`，再调用 CreateVertexProgram。
+4) **实现（18.4505）**：
+```cpp
+// (a) GetProgramFromId -> GXP VA
+if (strncmp(name,"sceGxmShaderPatcherGetProgramFromId",35)==0) { s->r[0]=_pid2gxp[s->r[0]]; return s->r[14]; }
+// (b) GXP 参数项查找（返回 guest VA = gxp + 0x28 + po + i*16）
+auto _gxp_find_by_name = [](uint32_t gxpVA, const char* name)->uint32_t {
+  uint8_t* g=GP(gxpVA); if(!g||!name) return 0;
+  uint32_t pc,po,gsz; memcpy(&pc,g+0x24,4); memcpy(&po,g+0x28,4); memcpy(&gsz,g+8,4);
+  uint32_t pb=0x28+po;
+  for (uint32_t i=0;i<pc && i<256;++i) { if(pb+i*16+16>gsz) break;
+    int32_t no=0; memcpy(&no,g+pb+i*16,4);
+    if(no<0 || pb+i*16+(uint32_t)no>=gsz) continue;
+    if(std::strcmp((const char*)(g+pb+i*16+no),name)==0) return gxpVA+pb+i*16; }
+  return 0; };
+// (c) FindParameterBySemantic：position/normal/texcoord[0/1]/color/weights/indices 名称映射
+// (d) GetCategory(param) -> u16@+4 & 0xF；GetResourceIndex(param) -> u32@+0xC
+```
+5) 编译链接成功（含 `[ABIPROG]/[ABIPARAM]`）；已启动 62M 验证运行：`out62m_m1042introspect.txt`。
+NEXT：`[ABIPROG]/[ABIPARAM]` 命中 → `[ABIVARG]` 的 r3(attrCount) 应 >0 → `[ABIVFMT] attrN>0` → `[ABIVTX]` 解包真实顶点 → **RT 出现真实几何**。
+验证：`out62m_m1041gxpfix.txt`、`out62m_m1042introspect.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M960 GXP parameter tables now parse correctly (after M959 offset fix): vertex programs have real attributes vertex.position (cat=0 typ=0 cmp=4 res=0), vertex.texcoord (res=4), vertex.color (res=4), vertex.weights (res=4), vertex.indices (res=8); uniforms mtxWorldLightViewProj (cat=1 arr=4), mtxLocalToWorld, mtxViewProj (res=16), skinBlendMatrices (arr=1024), bloomPitch (cat=1 typ=1 cmp=2). The FINAL cause of attrCount=0: the engine builds SceGxmVertexAttribute[] itself via GetProgramFromId/FindParameterByName, but both APIs were STUBs returning 0, so the engine produced 0 attributes. Implemented the GXM program introspection HLE 18.4505: sceGxmShaderPatcherGetProgramFromId(programId)->GXP VA via _pid2gxp printing [ABIPROG]; sceGxmProgramFindParameterByName(program,name)->guest VA of the GXP parameter entry (scan pc=g+0x24, po=g+0x28, gsz=g+8, pb=0x28+po, entry 16B, name at entry+nameOffset) printing [ABIPARAM]; sceGxmProgramFindParameterBySemantic(program,semantic,index) mapping position/normal/texcoord[0/1]/color/weights/indices; sceGxmProgramParameterGetCategory(param)->u16@+4 & 0xF; sceGxmProgramParameterGetResourceIndex(param)->u32@+0xC. Engine internal flow from the AOT blocks 0x811EF610/blk_811EFADA/blk_811EFAF6: attribute array at stack sp+0x3C, count at sp+0x10; streams array at sp+0x18, [sp+4]=streamCount, [sp+8]=out; it fills attributes via the introspection APIs then calls CreateVertexProgram. Evidence out62m_m1041gxpfix.txt: [ABIGXPP] P[0] name=vertex.position w0=0400 cat=0 typ=0 cmp=4 res=0 arr=1; P[1] vertex.texcoord res=4; P[1] vertex.color res=4; P[1] mtxLocalToWorld cat=1; P[2] mtxViewProj res=16; ATTR[0] vertex.position typ=0 comp=4 implicit off=0 fmt=4; ATTR[1] vertex.texcoord off=16. Build+link OK (binary contains [ABIPROG]/[ABIPARAM]); 62M verification run started out62m_m1042introspect.txt (real shaders+red FS). NEXT: [ABIPROG]/[ABIPARAM] hits should make [ABIVARG] r3 (attrCount) > 0 -> [ABIVFMT] attrN>0 -> [ABIVTX] unpacks real vertices -> REAL GAME GEOMETRY in the RT.
+
+LOOKUP: sceGxmShaderPatcherGetProgramFromId, sceGxmProgramFindParameterByName, sceGxmProgramFindParameterBySemantic, sceGxmProgramParameterGetCategory, sceGxmProgramParameterGetResourceIndex, [ABIGXPP], [ABIPROG], [ABIPARAM], vertex.position, mtxViewProj, out62m_m1042introspect.txt -> §18.4504 [relevant: GXP offset fix], §18.4502 [relevant: implicit attr layout]

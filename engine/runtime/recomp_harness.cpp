@@ -1602,6 +1602,51 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         static int _dn = 0; if (_dn++ < 16) { printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n); fflush(stdout); }
         s->r[0] = 0; return s->r[14];
       }
+      // 18.4505 M960: GXM program introspection HLE - the engine builds the SceGxmVertexAttribute[] itself from
+      // these calls (GetProgramFromId -> GXP, FindParameterByName -> SceGxmProgramParameter*, parameter getters).
+      // Previously GetProgramFromId returned 0 (stub), so the engine produced attributeCount=0!
+      auto _gxp_find_by_name = [](uint32_t gxpVA, const char* name) -> uint32_t {
+        uint8_t* g = GP(gxpVA); if (!g || !name) return 0;
+        uint32_t pc=0,po=0,gsz=0;
+        std::memcpy(&pc,g+0x24,4); std::memcpy(&po,g+0x28,4); std::memcpy(&gsz,g+8,4);
+        uint32_t pb = 0x28u + po;
+        for (uint32_t i=0; i<pc && i<256u; ++i) {
+          if (pb + i*16u + 16u > gsz) break;
+          int32_t no=0; std::memcpy(&no, g + pb + i*16u, 4);
+          if (no < 0 || pb + i*16u + (uint32_t)no >= gsz) continue;
+          const char* nm = (const char*)(g + pb + i*16u + no);
+          if (std::strcmp(nm, name) == 0) return gxpVA + pb + i*16u; }
+        return 0; };
+      auto _gxp_find_by_sem = [](uint32_t gxpVA, uint32_t sem, uint32_t idx) -> uint32_t { (void)gxpVA; (void)sem; (void)idx; return 0; };
+      if (strncmp(_ge->name, "sceGxmShaderPatcherGetProgramFromId", 35) == 0) {
+        uint32_t _id = s->r[0]; auto _it = _pid2gxp.find(_id);
+        uint32_t _rv = (_it != _pid2gxp.end()) ? _it->second : 0u;
+        static int _n=0; if (_n++<12) { printf("[ABIPROG] GetProgramFromId id=%08X -> gxp=%08X\n", _id, _rv); fflush(stdout); }
+        s->r[0]=_rv; return s->r[14]; }
+      if (strncmp(_ge->name, "sceGxmProgramFindParameterByName", 32) == 0) {
+        uint32_t _prog = s->r[0]; uint8_t* _q = GP(s->r[1]);
+        const char* _nm = _q ? (const char*)_q : nullptr;
+        uint32_t _rv = _nm ? _gxp_find_by_name(_prog, _nm) : 0u;
+        static int _n2=0; if (_n2++<40) { printf("[ABIPARAM] ByName prog=%08X name=%s -> %08X\n", _prog, _nm?_nm:"?", _rv); fflush(stdout); }
+        if (_nm && _rv) { s->r[0]=_rv; return s->r[14]; } }
+      if (strncmp(_ge->name, "sceGxmProgramFindParameterBySemantic", 36) == 0) {
+        uint32_t _prog=s->r[0], _sem=s->r[1], _idx=s->r[2];
+        const char* _cand = "vertex.position";
+        if (_sem==1) _cand = "vertex.normal";
+        else if (_sem==2) _cand = _idx ? "vertex.texcoord1" : "vertex.texcoord";
+        else if (_sem==3) _cand = "vertex.color";
+        else if (_sem==4) _cand = "vertex.weights";
+        else if (_sem==5) _cand = "vertex.indices";
+        uint32_t _rv = _gxp_find_by_name(_prog, _cand);
+        if (!_rv && _sem==2) _rv = _gxp_find_by_name(_prog, "vertex.texcoord0");
+        static int _n3=0; if (_n3++<24) { printf("[ABIPARAM] BySem prog=%08X sem=%u idx=%u -> %s -> %08X\n", _prog, _sem, _idx, _cand, _rv); fflush(stdout); }
+        if (_rv) { s->r[0]=_rv; return s->r[14]; } }
+      if (strncmp(_ge->name, "sceGxmProgramParameterGetCategory", 33) == 0) {
+        uint8_t* _q = GP(s->r[0]); uint32_t _rv=0; if (_q) { uint16_t _w=0; std::memcpy(&_w,_q+4,2); _rv=_w&0xFu; }
+        s->r[0]=_rv; return s->r[14]; }
+      if (strncmp(_ge->name, "sceGxmProgramParameterGetResourceIndex", 38) == 0) {
+        uint8_t* _q = GP(s->r[0]); uint32_t _rv=0; if (_q) std::memcpy(&_rv,_q+0xC,4);
+        s->r[0]=_rv; return s->r[14]; }
       // 18.4482 M937: give the app real ShaderPatcher ids / program handles and capture their SPIR-V names.
       { static std::map<uint32_t,std::string> _pid2spv, _vobj2spv, _fobj2spv;
         static uint32_t _nextid = 0x8540B000u, _nextobj = 0x8540C000u;
