@@ -983,6 +983,29 @@
 | M965 | §18.4510: **补齐纹理数据通路：根据 Ghidra 反编译 + 旧 host 的 Vita3K 权威位域公式，实现真实 `sceGxmTextureInit*` 控制块编码、`SetFragmentTexture`/`PrecomputedFragmentStateSetTexture` 绑定捕获、draw 时 `upload_gxm_control_resolved` 解析上传**。同时确认 M964 的 uniform 试验结果：page1 该 pass **不调用 `sceGxmSetUniformDataF`**（`[ABIUFD]` 0 行）——因为 page1 是全屏背景 pass，顶点数据本身已是 NDC（v0=(-1,-1,1) v1=(3,-1,1)），VS 直接透传、真正决定画面的是**片元纹理**（此前 `[TEXBIND] dummy=16` → 全黑）。证据：
 | M966 | §18.4511: **纹理决战运行 v2 结果分析：page1 首个 pass 的绘制确实只有 1 发全屏三角形（`[ABIVTX] vc=3 v0=(-1,-1,1) v1=(3,-1,1)`），纹理绑定发生在更早的影片相位（`[ABITEXB] frag unit=0 ctrl=852275C0 w0=80000000 w1=25008009 n=7024811`），上传失败 `[ABITEX] unit=0 rc=-3`；RT 截图全黑 —— 结合旧 host 证据，这一发很可能就是**页面淡入的纯黑覆盖层**（vert_0014/frag_0079 类：顶点色 0 + 片元常量 (0,0,0,1) + 乘性混合），不是错误**。并已把 RT 截图改为**前 8 次 DisplayQueueAddEntry 各存一帧**（`p5d_disp_N.bmp`）+ draw 日志上限提到 40，用 80M 深度运行观察 page1 后续帧（此前 62M 只覆盖 page1 开头 2.5M 块）。证据（`out62m_m1046tex.txt`）：
 | M967 | §18.4512: ★★★★★★ **定位并修复纹理上传 `rc=-3` 的根因：`upload_gxm_control_resolved` 内部 `translate(data_byte_addr)` 失败——因为 HLE 堆 arena（heapA 0x84600000-0x8C600000 / bigarena 0x8C600000-0xA0000000 / regionB 0xA0000000-0xA2000000 / tail 0xA2000000-0xB0000000）只被 `GP()`（g_img+offset 直映射）认识，**从未注册进 `p5d::mem` 地址空间注册表**，而后端的 `p5d::mem::translate/contains` 只认注册表 → 纹理数据指针（如 `0x90029580`，落在 bigarena）被判定为"不在地址空间" → `return -3`。已把这 4 个窗口注册进 p5d::mem**。证据：
+| M968 | §18.4513: ★★★★★★★ **纹理数据通路彻底打通：`[ABITEX] unit=0 rc=0`（纹理解析成功）、`[TEXENT]/[TEXAT]` 真实上传成功（`W=256 H=512 lin=65536`，即 256×512、65536 字节纹理数据被后端上传到 Vulkan unit 0）**。M967 的 HLE 堆区注册修复生效（`[MEMREG] registered HLE arenas`）。page1 首帧 RT 仍黑（`disp_1 mean=0`）——但这是**淡入黑场覆盖层**（单一全屏三角形、片元常量黑），需更深运行观察后续帧。证据（`out80m_m1048memreg.txt`）：
+```
+[MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)
+[ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560      ← 纹理解析成功
+[TEXENT] #1 unit=0 ctrl=... fc=1
+[TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0                          ← 真实上传成功！
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIRT] disp=0 saved p5d_disp_0.bmp cd=8CF00000 rc=-1 n=59586509   ← 8CF00000 不在 RT 池（上一帧残留）
+[ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0 n=59607044
+disp_1 STATS: mean=0.00 max=0 (0,0,0) 100%
+```
+结论：
+1) **纹理上传链路完成**：HLE 纹理控制块编码（M965）→ guest 堆地址注册（M967）→ `p5d::mem::translate` 成功 → 后端 `resolve_gxm_texture` 解析出 256×512/65536B → `upload_texture_to_unit` 上传 → `rc=0`（`[TEXAT]`）；
+2) page1 首帧仍是黑：单一全屏三角形 + 黑片元常量 = 淡入覆盖层（旧 host 已记录同类行为）；
+3) `disp=0`（8CF00000）截图失败 rc=-1 是"该 RT 还没进池"（present 上一帧残留），不影响主帧 8D300000 的截图；
+4) 80M 运行继续推进（n=60.33M，page1 每秒推进很慢，预计 80M 覆盖 page1 更多帧）。
+NEXT：等 80M 运行到 70-80M，检查 `p5d_disp_*.bmp` 前 8 帧颜色演化 + `[ABIVTX] #N`（draw 数/顶点数变化）：
+- 若出现非黑内容帧 ⇒ **page1 真实画面出现（片头影片/标题）**；
+- 若始终单一黑填充 ⇒ 页面在等影片解码/加载完成（检查 CRI 视频解码与 `[VDEC]`/`[IDR]` 事件）。 |
+| §18.4513 | Texture data path fully working: [ABITEX] unit=0 rc=0 (texture resolve succeeds), [TEXENT]/[TEXAT] real upload succeeded (W=256 H=512 lin=65536, i.e. a 256x512 / 65536-byte texture was uploaded to Vulkan unit 0). The M967 HLE-arena registration fix took effect ([MEMREG] registered HLE arenas). page1's first RT frame is still black (disp_1 mean=0) but that is the black fade-in overlay layer (single full-screen triangle, black fragment constant); a deeper run is needed to see later frames. Evidence (out80m_m1048memreg.txt): [MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail); [ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811; [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560 (texture resolve succeeds); [TEXENT] #1 unit=0 ctrl=... fc=1; [TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0 (real upload succeeded); [ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; [ABIRT] disp=0 saved p5d_disp_0.bmp cd=8CF00000 rc=-1 n=59586509 (8CF00000 not in the RT pool, leftover previous frame); [ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0 n=59607044; disp_1 STATS mean=0.00 max=0. Conclusions: (1) the texture upload chain is complete: HLE texture control-block encoding (M965) -> guest-heap address registration (M967) -> p5d::mem::translate succeeds -> backend resolve_gxm_texture resolves 256x512/65536B -> upload_texture_to_unit -> rc=0 ([TEXAT]); (2) page1's first frame is still black: single full-screen triangle + black fragment constant = fade-in overlay (the old host recorded the same behavior); (3) the disp=0 (8CF00000) capture failure rc=-1 means that RT is not in the pool yet (leftover previous frame) and does not affect the main 8D300000 frame capture; (4) the 80M run continues (n=60.33M, page1 advances slowly, 80M should cover more page1 frames). NEXT: wait for the 80M run to reach 70-80M, check the first 8 p5d_disp_*.bmp color evolution and the [ABIVTX] #N sequence (draw count/vertex counts): if non-black content frames appear then page1's REAL PICTURE appears (title movie/title); if it stays a single black fill then the page is waiting for video decode/loading (check CRI video decode and [VDEC]/[IDR] events). |
 1) `out62m_m1046tex.txt`：
 ```
 [ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560
@@ -490207,3 +490230,37 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M967 texture upload rc=-3 root cause = the HLE heap arenas are not registered in the p5d::mem address-space registry. Evidence out62m_m1046tex.txt: [ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560. vulkan_backend.cpp: SceUInt8* px=p5d::mem::translate(rt.info.data_byte_addr); if(!px){LOGE('resolved: vaddr=0x%08X not in address space unit=%u',rt.info.data_byte_addr,unit);return -3;} - so data_byte_addr 0x90029580 (inside bigarena 0x8C600000-0xA0000000) is not in the mem registry. recomp_harness.cpp GP() knows the windows: image 0x80600000-0x84600000 off=va-0x80600000; regionB 0xA0000000-0xA2000000 off=(va-0xA0000000)+0x28000000; tail 0xA2000000-0xB0000000 off=(va-0xA2000000)+0x2A000000; heapA 0x84600000-0x8C600000 off=(va-0x84600000)+0x04000000; bigarena 0x8C600000-0xA0000000 off=(va-0x8C600000)+0x10000000; IMG_SIZE=0x38000000. FIX 18.4512 in load_elf after gp_img=g_img.data(): declare namespace p5d { namespace mem { void register_region(unsigned int vaddr, unsigned int size, void* host, const char* name); } } and register_region(0x84600000,0x06000000,gp_img+0x04000000,'hle-heapA'); register_region(0x8C600000,0x14000000,gp_img+0x10000000,'hle-bigarena'); register_region(0xA0000000,0x02000000,gp_img+0x28000000,'hle-regionB'); register_region(0xA2000000,0x0E000000,gp_img+0x2A000000,'hle-tail'); printf('[MEMREG] registered HLE arenas'). Build+link OK (binary contains [MEMREG]); 80M run started out80m_m1048memreg.txt. NEXT: [ABITEX] rc should become 0 -> [TEXENT]/[TEXAT] appear -> fragment shader samples real textures -> page1 content frames appear; watch p5d_disp_*.bmp.
 
 LOOKUP: upload_gxm_control_resolved, rc=-3, p5d::mem::translate, register_region, GP, hle-heapA, bigarena, [MEMREG], out80m_m1048memreg.txt -> §18.4511 [relevant: multi-frame capture], §18.4510 [relevant: texture path]
+### 18.4513 PORT M968: 纹理上传成功（rc=0 / TEXAT 256x512 lin=65536）——纹理通路彻底打通
+
+1) `out80m_m1048memreg.txt`：
+```
+[MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)
+[ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811
+[ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560      <- 纹理解析成功
+[TEXENT] #1 unit=0 ctrl=... fc=1
+[TEXAT] #1 unit=0 W=256 H=512 lin=65536 fc=1 rc=0                          <- 真实上传成功
+[ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[ABIRT] disp=0 saved p5d_disp_0.bmp cd=8CF00000 rc=-1 n=59586509
+[ABIRT] disp=1 saved p5d_disp_1.bmp cd=8D300000 rc=0 n=59607044
+disp_1 STATS: mean=0.00 max=0 (0,0,0) 100%
+```
+2) 结论：
+- **纹理通路完整**：HLE 控制块编码（M965）→ guest 堆注册（M967）→ `p5d::mem::translate` → `resolve_gxm_texture`（256×512、65536B）→ `upload_texture_to_unit` → `rc=0`（`[TEXAT]`）；
+- page1 首帧黑 = **淡入黑场覆盖层**（单一全屏三角形 + 黑片元常量；旧 host 已记录同类行为）；
+- `disp=0` 的 rc=-1：8CF00000 是上一帧残留 RT，未入池，属正常；
+- 80M 运行持续（n=60.33M，page1 推进较慢）。
+3) NEXT：
+```
+等 80M 到 70-80M：
+  p5d_disp_*.bmp 前 8 帧颜色演化
+  [ABIVTX] #N（draw 数/顶点数变化）
+- 出现非黑内容帧 ⇒ page1 真实画面出现（片头影片/标题）
+- 始终单一黑填充 ⇒ 页面在等影片解码/加载（查 [VDEC]/[IDR]/CRI 视频）
+```
+验证：`out80m_m1048memreg.txt`、`p5d_disp_*.bmp`。
+
+ANTI-FORGETTING ENTRY. Keywords: M968 texture upload fully working: [ABITEX] unit=0 rc=0 w0=80000000 w1=25008009 data=90029580 n=59586560 (texture resolve succeeds) and [TEXENT]/[TEXAT] real upload W=256 H=512 lin=65536 fc=1 rc=0 (a 256x512/65536-byte texture uploaded to Vulkan unit 0); the M967 arena registration fix worked ([MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)); page1's first frame RT is still black (disp_1 STATS mean=0.00 max=0) but that is the black fade-in overlay (single full-screen triangle vc=3 with black fragment constant); [ABIRT] disp=0 saved p5d_disp_0.bmp cd=8CF00000 rc=-1 (RT not in pool yet, leftover) and disp=1 cd=8D300000 rc=0 n=59607044; [ABIVTX] #1 vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0. NEXT: wait for the 80M run to reach 70-80M, check the first 8 p5d_disp_*.bmp color evolution and [ABIVTX] #N (draw count/vertex counts): non-black content frames => page1's REAL PICTURE appears (title movie/title); if it stays a single black fill the page is waiting for video decode/loading (check [VDEC]/[IDR]/CRI video).
+
+LOOKUP: [ABITEX] rc=0, [TEXAT], [TEXENT], [MEMREG], resolve_gxm_texture, upload_texture_to_unit, p5d_disp_1.bmp, out80m_m1048memreg.txt -> §18.4512 [relevant: arena registration], §18.4510 [relevant: texture encoding]
