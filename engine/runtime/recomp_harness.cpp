@@ -1299,7 +1299,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
   { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
-  { static int _hd_env = -1; static uint32_t _hd_at = 62000000u;
+  { static int _cf_env = -1; if (_cf_env < 0) { const char* _e = getenv("P5D_CRIFORCE"); _cf_env = (_e && atoi(_e)) ? 1 : 0; }
+    if (_cf_env && g_cur_block == 0x8127B336u) {   // 18.4465: CRI FS wait loop - force the waited flag after N spins
+      static uint32_t _cfo = 0; static uint32_t _cfn = 0; static int _cfp = 0;
+      uint32_t _o = s->r[0];
+      if (_o != _cfo) { _cfo = _o; _cfn = 0; }
+      if (++_cfn == 400u) { uint8_t* _q = GP(_o + 0x40u); if (_q) { uint32_t _one = 1u; std::memcpy(_q, &_one, 4); }
+        if (_cfp++ < 12) { printf("[CFORCE] obj=%08X wait_flag forced at n=%u blk=%08X fib=%08X\n", _o, g_main_n, g_cur_block, g_cur_fiber); fflush(stdout); } }
+      else if (_cfn > 400u && ((_cfn & 0xFFFu) == 0u)) { uint8_t* _q = GP(_o + 0x40u); if (_q) { uint32_t _one = 1u; std::memcpy(_q, &_one, 4); } } }
+    static int _hd_env = -1; static uint32_t _hd_at = 62000000u;
     if (_hd_env < 0) { const char* _e = getenv("P5D_HLEDUMP"); _hd_env = (_e && atoi(_e)) ? 1 : 0;
       const char* _a = getenv("P5D_HLEDUMP_AT"); if (_a && atoi(_a) > 0) _hd_at = (uint32_t)atoi(_a); }
     if (_hd_env) { static std::map<uint32_t,uint32_t> _hd; static int _hddone = 0;
