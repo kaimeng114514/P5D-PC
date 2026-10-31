@@ -1639,16 +1639,18 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
                   uint8_t* _g = (_gt != _pid2gxp.end()) ? GP(_gt->second) : nullptr;
                   if (_g) {
                     uint32_t _pc=0,_po=0; std::memcpy(&_pc,_g+0x24,4); std::memcpy(&_po,_g+0x28,4);
-                    uint32_t _pbase = 0x28u + _po; uint32_t _off = 0;
-                    printf("[ABIGXPP] gxp=%08X pcount=%u pbase=%X n=%u\n", _gt->second, _pc, _pbase, g_main_n);
+                    uint32_t _gsz=0; std::memcpy(&_gsz,_g+8,4);
+                    uint32_t _pbase = 0x28u + _po; uint32_t _off = 0;   // 18.4504 M959: pbase is a FILE OFFSET inside the GXP, not a guest VA
+                    printf("[ABIGXPP] gxp=%08X pcount=%u pbase=%X gsz=%u n=%u\n", _gt->second, _pc, _pbase, _gsz, g_main_n);
                     for (uint32_t _i=0; _i<_pc && _i<64u; ++_i) {
-                      uint8_t* _p = GP(_pbase + _i*16u); if (!_p) break;
+                      if (_pbase + _i*16u + 16u > _gsz) break;
+                      uint8_t* _p = _g + _pbase + _i*16u;
                       int32_t _no=0; std::memcpy(&_no,_p,4);
                       uint16_t _w0=0; std::memcpy(&_w0,_p+4,2);
                       uint32_t _cat=_w0&0xFu, _typ=(_w0>>4)&0xFu, _cmp=(_w0>>8)&0xFu;
                       uint32_t _arr=0,_res=0; std::memcpy(&_arr,_p+8,4); std::memcpy(&_res,_p+0xC,4);
                       const char* _nm = "?";
-                      uint8_t* _np = GP((uint32_t)(_pbase + _i*16u + _no)); if (_np) _nm = (const char*)_np;
+                      if (_no >= 0 && _pbase + _i*16u + (uint32_t)_no < _gsz) _nm = (const char*)(_g + _pbase + _i*16u + _no);
                       uint32_t _tsz = (_typ==0)?4u:((_typ==1||_typ==3)?2u:((_typ==2)?4u:((_typ==4||_typ==5)?1u:2u)));
                       static int _pn_raw=0; if (_pn_raw++<40) { printf("[ABIGXPP]  P[%u] name=%-14s w0=%04X cat=%u typ=%u cmp=%u res=%u arr=%u\n", (unsigned)_i, _nm, _w0, _cat, _typ, _cmp, _res, _arr); }
                       if (_cat==0u && _cmp>=1u && _cmp<=4u && _tsz) {

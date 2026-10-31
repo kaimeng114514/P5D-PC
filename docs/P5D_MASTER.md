@@ -974,6 +974,31 @@
 | M956 | §18.4501: **真实顶点流诊断结果：page1 的绘制序列 = `sceGxmSetVertexStream(ctx, 0, 0x8E500000)` → 索引绘制 `sceGxmDraw(ctx, prim=0, indexType=0, indexData=0x8E600000, indexCount=?)`；但 `CreateVertexProgram` 解析出 `attrN=0`（属性表为空）导致解包未触发（`[ABIVTX]` 0 条）**。`out62m_m1037vtx.txt` 证据：
 | M957 | §18.4502: **确认 `CreateVertexProgram` 的原始参数：`r2=attributes(0x84856114)`、`r3=attributeCount=0`、`stk0=streams(0x848560F0)`、`stk1=streamCount=1`、`stk2=out`——引擎确实传 `attributeCount=0`；属性布局必须从 GXP program 的 `SceGxmProgramParameter` 表隐式推导（GXP 参数表：+0x24 pcount、+0x28 param offset、参数 16B：+0 name偏移、+4 u16 flags(cat=0 ATTRIBUTE,type,comp)、+8 array、+0xC resource index）。已实现：GXP 参数表解析 → 隐式 packed 布局（offset 累加）→ 128B 解包；同时索引绘制用 index buffer 求 max(index)+1 作顶点数；非 Precomputed 路径用 `sceGxmSetVertexProgram` 记录当前 program**。`out62m_m1038vtxdiag.txt` 证据：
 | M958 | §18.4503: **GXP 参数表解析第一版结果：`pcount=1..6`、`pbase=0xE0/0xF0/0x138/0x1E8/0x1F8` 都能读到，但**没有任何 `cat==0` 的 ATTRIBUTE 项**（`[ABIGXPP]` 只打印出 pcount 行，没有 ATTR 行）→ 说明属性不在 GXP 参数表的 category 0 里（或 category/type 位域解读有误）。已加更深诊断：GXP 参数表原始 16B 项（name/w0 hex/cat/typ/cmp/res/arr）+ `r2-0x40` 内存窗口 + `r2-0x48` 处 8 字节 `SceGxmVertexAttribute` 候选解析（旧 host VATTR 的提示）**。`out62m_m1039vtx2.txt` 证据：
+| M959 | §18.4504: **找到 GXP 参数表解析一直无结果的 bug：`pbase = 0x28 + parameter_offset` 是 **GXP 文件内偏移**，但代码里却用 `GP(_pbase + i*16)` 把它当 **guest VA** 去翻译 → 永远返回 null → 循环立即 break → 既无 `[ABIGXPP] P[]` 也无属性项。已修复为 `_g + _pbase + i*16`（`_g` 是 GXP 的 host 指针），并加 GXP size 边界检查、name 指针用 `_g + offset`。** `out62m_m1040gxpp.txt` 证据：
+```
+[ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717      ← 只有 pcount 行
+[ABIGXPP] gxp=8153D318 pcount=2 pbase=F0
+（无 P[]/ATTR 行 —— 因为参数项读取永远 break）
+[ABIVARG]  r2-0x40: 811EFAF6 848560F0 00000001 84B33484 ...   ← 回调栈帧，无属性数组
+[ABIVARG]  attrCand@r2-0x48: {13440,33971,...} ...            ← 代码区垃圾，非属性表
+[ABIVARG] stk0words: 0000000C 00000000 00000045 00000002     ← streams[0]={stride=12,index=0}
+```
+**修复（18.4504）**：
+```cpp
+uint32_t _pc=0,_po=0; memcpy(&_pc,_g+0x24,4); memcpy(&_po,_g+0x28,4);
+uint32_t _gsz=0;      memcpy(&_gsz,_g+8,4);
+uint32_t _pbase = 0x28u + _po;          // FILE OFFSET inside GXP (not a guest VA!)
+for (_i=0.._pc) {
+    if (_pbase + _i*16u + 16u > _gsz) break;
+    uint8_t* _p = _g + _pbase + _i*16u;         // 正确：host 指针
+    int32_t _no = rd32(_p); uint16_t _w0 = rd16(_p+4);
+    _nm = (const char*)(_g + _pbase + _i*16u + _no);
+    ...
+}
+```
+编译链接成功；已启动 62M 验证运行（`out62m_m1041gxpfix.txt`）。
+NEXT：这次应能打印 `[ABIGXPP]  P[]`（cat/typ/cmp）与 `[ABIGXPP]  ATTR[]`；若 ATTRIBUTE 项存在 → 隐式属性布局生效 → `[ABIVTX]` 解包真实顶点 → RT 出现真实几何。 |
+| §18.4504 | Found the bug that made GXP parameter parsing always empty: pbase = 0x28 + parameter_offset is a FILE OFFSET inside the GXP, but the code used GP(_pbase + i*16) treating it as a guest VA -> GP always returns null -> the loop breaks immediately -> neither [ABIGXPP] P[] nor attribute entries ever printed. Fixed to _g + _pbase + i*16 (with _g the GXP host pointer), added GXP size bounds checks, and the name pointer now uses _g + offset. Evidence (out62m_m1040gxpp.txt): [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717 and gxp=8153D318 pcount=2 pbase=F0 (only pcount lines, no P[]/ATTR lines because the parameter reads always broke); [ABIVARG] r2-0x40: 811EFAF6 848560F0 00000001 84B33484 ... (a callback stack frame, no attribute array); [ABIVARG] attrCand@r2-0x48: {13440,33971,...} (code-area garbage, not an attribute table); [ABIVARG] stk0words: 0000000C 00000000 00000045 00000002 (streams[0]={stride=12,index=0}). FIX 18.4504: uint32_t _pc=0,_po=0; memcpy(&_pc,_g+0x24,4); memcpy(&_po,_g+0x28,4); uint32_t _gsz=0; memcpy(&_gsz,_g+8,4); uint32_t _pbase=0x28u+_po; for _i: if (_pbase+_i*16u+16u>_gsz) break; uint8_t* _p=_g+_pbase+_i*16u; int32_t _no=rd32(_p); uint16_t _w0=rd16(_p+4); _nm=(const char*)(_g+_pbase+_i*16u+_no). Build+link OK; 62M verification run started (out62m_m1041gxpfix.txt). NEXT: this time [ABIGXPP] P[] (cat/typ/cmp) and [ABIGXPP] ATTR[] should be printed; if ATTRIBUTE entries exist the implicit attribute layout takes effect -> [ABIVTX] unpacks real vertices -> real geometry appears in the RT. |
 ```
 [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717
 [ABIGXPP] gxp=8153D318 pcount=2 pbase=F0
@@ -489464,3 +489489,39 @@ NEXT：按原始项/内存窗口确认属性表位置：
 ANTI-FORGETTING ENTRY. Keywords: M958 GXP parameter table parsing v1 shows pcount=1..6 (pbase=0xE0/0xF0/0x138/0x1E8/0x1F8) but NO cat==0 ATTRIBUTE entries, so the vertex attributes are not in the GXP parameter table category 0. Evidence out62m_m1039vtx2.txt: [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717; gxp=8153D318 pcount=2 pbase=F0; gxp=8153C910 pcount=5 pbase=1F8; gxp=8153CBA0 pcount=6 pbase=190; gxp=84B544C8 pcount=3 pbase=1E8; no ATTR lines; [ABIVTX] 0/[ABIIDX] 0/[ABIVP] 0 (run only reached n=28.9M, page1 not executed). The small pcount looks like uniform/constant parameters, so the attributes must live elsewhere: a SceGxmVertexProgram internal extension area / GXP attribute container / the r2-0x48 array found by the old host. Old host VATTR hint (eboot_probe.cpp): 8-byte entries starting at r2-0x48 = {u16 streamIndex, u16 offset, u8 format, u8 componentCount, u8 regSet}, with r3 as the entry count. DIAGNOSTIC ENHANCEMENTS 18.4503: (1) raw GXP parameter entries print (first 40) printf('[ABIGXPP] P[%u] name=%-14s w0=%04X cat=%u typ=%u cmp=%u res=%u arr=%u'); (2) r2-0x40 24-u32 memory window ([ABIVARG] r2-0x40:); (3) 6 SceGxmVertexAttribute candidates at r2-0x48 ([ABIVARG] attrCand@r2-0x48: {stream,off,fmt,cmp}). Build+link OK; 62M diagnostic run started out62m_m1040gxpp.txt. NEXT: from the raw entries/memory window confirm where the attribute table really is; if at r2-0x48 parse the 8B entries and save them at CreateVertexProgram; re-unpack so real geometry appears.
 
 LOOKUP: [ABIGXPP], [ABIVARG], r2-0x48, SceGxmVertexAttribute, gxp_containers.py, out62m_m1040gxpp.txt -> §18.4502 [relevant: GXP implicit layout], §18.4501 [relevant: attrN=0]
+### 18.4504 PORT M959: GXP 参数偏移被误当 guest VA 的 bug（属性表解析一直为空的原因）
+
+1) `out62m_m1040gxpp.txt`：
+```
+[ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717
+[ABIGXPP] gxp=8153D318 pcount=2 pbase=F0
+（无 P[]/ATTR 行）
+[ABIVARG]  r2-0x40: 811EFAF6 848560F0 00000001 84B33484 00000000 00000000 00000001 0000000C ...
+[ABIVARG]  attrCand@r2-0x48: {13440,33971,fmt=0,cmp=0} {64246,33054,fmt=240,cmp=96} ...
+[ABIVARG]  stk0words: 0000000C 00000000 00000045 00000002
+```
+2) 根因：`_pbase = 0x28 + parameter_table_offset` 是 **GXP 文件内偏移**；
+   代码却写 `GP(_pbase + _i*16u)` → 把偏移当 **guest VA** → 翻译失败返回 null → `break`。
+3) 修复（18.4504）：
+```cpp
+uint32_t _pc=0,_po=0; std::memcpy(&_pc,_g+0x24,4); std::memcpy(&_po,_g+0x28,4);
+uint32_t _gsz=0;      std::memcpy(&_gsz,_g+8,4);
+uint32_t _pbase = 0x28u + _po;              // FILE OFFSET inside the GXP (NOT a guest VA)
+for (uint32_t _i = 0; _i < _pc && _i < 64u; ++_i) {
+    if (_pbase + _i*16u + 16u > _gsz) break;
+    uint8_t* _p = _g + _pbase + _i*16u;
+    int32_t _no = 0; std::memcpy(&_no, _p, 4);
+    uint16_t _w0 = 0; std::memcpy(&_w0, _p + 4, 2);
+    uint32_t _cat=_w0&0xF, _typ=(_w0>>4)&0xF, _cmp=(_w0>>8)&0xF;
+    const char* _nm = "?";
+    if (_no >= 0 && _pbase + _i*16u + (uint32_t)_no < _gsz) _nm = (const char*)(_g + _pbase + _i*16u + _no);
+    ...
+}
+```
+4) 编译链接成功；已启动 62M 验证运行：`out62m_m1041gxpfix.txt`。
+NEXT：应打印 `[ABIGXPP] P[]`（cat/typ/cmp）与 `ATTR[]`；若存在 ATTRIBUTE 项 → 隐式布局生效 → `[ABIVTX]` 解包 → **RT 出现真实几何**。
+验证：`out62m_m1040gxpp.txt`、`out62m_m1041gxpfix.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M959 the GXP parameter parsing bug - pbase = 0x28 + parameter_table_offset is a FILE OFFSET inside the GXP but the code used GP(_pbase + i*16) treating it as a guest VA, so GP always returned null and the loop broke immediately; neither [ABIGXPP] P[] nor attribute entries were ever printed. Evidence out62m_m1040gxpp.txt: [ABIGXPP] gxp=81539944 pcount=1 pbase=E0 n=1717; gxp=8153D318 pcount=2 pbase=F0; no P[]/ATTR lines; [ABIVARG] r2-0x40: 811EFAF6 848560F0 00000001 84B33484 ... (callback stack frame, no attribute array); [ABIVARG] attrCand@r2-0x48: {13440,33971,...} code-area garbage; [ABIVARG] stk0words: 0000000C 00000000 00000045 00000002 (streams[0]={stride=12,index=0}). FIX 18.4504: compute _gsz=*(u32*)(_g+8); _pbase=0x28+_po; loop with bounds check (_pbase+_i*16+16<=_gsz), read _p=_g+_pbase+_i*16, name at _g+_pbase+_i*16+_no. Build+link OK; 62M verification run started out62m_m1041gxpfix.txt. NEXT: [ABIGXPP] P[] (cat/typ/cmp) and ATTR[] should now print; if ATTRIBUTE entries exist the implicit attribute layout takes effect -> [ABIVTX] unpacks real vertices -> real geometry in the RT.
+
+LOOKUP: [ABIGXPP], pbase file offset, GP, parameter_table_offset, [ABIVARG] r2-0x40, out62m_m1041gxpfix.txt -> §18.4503 [relevant: GXP param diagnostics], §18.4502 [relevant: implicit attr layout]
