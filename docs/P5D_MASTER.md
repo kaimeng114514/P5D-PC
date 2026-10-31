@@ -1004,6 +1004,30 @@
 | M986 | §18.4531: **`P5D_JOBINLINE` 试验结果：worker 回调被递归调用导致挂死——但由此确认「job 执行器本来就在 guest 内运行」**。`out80m_m1061jobinline.txt`：
 | M987 | §18.4532: ★★★★★★★ **job 执行器探针结果：page1 确实在执行 job worker（`[JOBEXEC]` 40+ 条，含 init trophy），但 `[JOBDONE]` = 0 → 完成路径 `FUN_8116f75e` 从未被进入 ⇒ 所有 job 永远"未完成"，状态机只能靠 JOBFORCE 强推**。证据（`out80m_m1062jobprobe.txt`）：
 | M988 | §18.4533: ★★★★★★★ **找到 init trophy 永不完成的直接原因：`appOtNode` 的 "netTrophyProc" 状态检查 `FUN_8105a0d4` 永远返回 false（status<4）→ worker 返回 -1 → app job 永不完成**。反编译：
+| M989 | §18.4534: ★★★★★★★★ **`P5D_OTFORCE` 成功打通 job 完成链：状态强制 → worker 返回 0 → `[JOBDONE]` 首次出现 → job 状态机**自然推进**（JOBFORCE 关闭也推进！）**。证据（`out80m_m1063otforce.txt`）：
+```
+[OTFORCE] #1 status=85B86A50 old=0 -> 4 n=59604836          ← 强制 netTrophyProc 状态
+[JOBDONE] #1 node=85B86A1C n=59626301                        ← ★ 完成路径 FUN_8116f75e 首次触发！
+[IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59624798
+[IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59645068
+[IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59664996
+[IDR] at=81185036 state=1 idx=1 handle=85B86A1C n=59665000   ← ★ 状态机自然推进（无需 JOBFORCE）
+[JOBFORCE] 0                                                  ← 本 run 完全未用 JOBFORCE
+[SEQREQ] page=1 ...
+（到 n=62.5M 仍只有 1 发 draw/present）
+```
+结论：
+1) **job 完成链彻底打通**：`OTFORCE` 让 `FUN_8105a0d4` 返回 true → worker 返回 0 → 执行器走 `0x8116fa66 → FUN_8116f75e` 完成路径 → `[JOBDONE]` → `FUN_8116f8d2` 返回 0 → 状态机推进（state=2 idx=0 → state=1 idx=1）——**这是第一次在无 JOBFORCE 干预下自然推进**；
+2) page1 已进入步骤 1（8 步初始化链的第 2 步），但后续步骤的 job 仍可能卡在各自的完成检查上（page1 update `FUN_8116f900(0x81309690)` 返回 0 ⇒ 无新 draw）；
+3) 8 步函数入口（page1 start 表）：`0x811848FD, 0x81184A07, 0x81184ACF, 0x81184BBF, 0x81184D41, 0x81184E41, 0x81184F7B, 0x81184C75`（偶数地址 0x811848FC/0x81184A06/…）。
+NEXT：
+```
+① 反编译步骤 1..7 函数（0x811848FC/0x81184A06/0x81184ACE/0x81184BBE/0x81184D40/0x81184E40/0x81184F7A/0x81184C74）
+② 找各步骤的完成检查（类似 FUN_8105a0d4），按 OTForce 模式接入（或统一 job 完成状态强制）
+③ 让 8 步全部走完 → page1 update 对象（0x81309690）就绪 → 场景推进 → 新 draw → S1_TITLE 画面
+```
+验证：`out80m_m1063otforce.txt`（[OTFORCE]/[JOBDONE]/[IDR] 证据）、`otnode.txt`（反编译）。 |
+| §18.4534 | P5D_OTFORCE successfully unblocks the job completion chain: status forced -> worker returns 0 -> [JOBDONE] appears for the first time -> the job state machine advances NATURALLY (even with JOBFORCE disabled). Evidence (out80m_m1063otforce.txt): [OTFORCE] #1 status=85B86A50 old=0 -> 4 n=59604836 (forced netTrophyProc status); [JOBDONE] #1 node=85B86A1C n=59626301 (the completion path FUN_8116f75e fired for the first time!); [IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59624798; [IDR] n=59645068; [IDR] n=59664996; [IDR] at=81185036 state=1 idx=1 handle=85B86A1C n=59665000 (the state machine advanced naturally, no JOBFORCE); [JOBFORCE] 0 (not used at all in this run); [SEQREQ] page=1; up to n=62.5M still only 1 draw/present. Conclusions: (1) the job completion chain is fully working: OTForce makes FUN_8105a0d4 return true -> the worker returns 0 -> the executor takes 0x8116fa66 -> FUN_8116f75e completion -> [JOBDONE] -> FUN_8116f8d2 returns 0 -> the state machine advances (state=2 idx=0 -> state=1 idx=1) - the first natural advance without JOBFORCE; (2) page1 is now on init step 1 (the 2nd of the 8-step startup chain) but later steps' jobs may still stall on their own completion checks (page1 update FUN_8116f900(0x81309690) returns 0 => no new draws); (3) page1 start table function entries: 0x811848FD, 0x81184A07, 0x81184ACF, 0x81184BBF, 0x81184D41, 0x81184E41, 0x81184F7B, 0x81184C75 (even addresses 0x811848FC/0x81184A06/...). NEXT: (1) decompile steps 1..7 (0x811848FC/0x81184A06/0x81184ACE/0x81184BBE/0x81184D40/0x81184E40/0x81184F7A/0x81184C74); (2) find each step's completion check (like FUN_8105a0d4) and force via the OTForce pattern (or a generic job-completion state force); (3) finish all 8 steps -> page1 update object (0x81309690) ready -> scene advances -> new draws -> S1_TITLE picture. |
 1) `FUN_8105a0ee(param_1)`（trophy/otNode 初始化）：
 ```c
 if (DAT_8132F984 == 0) {
@@ -491890,3 +491914,38 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M988 init trophy never completes because the appOtNode 'netTrophyProc' status check FUN_8105a0d4 always returns false (status<4) -> worker returns -1 -> app job never completes. FUN_8105a0ee(param_1): if(DAT_8132F984==0){ DAT_8132F980=0; iVar1=FUN_811da534(0xdc); SceLibc_6DC1F0D8(iVar1,0,0xdc); if(iVar1!=0){ DAT_8132F984=FUN_811dab8c(param_1,'netTrophyProc',0,0,0,0, 0x8105a261 worker,0,&LAB_8105a408_1 completion,iVar1); return DAT_8132F984; } } return 0;. FUN_8105a0d4(): return 3 < **(int**)(DAT_8132F984 + 0x34); (status pointer = *(node+0x34), requires status[0]>=4). Chain: init trophy worker 0x81184809 -> FUN_81184808 -> FUN_8102d544 -> FUN_8102d55e -> FUN_8105a0d4(); FUN_81184808: if(FUN_8102d544()==0) return 0; return 0xffffffff; (failure => job never completes => [JOBDONE]=0). P5D_OTFORCE (18.4533): if(P5D_OTFORCE && (pcv&~1)==0x8105A0D4u){ node=rd32(0x8132F984); stp=node?rd32(node+0x34):0; if(stp && rd32(stp)<4){ wr32(stp,4); printf('[OTFORCE] #%d status=%08X old=%u -> 4 n=%u'); } } -> FUN_8105a0d4 returns true -> worker returns 0 -> app job completes naturally (0x8116fa66 -> FUN_8116f75e) -> FUN_8116f8d2 returns 0 -> page1 state machine advances naturally (no JOBFORCE). Compiled OK ([OTFORCE] x1); verification run P5D_OTFORCE=1 (JOBFORCE/JOBINLINE off) -> out80m_m1063otforce.txt. NEXT: [OTFORCE] appears -> [JOBDONE] appears -> [IDR] state/idx advances naturally -> page1 new draws/presents -> scene objects appear -> S1_TITLE picture.
 
 LOOKUP: M988, P5D_OTFORCE, [OTFORCE], FUN_8105a0ee, FUN_8105a0d4, DAT_8132F984, DAT_8132F980, 0x8132F984, netTrophyProc, 0x8105a261, LAB_8105a408_1, FUN_8102d544, FUN_8102d55e, FUN_81184808, 0x81184809, out80m_m1063otforce.txt, otnode.txt -> §18.4532 [relevant: JOBDONE=0], §18.4531 [relevant: job executor]
+### 18.4534 PORT M989: OTFORCE 打通 job 完成链（JOBDONE 首次出现 + 状态机自然推进）
+
+1) `out80m_m1063otforce.txt` 证据：
+```
+[OTFORCE] #1 status=85B86A50 old=0 -> 4 n=59604836
+[JOBDONE] #1 node=85B86A1C n=59626301                       ← ★ FUN_8116f75e 首次触发
+[IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59624798
+[IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59645068
+[IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59664996
+[IDR] at=81185036 state=1 idx=1 handle=85B86A1C n=59665000  ← ★ 自然推进
+[JOBFORCE] 0
+[SEQREQ] page=1（page0..page5 表）
+（到 n=62.5M 仍 1 发 draw/present）
+```
+2) 结论：
+- **job 完成链彻底打通**（OTFORCE → FUN_8105a0d4 true → worker 0 → 完成路径 → JOBDONE → FUN_8116f8d2=0 → 状态机推进）；
+- **首次在无 JOBFORCE 干预下自然推进**（state=2 idx=0 → state=1 idx=1）；
+- page1 进入 8 步初始化链的第 2 步；后续步骤 job 可能仍需各自的完成检查处理；
+- page1 update `FUN_8116f900(0x81309690)` 仍返回 0 ⇒ 无新 draw。
+3) 8 步函数（page1 start 表，偶数地址）：
+```
+0x811848FC / 0x81184A06 / 0x81184ACE / 0x81184BBE
+0x81184D40 / 0x81184E40 / 0x81184F7A / 0x81184C74
+```
+NEXT：
+```
+① 反编译步骤 1..7 函数，找各自完成检查（疑似与 FUN_8105a0d4 同模式）
+② 按 OTForce 模式接入强制（或统一 job 完成状态强制）
+③ 8 步走完 → page1 update 对象 0x81309690 就绪 → 场景推进 → 新 draw → S1_TITLE 画面
+```
+验证：`out80m_m1063otforce.txt`、`otnode.txt`。
+
+ANTI-FORGETTING ENTRY. Keywords: M989 P5D_OTFORCE successfully unblocks the job completion chain: status forced -> worker returns 0 -> [JOBDONE] appears for the first time -> the job state machine advances NATURALLY (even with JOBFORCE disabled). Evidence out80m_m1063otforce.txt: [OTFORCE] #1 status=85B86A50 old=0 -> 4 n=59604836; [JOBDONE] #1 node=85B86A1C n=59626301 (completion path FUN_8116f75e first fired); [IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59624798 / n=59645068 / n=59664996; [IDR] at=81185036 state=1 idx=1 handle=85B86A1C n=59665000 (natural advance, no JOBFORCE); [JOBFORCE] 0; [SEQREQ] page=1; up to n=62.5M still 1 draw/present. The completion chain works: OTForce makes FUN_8105a0d4 return true -> worker returns 0 -> executor takes 0x8116fa66 -> FUN_8116f75e completion -> [JOBDONE] -> FUN_8116f8d2 returns 0 -> state machine advances (state=2 idx=0 -> state=1 idx=1) - the first natural advance without JOBFORCE. page1 is now on init step 1 (2nd of 8); later steps' jobs may still stall on their own completion checks (page1 update FUN_8116f900(0x81309690) returns 0 => no new draws). Page1 start table entries: 0x811848FD, 0x81184A07, 0x81184ACF, 0x81184BBF, 0x81184D41, 0x81184E41, 0x81184F7B, 0x81184C75 (even addresses 0x811848FC/0x81184A06/0x81184ACE/0x81184BBE/0x81184D40/0x81184E40/0x81184F7A/0x81184C74). NEXT: decompile steps 1..7, find each step's completion check (like FUN_8105a0d4), force via the OTForce pattern (or a generic job-completion state force); finish all 8 steps -> page1 update object (0x81309690) ready -> scene advances -> new draws -> S1_TITLE picture.
+
+LOOKUP: P5D_OTFORCE, [OTFORCE], [JOBDONE], [IDR] state=1 idx=1, 85B86A1C, 85B86A50, FUN_8105a0d4, FUN_8116f75e, 0x8116fa66, page1 8 steps 0x811848FC/0x81184A06/0x81184ACE/0x81184BBE/0x81184D40/0x81184E40/0x81184F7A/0x81184C74, 0x81309690, out80m_m1063otforce.txt -> §18.4533 [relevant: OTFORCE root cause], §18.4532 [relevant: JOBDONE=0]
