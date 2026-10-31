@@ -1299,6 +1299,16 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
   { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _bt_env = -1; if (_bt_env < 0) { const char* _e = getenv("P5D_BT57"); _bt_env = (_e && atoi(_e)) ? 1 : 0; }
+    if (_bt_env && g_cur_block == 0x8127BB30u && g_main_n >= 60000000u) {
+      static int _btn = 0; if (_btn++ < 3) {
+        uint32_t _sp = s->r[13];
+        printf("[BT57] pacer obj=%08X sp=%08X pc=%08X fib=%08X n=%u\n", s->r[0], _sp, g_cur_block, g_cur_fiber, g_main_n);
+        printf("[BT57]  app-stack returns:");
+        int _cnt = 0;
+        for (uint32_t _k = 0; _k < 0x600u; _k += 4) { uint8_t* _q = GP(_sp + _k); if (!_q) break; uint32_t _v = 0; std::memcpy(&_v, _q, 4);
+          if (_v >= 0x81000000u && _v < 0x81260000u) { printf(" %08X", _v); if (++_cnt >= 24) break; } }
+        printf("\n"); fflush(stdout); } } }
   { static int _p1_env = -1; if (_p1_env < 0) { const char* _e = getenv("P5D_P1TICK"); _p1_env = (_e && atoi(_e)) ? 1 : 0; }
     if (_p1_env && g_main_n >= 59500000u && (g_main_n % 1000000u) < 2000u) { static uint32_t _p1_last = 0;
       if (g_main_n - _p1_last >= 1000000u) { _p1_last = g_main_n;

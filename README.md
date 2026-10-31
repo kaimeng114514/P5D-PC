@@ -11,45 +11,48 @@ CPU 采用 **AOT 静态重编译**（原版 ARM/Thumb 代码一次性翻译为 x
 
 ---
 
-## 当前状态（2026-10-30，持续更新；整体约 50–55%）
+## 当前状态（2026-10-31，里程碑 M923；整体约 55–60%）
 
 | 模块 | 完成度 | 当前状态 |
 |---|---|---|
-| ARM/Thumb → x86-64 **AOT 静态重编译** | 90–95% | 共 **229,791 个基本块 / 32 个宿主批次**已翻译并原生运行；`[NOFN]=0`。M864 通过 `batch_031`（补充 `extra6_funcs.json`：`{va:0x8118285A,size:0x174}`）修复了 IDA 函数边界截断造成的缺失块 `0x811829CC`（直接导致游戏自己的虚拟文件 worker 线程死亡） |
-| 原版 eboot/SELF **原样加载** | 85–90% | ELF 段映射、导入表、NID 解析可用；默认 30M guest 块稳定 `exit=0`；**完整 boot 链已打通**：S0_LOGO → 启动影片（约 100 秒虚拟时间）→ 应用世界在 n≈61M 处恢复运行 |
-| **HLE 系统 API 接管** | 65–70% | 内存/线程/fiber/信号量/事件标志/消息/文件/GXM 骨架工作；M868 修复 `sceKernelCreateLwMutex` 语义（原实现返回堆指针而非错误码 0，导致 CRI 初始化静默失败）；新增 `[CRILOG]` 探针接管 CRI 日志函数，可直接看到游戏内部初始化错误 |
-| **GXM → Vulkan** | 40–50% | Vulkan 后端初始化成功；`CreateContext` / `CreateRenderTarget` / ShaderPatcher / 程序创建已通；**BeginScene/EndScene/Present 仍为 0**（尚未产生可见帧） |
-| 资源 / 文件系统 | 60–65% | 已挂载 `data.cpk`（10,555 文件）+ `vita.cpk`（531 文件）；25 个 title/staff/sound 资源名已解析；两个 GLOBAL_RESOURCE 加载器对象已到达 state `0xC`；但 appResourceList 的 stream 对象因 binder 未初始化停在 state `0x13` |
-| 线程 / fiber / 调度 | 75–80% | 游戏已进入自己的每帧调度循环（GFD 主循环 + appProcess 调度器 + app 帧更新）；帧计数 ctr 已推进到 681+；虚拟文件 worker 线程（`4001B000`）已修复存活，`FUN_81182742` 虚拟文件处理器累计运行 **729 万次以上** |
-| 音频（SceNgs / CRI Atom） | 5–10% | CRI Atom 初始化已真正进入；当前因 **ACF 配置文件缺失 + 工作缓冲不足** 中止（见下方阻塞） |
-| 输入（SceCtrl / SceTouch） | ~10% | Pad 骨架可用，游戏 side 尚未接入完整输入流 |
-| 视频解码 | 5–10% | 启动 USM 影片的 guest 解码循环已跑通（Huffman 解码器 `FUN_811DF91A`，约 5,000 万块 ≈ 100 秒虚拟时间），真实解码调用 12 次 |
-| 场景链 S0→S4→RESULT | S0 ✅ / S1 加载中 / S2–S4 0/7 | S0_LOGO 完整通过；S1_TITLE 资源加载被上方 binder 卡点阻塞；S2_MENU / S3_SELECT / S4_GAME / RESULT 尚未到达 |
-| 单 exe 打包 / 移动端 | ~40% / 0% | 仓库/许可证/审计/CI 在跑，尚未产出单文件成品；移动端未开始 |
+| ARM/Thumb → x86-64 **AOT 静态重编译** | 90–95% | **229,791 个基本块 / 32 个宿主批次**已翻译并原生执行，`[NOFN]=0`；修复全局性 **pc-relative 字面量加载错误**（`ldr/ldrd/vldr [pc,#imm]` 原先按 `r15` 生成 → 485 处修正、22/32 批次重编） |
+| 原版 eboot/SELF **原样加载** | 85–90% | ELF 段映射、导入表、NID 解析、模块启动全部可用；默认 30M 块回归稳定 `exit=0`；**完整 boot 链已打通**：S0_LOGO → 启动 USM 影片（约 100 秒虚拟时间，guest 软件解码器 `FUN_811DF91A`）→ 应用世界在 **n≈59.5M** 恢复运行 → **S1 标题加载页（page1）开始运行** |
+| **HLE 系统 API 接管** | 70–75% | 内存/线程/fiber/信号量/事件标志/消息/文件/GXM/CRI 日志骨架均工作；本阶段新增：`sceKernelCreateLwMutex` 语义修正、`sceKernelLockLwMutexCB`(0x812B2800) 别名、`sceDisplayWaitVblankStartMultiCB` 时间片模拟、`sceKernelGetProcessTimeWide` 虚拟时钟模式、CRI FS 初始化桥（`0x8128399E`）等 |
+| **GXM → Vulkan** | 50–60% | Vulkan 后端/窗口/交换链初始化成功；`CreateContext` / `CreateRenderTarget` / ShaderPatcher / 程序与参数缓存可用；**修复 `sceGxmGetRenderTargetMemSize` 从不写 out 参数导致的 2.2GB 垃圾分配 OOM**；guest displayQueueCallback 已正确注册；**BeginScene / EndScene / Draw / Present 仍未发生（尚无可见帧）** |
+| 资源 / 文件系统 | 65–70% | `data.cpk`（10,555 文件）+ `vita.cpk`（531 文件）已挂载；**CRI FS binder 已初始化并保持**（`binit=0x816A0BA0`，n=5000 由 HLE 直接调用 guest `criFs_Initialize`）；page1 阶段 **CRI 流已打开（`streamcnt=3`）**，sequence 控制器 `page0..page5` 回调全部注册；读完成投递链路仍在定位 |
+| 线程 / fiber / 调度 | 85–90% | **guest 双 fiber 启动链完全打通**（fiber A 原生完成位 → `FUN_8120683C` 返回 → 销毁 A → 运行 fiber B）；线程级 `sceFiberGetSelf` 重新武装 dummy 使调度器恢复切换；新增**周期抢占 + 虚拟唤醒期限**（`P5D_PERIODPUMP`/`P5D_THRYIELD`），修复"抢占后 worker 永久 waiting"；调度实验早期门控 `n>=100000` 保护 CRI 初始化 |
+| 音频（SceNgs / CRI Atom） | 5–10% | CRI Atom 初始化已进入；仍缺 ACF/ACB 配置与解码，音频输出为桩 |
+| 输入（SceCtrl / SceTouch） | ~10% | Pad/Touch HLE 骨架可用，可注入按键；游戏侧输入流未接通 |
+| 视频解码 | 10–15% | 启动 USM 影片由 guest 软件解码跑通（约 5,000 万块）；`VdecInitLibrary` 已在 page1 被调用一次，真实 AVC/CRI Mana 解码未完成 |
+| 场景链 S0→S4→RESULT | **S0 ✅ / S1 加载中 / S2–S4 0/7** | S0_LOGO 完整通过；S1_TITLE 进入 **boot page1（标题加载页）**，`ctr=9`、页面序列回调活跃，但页未结束；S2_MENU / S3_SELECT / S4_GAME / RESULT 未到达 |
+| 单 exe 打包 / 移动端 | ~40% / 0% | 仓库/许可证/审计/CI 在跑；单文件成品与移动端尚未开始 |
 
-### 最近关键里程碑（M844–M868）
+### 最近关键里程碑（M869–M923）
 
-- **M844–M847**：显示回调桥接（`p5d_hle_set_display_cb` / display queue）；`mb_811EB930` 显示提交空指针守卫（手工块）
-- **M848–M850**：启动影片快速结束（`call_guest_cb2` + 影片完成回调），boot 不再卡在影片播放
-- **M852–M859**：修正探针判定错误（嵌套 fiber 执行中 `g_blkcnt_total` 冻结 → 全部迟采样改用 `g_main_n`）；**关键突破**：之前"boot 后就停住"其实是启动 dummy-USM 影片造成的约 100 秒虚拟时间挂起，应用世界在 **n≈60,916,231** 正式恢复运行
-- **M860–M866**：恢复后一切都在运行（GFD 主循环、app 帧循环、sequence 观察者、appResourceList 泵、initDataRead 步骤），唯一卡点是**异步文件读取不完成**；随后完整解码了虚拟文件层：处理器 `FUN_81182742`（24 项状态跳转表 `0x81182764`）、读取器 `FUN_811823FE`（stream 字段 `+0x88 大小/+0x94 缓冲/+0x9C binder 句柄/+0xA0 完成标志`，状态 `0x10→0x11→0x13/0xC`）
-- **M863**：根因定位——游戏自己的虚拟文件 worker 线程 `4001B000` 在第一次循环后死亡；`[THREXIT] badblock tid=4001B000 pc=811829CC` 指出缺失的基本块
-- **M864**：用补充批次 `batch_031` 补上 `0x811829CC`（处理器函数尾部，IDA 边界 `FUN_81182742 size=280` 截断）→ **worker 存活，虚拟文件处理器运行 729 万次以上，stream 状态开始推进（0→0x10）**
-- **M867**：确认 binder 模块从未初始化（`DAT_8153FEF4=0` 全程；初始化点 `FUN_81284960` @0x81284CDC，唯一调用者链 `FUN_8128399E = criFs_Initialize`）
-- **M868**：**修复重大 HLE 语义 bug**：`sceKernelCreateLwMutex` 原返回 `hle_malloc(64)` 指针，而 API 返回错误码（0=成功）→ CRI 初始化报 `E10062288:sceKernelCreateLwMutex function has failed.` 并中止；修复后 CRI Atom/FS 初始化真正向前推进，`[CRILOG]` 探针暴露出下一批精确阻塞
+- **M869–M871**：boot 影片阶段真实解码（n 5M→59.5M）；`ctr` 开始增长；`[SEQST]`/`[SEQREQ]`/`[SEQCB]` 页面序列控制器初始化，`page0..page5` 回调注册
+- **M885（18.4430）**：**fiber RUNNING 位修复**——guest `FUN_812067A0` 只有 fiber `+0x80` bit0 置位才置完成位 bit2；HLE `fiber_load` 补置 bit0 → fiber A 完成投递打通，启动链解锁
+- **M889（18.4438/18.4439）**：**线程级 `sceFiberGetSelf` 修复**——原先返回的 dummy 被清零且 guest 链表头为 0，`FUN_8120683C` 永不调用 `sceFiberSwitch`；改为每次调用**重新武装** dummy（`+0x80=1`、`+0x94` 指向存活 fiber）→ 调度器恢复切换，外层 n 从 1717 推进到 30,000,000
+- **M894 / M896**：app 主循环真正运行（boot 影片解码循环 `0x811DFxxx`）；page1 活跃：`ctr` 0→174、`[SEQCB]` 179 条、`[NSET]` 14,720、`[SAVESLOT]` 4,909
+- **M899–M902**：display queue 回调确认已注册；Ghidra 证明 **`FUN_81284960` 写 binder 全局、唯一调用者 `FUN_8128399E` = CRI FS 初始化入口**
+- **M904（18.4449）**：**GXM ABI `sceGxmGetRenderTargetMemSize` 从不写 out 参数** → guest 拿栈垃圾 `0x846001FC` 当 memblock 大小（2.2GB）→ `[MEMA-OOM]` ×5；修复后 `size=0x33D000` 正常分配
+- **M906–M917**：page1 定向探针（`[H57]`/`[H57M]`/`[HLEDUMP]`/`[PDUMP]`）；确认 page1 期间**没有任何文件 I/O API 调用**，主上下文只有 libc + `DelayThreadCB`；部分 worker 线程 `ready=1` 却从未执行
+- **M911–M914**：`[PDUMP]` 证明 worker 被 `g_cur_thr` 上下文屏蔽；周期抢占判据最初用 `g_blkcnt_total`（嵌套执行冻结）→ 改用 **job_probes 调用计数**后抢占生效；**n 突破 59.8M 卡点推进到 64M**；修复"抢占后无唤醒期限 → worker 永久 waiting"；`n>=100000` 门控保护 criFs 初始化（binder 恢复）
+- **M915**：门控版长跑 **CRI 资源流开始工作（`streamcnt=3`）**，n 推进到 63M，binder 持久
+- **M919（18.4464）**：`[HLEDUMP]` 发现 **`sceKernelLockLwMutexCB`(0x812B2800) 有 1,740,287 次调用却无 HLE 实现**（WaitEventFlag 9.23M 比 SetEventFlag 6.98M 多 225 万次）→ 补别名
+- **M921（18.4466）**：反汇编发现 **CRI 帧节拍器 `FUN_8127BB30`**：用 `sceKernelGetProcessTimeWide()/1000` 计算帧间隔并 `DelayThreadCB(sleep)`；真实墙钟 vs 虚拟时间不一致 → `P5D_VTIME=1`（进程时间/RTC 返回虚拟时间）
+- **M922–M923**：`P5D_WAKE57` 周期唤醒阻塞在 eventflag `60018000/6001A000/6001C000` 的 loader worker；`[P1TICK]` 每 1M n 打印 page1 进度（`ctr`/seq/pc/GXM 计数）
 
 ### 当前阻塞（明确、可执行）
 
-- **CRI Atom 初始化失败**（`E2009072703:Insufficient buffer size.` 来自 `FUN_81224160 = criAtom_Initialize`；`E2010052671:Can not open ACF file.`）
-- → `criFs_Initialize`（`FUN_8128399E`）未被调用 → **CRI FS binder 模块未初始化**（`DAT_8153FEF4=0`）
-- → 资源文件大小查询被拒绝（`W2008121610:The binder module is not initialized.`）→ 虚拟文件 stream 停在错误态 `0x13`
-- → `global_resource_810995D4()` 忙位不清 → `init gamedata` 不结束 → **boot page1 不结束 → 标题页不出现**
+- **S1 boot page1（标题加载页）的帧循环不退出**：主 fiber 停留在 CRI FS 帧节拍循环（`FUN_8127BB30` → `FUN_8127C0E8` → `DelayThreadCB`；等待标志循环 `FUN_8127B336`），worker 线程空闲/等待，**该阶段没有任何文件 I/O API 调用、也没有 GXM 绘制调用**；`[P1TICK]` 显示外层 n 极慢推进（约 9 分钟 0.2M）——**外层循环被内层嵌套执行吞掉**
+- 因为 page1 不结束，**标题页/标题影片不开始**，因此 **GXM BeginScene/Draw/Present 仍未发生**（无可见帧）
+- 音频（ACF/ACB）、真实视频解码（AVC/CRI Mana）、输入流仍未接入
 
 下一步任务顺序：
-1. 定位 ACF 文件（`*.acf`）在 CPK 中的名字，让文件 HLE 返回 guest 期望的路径；修复 criAtom "工作缓冲不足"（调用方传入大小 vs 需求）
-2. criAtom 初始化完成 → `criFs_Initialize` 执行 → binder 初始化 → 文件大小可查
-3. stream 状态进入 `0x11` → 异步读完成回调 `LAB_811829E2` → `0xC` → 资源节点完成 → `init gamedata` → **boot page1 结束**
-4. 之后进入标题页 → 下一个大关是 **GXM 真实渲染管线**（BeginScene / EndScene / Present / 绘制调用）
+1. 用栈回溯探针（`P5D_BT57`）从 CRI 帧节拍器调用点扫描 app 栈返回地址，定位 **page1 的驱动函数与调用链**，确定它等待的 guest 条件（反编译其上层函数）
+2. 让 page1 完成（若为 guest 侧纯计算则给足 n；若为事件丢失则补正确完成投递）→ **S1 标题页出现**
+3. 之后实现/验证 **GXM BeginScene / EndScene / Draw / Present → Vulkan 交换链**（首帧可见），再向 S2_MENU、S3_SELECT、S4_GAME、RESULT 推进
+4. 补齐音频/输入/视频 HLE；最后做单 exe 打包与移动端
 
 ## 仓库结构
 
@@ -69,15 +72,13 @@ docs/
 tools/
   release_audit.py           发布树合规扫描（禁止游戏文件/游戏衍生数据）
   kb_audit.py                知识库锚点审计（每个里程碑必须追加锚点）
-  kb_ledger_audit.py         里程碑账本审计
-  kb_lookup.py               知识库检索
   verify_doc_integrity.ps1   文档完整性校验
   run_kb_audit.ps1 / run_all_regressions.ps1   一键校验
   aot_difftest.py            AOT 差分测试
   diag.py / hle_probe.py     诊断与 HLE 探测工具
 engine/
   recompiler/_gen_split.py   ARM/Thumb → C++ AOT 重编译生成器
-  recompiler/_gen_batch2.py  指令发射后端（含移位/写回等语义修正）
+  recompiler/_gen_batch2.py  指令发射后端（移位/写回/字面量等语义修正）
   runtime/recomp_harness.cpp 静态重编译运行时 + HLE（内存映射、线程/fiber、GXM/文件/Pad 等）
   runtime/gxm_abi.cpp        GXM ABI 桥接层（导入 stub + 指针翻译）
   runtime/cpk_reader.h       CPK 虚拟文件系统 + CRILAYLA 解压（header-only）
@@ -94,6 +95,24 @@ engine/
 4. **GXM→Vulkan 在 API 层**：不模拟 GPU 命令流，把 SceGxm 调用映射为 Vulkan 调用；着色器由玩家数据中的 GSC/GXP **在玩家机器上一次性翻译**为 SPIR-V 并缓存。
 5. **发布形态**：`P5D_Engine.exe`（引擎，无游戏数据） + 玩家自备游戏数据 + 本地缓存（`cache/recomp`、`cache/shaders`、`cache/pipelines`）。
 
+## 开发状态开关（当前阶段，仅调研用）
+
+运行时通过环境变量开启各阶段的实验/探针（默认行为保持不变）：
+
+| 变量 | 作用 |
+|---|---|
+| `P5D_GXMABI=1` | GXM 调用走 ABI 桥接层（当前主线必需） |
+| `P5D_NOSCHEDRUN=1` | 关闭旧调度 hack，使用 guest 自己的双 fiber 启动链 |
+| `P5D_GETSELFFIX=1` | 线程级 `sceFiberGetSelf` 返回重新武装的 dummy（调度器恢复切换） |
+| `P5D_CRIFSHLE=1` + `P5D_CRIFSHLE_AT=5000` | 在 boot 初始化后由 HLE 调用 guest `criFs_Initialize`（binder 建立） |
+| `P5D_THRYIELD=1` | guest 线程 DelayThread 合作让出 + 虚拟唤醒 |
+| `P5D_PERIODPUMP=1` | 周期性抢占/pump guest 线程（每 8192 个执行块） |
+| `P5D_VTIME=1` | 进程时间/RTC 返回虚拟时间（配合虚拟睡眠） |
+| `P5D_WAKE57=1` | page1 周期唤醒 CRI loader worker（实验） |
+| `P5D_HLEDUMP` / `P5D_HLEDUMP_AT` | 统计并打印 page1 期间全部 HLE stub 调用直方图 |
+| `P5D_P1TICK=1` | 每 1M n 打印 page1 进度（ctr/seq/pc/GXM 计数） |
+| `P5D_BT57=1` | page1 帧节拍器调用点栈回溯（定位驱动函数） |
+
 ## 验证与审计
 
 ```powershell
@@ -108,7 +127,7 @@ powershell -File tools/run_all_regressions.ps1
 
 ## 构建与运行（开发中）
 
-当前仓库为**开发中间状态**，尚未提供开箱即用的构建脚本；后续会补充：
+当前仓库仍是**开发中间状态**，尚未提供开箱即用的构建脚本；后续会补充：
 
 - 编译 GXM→Vulkan 后端与运行时（MinGW g++ / MSVC + Vulkan SDK）
 - AOT 生成器用法（输入：玩家自备 eboot；输出：本地代码缓存）
@@ -124,5 +143,7 @@ powershell -File tools/run_all_regressions.ps1
 ## 相关记录
 
 - 权威开发记录（含所有里程碑与结论）：[docs/P5D_MASTER.md](docs/P5D_MASTER.md)
+- 项目摘要：[docs/P5D_DIGEST.md](docs/P5D_DIGEST.md)
 - 与 Vita3K 模拟器的区别：[docs/COMPARISON_VITA3K.md](docs/COMPARISON_VITA3K.md)
 - 发布合规：[docs/RELEASE_COMPLIANCE.md](docs/RELEASE_COMPLIANCE.md)
+- HLE 差异报告：[docs/HLE_DIFF_REPORT.md](docs/HLE_DIFF_REPORT.md)
