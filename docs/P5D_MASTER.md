@@ -982,6 +982,40 @@
 | M964 | §18.4509: ★★★★★★★★★ **【关键突破】Ghidra 反编译 `FUN_811EF610`/`FUN_811EFD8E`/`FUN_811EFE6A` 揭示：引擎所有 uniform 都是通过 `sceGxmSetUniformDataF`(0x812B13B0, NID 0x65DD0C84) 写入的（`FUN_811EFE6A` 内部直接调用它），而我们的 ABI 表里它是 STUB → 默认 UBO 永远全 0——这就是真实画面最后一块拼图！已实现真实 `sceGxmSetUniformDataF`（把数据写入 guest 默认 UBO，配合 M962 的 draw 时上传）**。反编译证据（`C:\dev\p5d_build\ghidra_out\ubomgr2.txt`，来自完整分析的 Ghidra 工程 `P5D_FULL`）：
 | M965 | §18.4510: **补齐纹理数据通路：根据 Ghidra 反编译 + 旧 host 的 Vita3K 权威位域公式，实现真实 `sceGxmTextureInit*` 控制块编码、`SetFragmentTexture`/`PrecomputedFragmentStateSetTexture` 绑定捕获、draw 时 `upload_gxm_control_resolved` 解析上传**。同时确认 M964 的 uniform 试验结果：page1 该 pass **不调用 `sceGxmSetUniformDataF`**（`[ABIUFD]` 0 行）——因为 page1 是全屏背景 pass，顶点数据本身已是 NDC（v0=(-1,-1,1) v1=(3,-1,1)），VS 直接透传、真正决定画面的是**片元纹理**（此前 `[TEXBIND] dummy=16` → 全黑）。证据：
 | M966 | §18.4511: **纹理决战运行 v2 结果分析：page1 首个 pass 的绘制确实只有 1 发全屏三角形（`[ABIVTX] vc=3 v0=(-1,-1,1) v1=(3,-1,1)`），纹理绑定发生在更早的影片相位（`[ABITEXB] frag unit=0 ctrl=852275C0 w0=80000000 w1=25008009 n=7024811`），上传失败 `[ABITEX] unit=0 rc=-3`；RT 截图全黑 —— 结合旧 host 证据，这一发很可能就是**页面淡入的纯黑覆盖层**（vert_0014/frag_0079 类：顶点色 0 + 片元常量 (0,0,0,1) + 乘性混合），不是错误**。并已把 RT 截图改为**前 8 次 DisplayQueueAddEntry 各存一帧**（`p5d_disp_N.bmp`）+ draw 日志上限提到 40，用 80M 深度运行观察 page1 后续帧（此前 62M 只覆盖 page1 开头 2.5M 块）。证据（`out62m_m1046tex.txt`）：
+| M967 | §18.4512: ★★★★★★ **定位并修复纹理上传 `rc=-3` 的根因：`upload_gxm_control_resolved` 内部 `translate(data_byte_addr)` 失败——因为 HLE 堆 arena（heapA 0x84600000-0x8C600000 / bigarena 0x8C600000-0xA0000000 / regionB 0xA0000000-0xA2000000 / tail 0xA2000000-0xB0000000）只被 `GP()`（g_img+offset 直映射）认识，**从未注册进 `p5d::mem` 地址空间注册表**，而后端的 `p5d::mem::translate/contains` 只认注册表 → 纹理数据指针（如 `0x90029580`，落在 bigarena）被判定为"不在地址空间" → `return -3`。已把这 4 个窗口注册进 p5d::mem**。证据：
+1) `out62m_m1046tex.txt`：
+```
+[ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560
+```
+2) `vulkan_backend.cpp` 的 -3 返回点：
+```cpp
+SceUInt8* px=p5d::mem::translate(rt.info.data_byte_addr);
+if(!px){LOGE("resolved: vaddr=0x%08X not in address space unit=%u",rt.info.data_byte_addr,unit);return -3;}
+```
+3) `recomp_harness.cpp` 的 GP()（唯一认识这些窗口的地方）：
+```cpp
+static inline uint8_t* GP(uint32_t va) {
+  if (va >= 0x80600000u && va < 0x84600000u) off = va - 0x80600000u;
+  else if (va >= 0xA0000000u && va < 0xA2000000u) off = (va-0xA0000000u) + 0x28000000u;  // region B
+  else if (va >= 0xA2000000u && va < 0xB0000000u) off = (va-0xA2000000u) + 0x2A000000u;  // tail
+  else if (va >= 0x84600000u && va < 0x8C600000u) off = (va-0x84600000u) + 0x04000000u;   // heapA 96MB
+  else if (va >= 0x8C600000u && va < 0xA0000000u) off = (va-0x8C600000u) + 0x10000000u;   // bigarena 320MB
+  ... }
+```
+4) **修复（18.4512，load_elf 内 gp_img 赋值后）**：
+```cpp
+namespace p5d { namespace mem { void register_region(unsigned int vaddr, unsigned int size, void* host, const char* name); } }
+gp_img = g_img.data();
+p5d::mem::register_region(0x84600000u, 0x06000000u, gp_img + 0x04000000u, "hle-heapA");
+p5d::mem::register_region(0x8C600000u, 0x14000000u, gp_img + 0x10000000u, "hle-bigarena");
+p5d::mem::register_region(0xA0000000u, 0x02000000u, gp_img + 0x28000000u, "hle-regionB");
+p5d::mem::register_region(0xA2000000u, 0x0E000000u, gp_img + 0x2A000000u, "hle-tail");
+printf("[MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)\n");
+```
+（IMG_SIZE = 0x38000000，g_img 缓冲区已覆盖全部窗口。）
+编译链接成功（含 `[MEMREG]`）；已启动 80M 运行（`out80m_m1048memreg.txt`）。
+NEXT：`[ABITEX] rc` 应变为 0（纹理解析成功）→ `[TEXENT]/[TEXAT]` 出现 → 片元采样到真实纹理 → **page1 内容帧（片头影片/标题元素）出现**；继续观察 `p5d_disp_*.bmp`。 |
+| §18.4512 | Localized and fixed the root cause of the texture upload rc=-3: inside upload_gxm_control_resolved, translate(data_byte_addr) fails because the HLE heap arenas (heapA 0x84600000-0x8C600000 / bigarena 0x8C600000-0xA0000000 / regionB 0xA0000000-0xA2000000 / tail 0xA2000000-0xB0000000) are only known to GP() (direct g_img+offset mapping) and were NEVER registered in the p5d::mem address-space registry, while the backend's p5d::mem::translate/contains only know the registry -> texture data pointers (e.g. 0x90029580, inside bigarena) were judged "not in address space" -> return -3. Registered those 4 windows in p5d::mem. Evidence: (1) out62m_m1046tex.txt: [ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560; (2) vulkan_backend.cpp -3 return point: SceUInt8* px=p5d::mem::translate(rt.info.data_byte_addr); if(!px){LOGE('resolved: vaddr=0x%08X not in address space unit=%u',rt.info.data_byte_addr,unit);return -3;}; (3) recomp_harness.cpp GP() is the only place that knows these windows: image 0x80600000-0x84600000 off=va-0x80600000; regionB 0xA0000000-0xA2000000 off=(va-0xA0000000)+0x28000000; tail 0xA2000000-0xB0000000 off=(va-0xA2000000)+0x2A000000; heapA 0x84600000-0x8C600000 off=(va-0x84600000)+0x04000000; bigarena 0x8C600000-0xA0000000 off=(va-0x8C600000)+0x10000000; (4) FIX 18.4512 in load_elf after gp_img assignment: declare namespace p5d { namespace mem { void register_region(unsigned int vaddr, unsigned int size, void* host, const char* name); } } then register_region(0x84600000,0x06000000,gp_img+0x04000000,'hle-heapA'); register_region(0x8C600000,0x14000000,gp_img+0x10000000,'hle-bigarena'); register_region(0xA0000000,0x02000000,gp_img+0x28000000,'hle-regionB'); register_region(0xA2000000,0x0E000000,gp_img+0x2A000000,'hle-tail'); printf('[MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)') (IMG_SIZE = 0x38000000 so the g_img buffer covers all windows). Build+link OK (binary contains [MEMREG]); 80M run started (out80m_m1048memreg.txt). NEXT: [ABITEX] rc should become 0 (texture resolve succeeds) -> [TEXENT]/[TEXAT] appear -> the fragment shader samples real textures -> page1 content frames (title movie/elements) appear; keep watching p5d_disp_*.bmp. |
 ```
 [ABITEXI] tex=816CBD7C data=8CF00000 fmt=0C000000 1024x544 mip=0 mask=60000000 n=1717
 [ABITEXI] tex=816CBD98 data=8D300000 ...   tex=851BB990 data=90005380 fmt=85000000 512x512 mask=20000000
@@ -490129,3 +490163,47 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M966 page1's first frame executes only 1 draw (full-screen triangle vc=3 v0=(-1,-1,1) v1=(3,-1,1)) then presents - this is the black fade-in overlay (old host recorded vert_0014+frag_0079 full-screen black fill: vertex color 0 + fragment constant (0,0,0,1) + multiplicative blend), so an all-black first RT capture is expected, not an error. Evidence out62m_m1046tex.txt: [ABITEXI] tex=816CBD7C data=8CF00000 fmt=0C000000 1024x544 mask=60000000 n=1717; [ABITEXI] tex=851BB990 data=90005380 fmt=85000000 512x512 mask=20000000; [ABITEXB] frag unit=0 ctrl=852275C0 w=80000000 25008009 n=7024811 (movie phase binding); [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560 (texture resolve/upload failure rc=-3); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [PRESENT] #1 result=0; RT STATS mean=0.00 max=0. DIAGNOSTIC ENHANCEMENTS 18.4511: multi-frame RT capture - for each of the first 8 DisplayQueueAddEntry calls save p5d_disp_N.bmp with printf '[ABIRT] disp=%d saved %s cd=%08X rc=%d n=%u'; raise the [ABIVTX] cap from 8 to 40 with a draw index. 80M deep run started out80m_m1047deep.txt (~20M blocks into page1, ~27 min). NEXT: read the p5d_disp_*.bmp stats and the [ABIVTX] #N sequence: if later frames show non-black content/more draws then page1 rendering is progressing (black frames = fade-in); meanwhile fix [ABITEX] rc=-3 (texture format resolve failure) so content frames can sample textures.
 
 LOOKUP: [ABITEXI], [ABITEXB], [ABITEX] rc=-3, payload w0=80000000, p5d_disp_N.bmp, [ABIRT] disp, out80m_m1047deep.txt -> §18.4510 [relevant: texture path], §18.4509 [relevant: SetUniformDataF]
+### 18.4512 PORT M967: 纹理上传 rc=-3 根因 = HLE 堆 arena 未注册到 p5d::mem；已注册
+
+1) `out62m_m1046tex.txt`：
+```
+[ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560
+```
+2) `vulkan_backend.cpp` 的 -3 返回点：
+```cpp
+SceUInt8* px=p5d::mem::translate(rt.info.data_byte_addr);
+if(!px){ LOGE("resolved: vaddr=0x%08X not in address space unit=%u", rt.info.data_byte_addr, unit); return -3; }
+```
+3) `GP()`（harness，唯一认识 HLE 堆窗口的映射）：
+```cpp
+if (va >= 0x80600000u && va < 0x84600000u) off = va - 0x80600000u;                        // image
+else if (va >= 0xA0000000u && va < 0xA2000000u) off = (va-0xA0000000u) + 0x28000000u;      // region B
+else if (va >= 0xA2000000u && va < 0xB0000000u) off = (va-0xA2000000u) + 0x2A000000u;      // tail
+else if (va >= 0x84600000u && va < 0x8C600000u) off = (va-0x84600000u) + 0x04000000u;      // heapA 96MB
+else if (va >= 0x8C600000u && va < 0xA0000000u) off = (va-0x8C600000u) + 0x10000000u;      // bigarena 320MB
+```
+而这些窗口**不在 p5d::mem 注册表**里 → 后端 translate 失败。
+4) 修复（18.4512，`load_elf` 内）：
+```cpp
+namespace p5d { namespace mem { void register_region(unsigned int vaddr, unsigned int size, void* host, const char* name); } }
+gp_img = g_img.data();
+p5d::mem::register_region(0x84600000u, 0x06000000u, gp_img + 0x04000000u, "hle-heapA");
+p5d::mem::register_region(0x8C600000u, 0x14000000u, gp_img + 0x10000000u, "hle-bigarena");
+p5d::mem::register_region(0xA0000000u, 0x02000000u, gp_img + 0x28000000u, "hle-regionB");
+p5d::mem::register_region(0xA2000000u, 0x0E000000u, gp_img + 0x2A000000u, "hle-tail");
+printf("[MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)\n");
+```
+（IMG_SIZE = 0x38000000，g_img 缓冲区覆盖全部窗口。）
+5) 编译链接成功（含 `[MEMREG]`）；已启动 80M 运行：`out80m_m1048memreg.txt`。
+NEXT：
+```
+[ABITEX] rc 应为 0（纹理解析成功）
+→ [TEXENT]/[TEXAT] 出现（backend 纹理上传）
+→ 片元采样到真实纹理 → page1 内容帧（片头影片/标题元素）出现
+→ 继续观察 p5d_disp_*.bmp 颜色统计
+```
+验证：`out62m_m1046tex.txt`（rc=-3）、`out80m_m1048memreg.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M967 texture upload rc=-3 root cause = the HLE heap arenas are not registered in the p5d::mem address-space registry. Evidence out62m_m1046tex.txt: [ABITEX] unit=0 rc=-3 w0=80000000 w1=25008009 data=90029580 n=59586560. vulkan_backend.cpp: SceUInt8* px=p5d::mem::translate(rt.info.data_byte_addr); if(!px){LOGE('resolved: vaddr=0x%08X not in address space unit=%u',rt.info.data_byte_addr,unit);return -3;} - so data_byte_addr 0x90029580 (inside bigarena 0x8C600000-0xA0000000) is not in the mem registry. recomp_harness.cpp GP() knows the windows: image 0x80600000-0x84600000 off=va-0x80600000; regionB 0xA0000000-0xA2000000 off=(va-0xA0000000)+0x28000000; tail 0xA2000000-0xB0000000 off=(va-0xA2000000)+0x2A000000; heapA 0x84600000-0x8C600000 off=(va-0x84600000)+0x04000000; bigarena 0x8C600000-0xA0000000 off=(va-0x8C600000)+0x10000000; IMG_SIZE=0x38000000. FIX 18.4512 in load_elf after gp_img=g_img.data(): declare namespace p5d { namespace mem { void register_region(unsigned int vaddr, unsigned int size, void* host, const char* name); } } and register_region(0x84600000,0x06000000,gp_img+0x04000000,'hle-heapA'); register_region(0x8C600000,0x14000000,gp_img+0x10000000,'hle-bigarena'); register_region(0xA0000000,0x02000000,gp_img+0x28000000,'hle-regionB'); register_region(0xA2000000,0x0E000000,gp_img+0x2A000000,'hle-tail'); printf('[MEMREG] registered HLE arenas'). Build+link OK (binary contains [MEMREG]); 80M run started out80m_m1048memreg.txt. NEXT: [ABITEX] rc should become 0 -> [TEXENT]/[TEXAT] appear -> fragment shader samples real textures -> page1 content frames appear; watch p5d_disp_*.bmp.
+
+LOOKUP: upload_gxm_control_resolved, rc=-3, p5d::mem::translate, register_region, GP, hle-heapA, bigarena, [MEMREG], out80m_m1048memreg.txt -> §18.4511 [relevant: multi-frame capture], §18.4510 [relevant: texture path]

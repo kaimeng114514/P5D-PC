@@ -72,6 +72,8 @@ static void abi_tex_encode(unsigned char* t, unsigned int typeMask, unsigned int
   unsigned int words[4] = { w0, w1, w2, w3 };
   for (int i = 0; i < 4; ++i) std::memcpy(t + i * 4, &words[i], 4);
 }
+// 18.4512 M967: p5d::mem address-space registration for the HLE heap arenas (texture resolve needs translate()).
+namespace p5d { namespace mem { void register_region(unsigned int vaddr, unsigned int size, void* host, const char* name); } }
 static int g_loadclear_env = 0;
 static int g_hostthreads = 0;
 static volatile int g_shutdown = 0;
@@ -4469,6 +4471,14 @@ static void* load_elf(const char* path) {
     printf("loaded segment VA %08X size %X\n", p_va, p_fsz);
   }
   gp_img = g_img.data();
+  // 18.4512 M967: register HLE heap arenas in p5d::mem so translate()/contains() work for
+  // backend texture resolution (the SceGxmTexture data pointer lives in these arenas; GP() already maps
+  // them via the same g_img buffer, the mem registry did not know them -> upload_gxm_control_resolved rc=-3).
+  p5d::mem::register_region(0x84600000u, 0x06000000u, gp_img + 0x04000000u, "hle-heapA");
+  p5d::mem::register_region(0x8C600000u, 0x14000000u, gp_img + 0x10000000u, "hle-bigarena");
+  p5d::mem::register_region(0xA0000000u, 0x02000000u, gp_img + 0x28000000u, "hle-regionB");
+  p5d::mem::register_region(0xA2000000u, 0x0E000000u, gp_img + 0x2A000000u, "hle-tail");
+  printf("[MEMREG] registered HLE arenas (heapA/bigarena/regionB/tail)\n"); fflush(stdout);
   return g_img.data();
 }
 static int g_watch_n = 0;
