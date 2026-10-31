@@ -1299,6 +1299,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   g_cur_hle_lr = s->r[14];
   if (g_hle_n < 6000) printf("[HLE] #%d va=%08X lr=%08X a0=%08X a1=%08X a2=%08X\n", g_hle_n, stub_va, s->r[14], s->r[0], s->r[1], s->r[2]);
   { static int _h57 = 0; if (g_main_n >= 59000000u && _h57++ < 3000) { uint32_t _a3 = 0; printf("[H57] va=%08X pc=%08X lr=%08X a0=%08X a1=%08X a2=%08X a3=%08X fib=%08X thr=%08X\n", stub_va, g_cur_block, s->r[14], s->r[0], s->r[1], s->r[2], _a3, g_cur_fiber, g_cur_thr); fflush(stdout); } }
+  { static int _wk_env = -1; if (_wk_env < 0) { const char* _e = getenv("P5D_WAKE57"); _wk_env = (_e && atoi(_e)) ? 1 : 0; }
+    if (_wk_env && g_main_n >= 59500000u) { static uint32_t _wkc = 0;
+      if ((++_wkc & 0x7FFu) == 0u) {   // 18.4467: wake the CRI loader workers waiting on event flags 60018000/6001A000/6001C000
+        const uint32_t _objs[3] = { 0x60018000u, 0x6001A000u, 0x6001C000u };
+        for (int _k = 0; _k < 3; ++_k) { g_eflag[_objs[_k]] |= 1u;
+          for (auto& _kv : g_thr) if (_kv.second.waiting && _kv.second.wait_obj == _objs[_k]) { _kv.second.waiting = 0; _kv.second.ready = 1; } }
+        if (_wkc == 0x800u) { printf("[WAKE57] woke loader workers at n=%u blk=%08X\n", g_main_n, g_cur_block); fflush(stdout); } } } }
   { static int _cf_env = -1; if (_cf_env < 0) { const char* _e = getenv("P5D_CRIFORCE"); _cf_env = (_e && atoi(_e)) ? 1 : 0; }
     if (_cf_env && g_cur_block == 0x8127B336u) {   // 18.4465: CRI FS wait loop - force the waited flag after N spins
       static uint32_t _cfo = 0; static uint32_t _cfn = 0; static int _cfp = 0;
