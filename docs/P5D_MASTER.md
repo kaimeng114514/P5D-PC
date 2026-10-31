@@ -956,6 +956,39 @@
 | M938 | §18.4483: ★★★★★★★ **假句柄链全链打通：`[ABIPGID]`→`[ABIPGOBJ]`→`[ABIOBJ]`→SPIR-V 加载成功（`[SHADERMOD] ok`）→ `vkCreateGraphicsPipelines` 被调用！但首帧前崩溃（C0000005），原因是"Draw"子串把 `sceGxmPrecomputedDrawInit` 也当成 draw，过早创建管线；已改为只匹配真正的 `sceGxmDraw`**。`out62m_m1019shaderhandles.txt` 证据：
 | M939 | §18.4484: ★★★★★★★ **第一发真实 draw 完整执行：`[REAL-PIPE] #1 OK`（真实 SPIR-V 管线创建成功）、`[FRAMEBEGIN] frame=1`、`[FUBOHOST]` UBO 上传、`[TEXBIND]` 纹理绑定全部发生！** 但 page1 期间 app **不调用 `sceGxmEndScene`**，只调用 `sceGxmBeginScene`×1、`sceGxmDraw`×1、`sceGxmDisplayQueueAddEntry`×2 → 后端 `end_frame()`（提交命令缓冲 + `vkQueuePresentKHR`）从未被调用 → **无 present**。已把 EndScene/DisplayQueueAddEntry 接到后端 `end_frame()`。`out62m_m1020drawonly.txt` 证据：
 | M940 | §18.4485: ★★★★★★★★★ **【首帧上屏成功！】游戏第一次把画面提交到 Vulkan 交换链：`[FRAMESUBMIT] frame=1` + `ef_debug.log` 的 `after submit result=0` / `before present` / `after present result=0` 全部成功**。`out62m_m1021present.txt` 证据：
+| M941 | §18.4486: **首帧截图揭示：M940 上屏的交换链画面是全黑（`[SHOTSTAT] frame=1 max=0 mean=0.00`）——因为游戏渲染到**离屏 RT**（`DisplayQueueAddEntry` 的 color surface data=`8CF00000`/`8D300000`），而我们用 `end_frame()` 直接呈现了空的 swapchain 图像；已改为正确显示路径：`end_scene_pass()` →（首帧）`save_rt_screenshot(cd,"p5d_rt_first.bmp")` → `present_frame(cd)`（内部把 RT 拷贝到 swapchain 再 present）**。证据（`out62m_m1022capture.txt`）：
+```
+err: [INFO] Vulkan: Creating screenshot image...
+err: [INFO] Screenshot image created (960x544)
+err: [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_frame_first.bmp      ← 全黑！
+err: [INFO] Screenshot saved: p5d_frame_first.bmp (960x544)
+```
+分析：
+1) `end_frame()` 路径：结束 RP → 提交 cmd → **直接 vkQueuePresentKHR(swapchain)**，而游戏的绘制结果在**离屏 RT**（color data `8CF00000`）里，swapchain 图像从未被写入 → 黑屏；
+2) 正确路径（与旧 host 的 eboot_probe 一致）：`DisplayQueueAddEntry(oldSync,newSync,surface)` 的 surface `+0` = RT data VA →
+   - `end_scene_pass()`：结束 render pass（保持命令缓冲打开）；
+   - `save_rt_screenshot(data, "p5d_rt_first.bmp")`：把**游戏真实 RT** 回读成 BMP（可视化验证用）；
+   - `present_frame(data)`：后端内部 `vkCmdCopyImage(RT → swapchain)` + barrier + 提交 + `vkQueuePresentKHR`；
+3) 实现（18.4486，`recomp_harness.cpp` GXMABI 分发块）：
+```cpp
+namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } }
+if (strncmp(name,"sceGxmEndScene",14)==0 || strncmp(name,"sceGxmDisplayQueueAddEntry",26)==0) {
+    const bool _dq = strncmp(name,"sceGxmDisplayQueueAddEntry",26)==0;
+    uint32_t _data = 0; if (_dq) { uint8_t* sp = GP(s->r[2]); if (sp) std::memcpy(&_data, sp, 4); }
+    p5d::vulkan::end_scene_pass();
+    if (_dq && _data) {
+        static int _cap_done = 0;
+        if (!_cap_done) { _cap_done = 1; int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+                          printf("[ABIRT] save_rt_screenshot(%08X) rc=%d\n", _data, _rr); }
+        p5d::vulkan::present_frame(_data);
+    }
+    printf("[ABIDISP] %s data=%08X n=%u\n", name, _data, g_main_n);
+    s->r[0] = 0; return s->r[14];
+}
+```
+4) 编译链接成功（二进制含 `[ABIRT]`）；已启动 62M 长跑（`out62m_m1023rtpresent.txt`）。
+NEXT：检查 `[ABIRT]`/`[CPYIMG]`（RT→swapchain 拷贝）/`[PRESENT]` 结果；`p5d_rt_first.bmp` 转 PNG 查看**真实游戏画面**。 |
+| §18.4486 | The first-frame capture revealed that the M940 swapped-chain frame was completely black ([SHOTSTAT] frame=1 max=0 mean=0.00) because the game renders into an offscreen RT (DisplayQueueAddEntry's color surface data=8CF00000/8D300000) while we presented the empty swapchain image via end_frame(); switched to the correct display path: end_scene_pass() -> (first frame) save_rt_screenshot(cd,'p5d_rt_first.bmp') -> present_frame(cd) (copies the RT to the swapchain then presents). Evidence (out62m_m1022capture.txt): err [INFO] Vulkan: Creating screenshot image...; err [INFO] Screenshot image created (960x544); err [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_frame_first.bmp (all black!); err [INFO] Screenshot saved: p5d_frame_first.bmp (960x544). Analysis: (1) the end_frame() path ends the RP, submits the cmd and directly calls vkQueuePresentKHR(swapchain), but the game's drawing result is in the offscreen RT (color data 8CF00000) and the swapchain image was never written -> black; (2) correct path (same as the old eboot_probe host): DisplayQueueAddEntry(oldSync,newSync,surface)'s surface +0 = RT data VA -> end_scene_pass() (end render pass, keep cmd open) -> save_rt_screenshot(data,'p5d_rt_first.bmp') (read back the game's REAL RT to BMP for visual verification) -> present_frame(data) (backend does vkCmdCopyImage(RT->swapchain) + barrier + submit + vkQueuePresentKHR). Implementation 18.4486 in recomp_harness.cpp GXMABI dispatch block: namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } } then if (name is sceGxmEndScene or sceGxmDisplayQueueAddEntry) { _dq = DisplayQueueAddEntry; _data = *(u32*)GP(s->r[2]); end_scene_pass(); if (_dq && _data) { first frame: save_rt_screenshot(_data,'p5d_rt_first.bmp') printing [ABIRT]; present_frame(_data); } print [ABIDISP]; return 0; }. Build+link OK (binary contains [ABIRT]); 62M run started out62m_m1023rtpresent.txt. NEXT: check [ABIRT]/[CPYIMG] (RT->swapchain copy)/[PRESENT] results; convert p5d_rt_first.bmp to PNG and inspect the real game frame. |
 ```
 [ABIPIPE] v=gxp_vert_0001.gxp.spv f=gxp_frag_0165.gxp.spv rc=0 n=59454976
 [REAL-PIPE] #1 OK ... pipe=00000293bb10a8d0
@@ -488272,3 +488305,45 @@ NEXT：把 BMP 转 PNG 检查实际画面内容；继续推进 page1 完成 → 
 ANTI-FORGETTING ENTRY. Keywords: M940 FIRST FRAME PRESENTED: out62m_m1021present.txt shows [ABIPIPE] v=gxp_vert_0001 f=gxp_frag_0165 rc=0 n=59454976; [REAL-PIPE] #1 OK pipe=00000293bb10a8d0; [ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786 and data=8D300000 n=59475321; err [FRAMEBEGIN] frame=1 img=0 cmd=...; err [FUBOHOST] #1 UBO; err [TEXBIND] #0 real=0 alias=0 dummy=16; err [CEND] cmd=...; err [FRAMESUBMIT] frame=1 img=0 cmd=... inRP=0; err [CRASH] 0. ef_debug.log: end_render_pass / end_command_buffer / before submit / after submit result=0 / before present / after present result=0 (vkQueuePresentKHR succeeded; the first frame was presented to the window). Full chain works: BeginScene -> real SPIR-V pipeline (gxp_vert_0001 + gxp_frag_0165) -> Draw (FUBOHOST UBO upload, TEXBIND texture bind) -> DisplayQueueAddEntry -> end_frame() -> vkQueueSubmit -> vkQueuePresentKHR. Notes: [PRESENT] counter stays 0 because it is only incremented in backend present_frame() while we take end_frame()'s direct vkQueuePresentKHR (equivalent); first frame content = actual page1 (S1 title loading page) render output. Added first-frame capture hook 18.4485: on first DisplayQueueAddEntry call request_capture("p5d_frame_first.bmp") (backend reads back and saves before present in end_frame); 62M run started out62m_m1022capture.txt producing p5d_frame_first.bmp. NEXT: convert BMP to PNG and inspect the actual visible frame; continue page1 completion -> S1 title page -> S2-S4.
 
 LOOKUP: [FRAMESUBMIT], ef_debug.log, [ABIDISP], request_capture, p5d_frame_first.bmp, out62m_m1022capture.txt, vkQueuePresentKHR -> §18.4484 [relevant: present wiring], §18.4483 [relevant: real pipeline/draw]
+### 18.4486 PORT M941: 首帧黑屏根因 = 未把离屏 RT 拷贝到 swapchain；改为正确显示路径
+
+1) `out62m_m1022capture.txt`：
+```
+err: [FRAMESUBMIT] frame=1 img=0 cmd=... inRP=0
+err: [INFO] Vulkan: Creating screenshot image...
+err: [INFO] Screenshot image created (960x544)
+err: [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_frame_first.bmp     <- 全黑
+err: [INFO] Screenshot saved: p5d_frame_first.bmp (960x544)
+```
+2) 根因：游戏把画面渲染到**离屏 RT**（`DisplayQueueAddEntry` 的 color surface `+0` = data VA `8CF00000`/`8D300000`），
+而 M940 的 `end_frame()` 只是把**空的 swapchain 图像**提交并 present → 黑屏。
+3) 正确显示路径（与旧 host `eboot_probe.cpp` 一致）：
+```cpp
+p5d::vulkan::end_scene_pass();                                   // 结束 RP，cmd 保持打开
+if (first) p5d::vulkan::save_rt_screenshot(data, "p5d_rt_first.bmp");  // 回读游戏真实 RT
+p5d::vulkan::present_frame(data);                                // 后端: vkCmdCopyImage(RT→swapchain)+submit+present
+```
+4) 实现（18.4486，`recomp_harness.cpp` GXMABI 分发块）：
+```cpp
+namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } }
+if (strncmp(name,"sceGxmEndScene",14)==0 || strncmp(name,"sceGxmDisplayQueueAddEntry",26)==0) {
+    const bool _dq = strncmp(name,"sceGxmDisplayQueueAddEntry",26)==0;
+    uint32_t _data = 0; if (_dq) { uint8_t* sp = GP(s->r[2]); if (sp) std::memcpy(&_data, sp, 4); }
+    p5d::vulkan::end_scene_pass();
+    if (_dq && _data) {
+        static int _cap_done = 0;
+        if (!_cap_done) { _cap_done = 1; int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+                          printf("[ABIRT] save_rt_screenshot(%08X) rc=%d\n", _data, _rr); }
+        p5d::vulkan::present_frame(_data);
+    }
+    printf("[ABIDISP] %s data=%08X n=%u\n", name, _data, g_main_n);
+    s->r[0] = 0; return s->r[14];
+}
+```
+5) 编译链接成功（含 `[ABIRT]`）；已启动 62M 长跑：`out62m_m1023rtpresent.txt`。
+NEXT：`[ABIRT]`/`[CPYIMG]`（RT→swapchain 拷贝）/`[PRESENT]`；`p5d_rt_first.bmp` → PNG 查看真实游戏画面。
+验证：`out62m_m1022capture.txt`（黑屏证据）、`out62m_m1023rtpresent.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M941 first captured frame was black because the game renders into an offscreen RT (DisplayQueueAddEntry color surface +0 data VA 8CF00000/8D300000) while M940's end_frame() presented the empty swapchain image; switched to the correct display path end_scene_pass() -> first-frame save_rt_screenshot(data,'p5d_rt_first.bmp') -> present_frame(data) (backend records vkCmdCopyImage(RT->swapchain) + barrier + submit + vkQueuePresentKHR). Evidence out62m_m1022capture.txt: [FRAMESUBMIT] frame=1 img=0 cmd=... inRP=0; [INFO] Vulkan: Creating screenshot image...; [INFO] Screenshot image created (960x544); [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_frame_first.bmp (all black); [INFO] Screenshot saved: p5d_frame_first.bmp (960x544). Implementation 18.4486 in recomp_harness.cpp GXMABI dispatch: namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } }; if (name is sceGxmEndScene or sceGxmDisplayQueueAddEntry) { _dq=DisplayQueueAddEntry; _data=*(u32*)GP(s->r[2]); end_scene_pass(); if (_dq && _data) { first frame: save_rt_screenshot(_data,'p5d_rt_first.bmp') printing [ABIRT]; present_frame(_data); } print [ABIDISP]; return 0; }. Build+link OK (binary contains [ABIRT]); 62M run started out62m_m1023rtpresent.txt. NEXT: check [ABIRT]/[CPYIMG]/[PRESENT]; convert p5d_rt_first.bmp to PNG and inspect the real game frame.
+
+LOOKUP: present_frame, save_rt_screenshot, end_scene_pass, [CPYIMG], [SHOTSTAT], p5d_rt_first.bmp, out62m_m1023rtpresent.txt -> §18.4485 [relevant: first present], §18.4484 [relevant: present wiring]
