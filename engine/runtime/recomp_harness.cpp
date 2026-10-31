@@ -1119,6 +1119,29 @@ namespace p5d { namespace vulkan { int32_t upload_gxm_control_resolved(unsigned 
 namespace p5d { namespace vulkan { int32_t upload_gxm_control_to_unit(unsigned int unit, const void* control16, const unsigned char* hostPixels, unsigned int bytes); } }   // 18.4521 M976
 namespace p5d { namespace vulkan { int upload_vertex_stream(const void* data, unsigned int bytes, unsigned int vertex_count); } }   // 18.4498 M953
 static void job_probes(uint32_t pcv, RecState* s) {
+  // 18.4528 M983: P5D_JOBFORCE2 - generic job-completion force at FUN_8116f8d2 entry.
+  // FUN_8116f8d2(job) returns 0 iff *(u32*)(job+0xC)==0; forcing that for every job call lets every
+  // async step of the page1 init/sequence state machine advance even though our HLE never runs the worker.
+  { static int _jf2 = -1;
+    if (_jf2 < 0) { const char* _e = getenv("P5D_JOBFORCE2"); _jf2 = (_e && atoi(_e)) ? 1 : 0; }
+    if (_jf2 && (pcv & ~1u) == 0x8116F8D2u && s->r[0]) {
+      uint32_t _js = 0; uint8_t* _q = GP(s->r[0] + 0xCu); if (_q) std::memcpy(&_js, _q, 4);
+      if (_js != 0u) {
+        uint32_t _z = 0; if (_q) std::memcpy(_q, &_z, 4);
+        static int _n = 0; if (_n++ < 60) { printf("[JOBFORCE2] #%d job=%08X old_j0C=%08X -> 0 n=%u\n", _n, s->r[0], _js, g_main_n); fflush(stdout); } } } }
+  // 18.4528 M983: scene page function probes (P5D_SCENEPROBE=1)
+  { static int _sp = -1;
+    if (_sp < 0) { const char* _e = getenv("P5D_SCENEPROBE"); _sp = (_e && atoi(_e)) ? 1 : 0; }
+    if (_sp) {
+      uint32_t _p = pcv & ~1u;
+      if (_p == 0x811858CFu || _p == 0x811858D1u || _p == 0x8118591Fu || _p == 0x81185927u ||
+          _p == 0x81185A0Du || _p == 0x81185A15u || _p == 0x81185A51u || _p == 0x81185A59u ||
+          _p == 0x811859C1u || _p == 0x811859D3u || _p == 0x810C84D9u || _p == 0x810C8567u) {
+        static std::map<uint32_t, int> _cnt;
+        int& _c = _cnt[_p];
+        if (_c++ < 12) { printf("[SCENEFN] pc=%08X r0=%08X r1=%08X r2=%08X r3=%08X sp=%08X n=%u\n",
+            _p, s->r[0], s->r[1], s->r[2], s->r[3], s->r[13], g_main_n); fflush(stdout); } } } }
+
   // 18.4527 M981: P5D_JOBFORCE - force-complete the app async job the page1 init pipeline is waiting on.
   // Guest FUN_81184ffe is a step state machine: piVar1 = *(u32*)(param_1+8); state=piVar1[0], idx=piVar1[1],
   // job=piVar1[2]; when state==2 it polls FUN_8116f8d2(job) which returns 0 iff *(u32*)(job+0xC)==0.

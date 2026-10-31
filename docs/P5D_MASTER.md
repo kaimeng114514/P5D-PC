@@ -998,6 +998,29 @@
 | M980 | §18.4525: **定位 CRI 视频管线卡点：page1 只进入 `FUN_812A8D14`（sceVideodecInitLibrary 封装），**`FUN_812a9140`（CriVavcPsp2 解码器创建）/`FUN_812a9836`/`FUN_812a9fae`（每帧解码驱动）从未被进入**——即引擎在"创建 CriVavcPsp2 解码器对象"之前就停住；已用完整反编译确认该创建函数的全部分支与前置条件，并按旧 host 经验加入 **page1 二次 `criFs_Initialize`（`P5D_CRIFSHLE2_AT`）** 作为解法验证**。证据：
 | M981 | §18.4526: ★★★★★★ **【page1 卡死真凶：app 异步 job "init trophy" 永不完成】Ghidra 反编译 + 运行时探针联合定位：page1 的 `[IDR]` 循环其实就是 guest 函数 `FUN_81184ffe`（异步 job 状态机），它已提交 job `"init trophy"`（job 节点 handle=0xC8=200 与 `[IDR] handle=000000C8` 完全吻合），然后每轮轮询 `FUN_8116f8d2(job)` 等完成——而该 job 的异步 worker（`FUN_8116f9dc` 派发）在我们的 HLE 下永不完成 ⇒ page1 永远停在初始化第一步（state=2 idx=0），后续 title/影片解码全部无法开始。已实现 `P5D_JOBFORCE`：在 guest 进入 0x81184FFE 时把 job 的完成标志 `*(u32*)(job+0xC)` 清零，使 `FUN_8116f8d2` 返回 0 → 状态机推进到下一步（与旧 host 的 CRIFORCE/强制完成思路一致）**。证据：
 | M982 | §18.4527: ★★★★★★★ **`P5D_JOBFORCE` 生效：page1 初始化 job 被强制完成，job 状态机从 state=2 idx=0 推进到 state=1 idx=1，随后引擎**成功发出场景序列请求 `[SEQREQ] page=1`**（首次拿到完整场景页表！）——这是场景切换机制（S0_LOGO→S1_TITLE→…）的权威证据**。证据（`out80m_m1058jobforce.txt`）：
+| M983 | §18.4528: **场景页函数反编译 + JOBFORCE2 验证 + 关键洞察（强制完成会跳过 worker 实际工作，导致后续对象缺失）**。`out80m_m1059jobforce2.txt`：`[JOBFORCE]` 仍只 1 次、`[JOBFORCE2]` 0 次 → `FUN_8116f8d2` 在 page1 后续从未以"未完成 job"进入；`[SEQREQ] page=1` 出现后到 n=60.7M 无新 draw/present。同时反编译出 **S0–S5 场景页函数本体**（`scenepages2.txt`）：
+```
+page0 start=811858CE:  bx lr                                   // 空
+page0 update=811858D0: r0 = FUN_8116f900(0x81309644,0); return r0!=0
+page0 end=811858EC:    FUN_8116f900(0x81309644,0); if(0) FUN_8115f832("...",0x3c)
+page1 start=8118591E:  bl 0x8118479C                            // ★ page1 start = job 初始化步骤机（8 步）
+page1 update=81185926: r0 = FUN_8116f900(0x81309690,0); return r0!=0
+page1 end=81185942:    FUN_8116f900(0x81309690,0); if(0) FUN_8115f832("...",0x58)
+page2 start=81185A0C:  bl 0x8113ABB0 ;  update=81185A14: bl 0x8113ABCA (bool) ; end=81185A26: 8113ABCA+err
+page4 start=81185A50:  bl 0x81111662 ;  update=81185A58: bl 0x811116E8 (bool) ; end=81185A6A: 81111704
+page5 start=811859C0:  bl 0x8119807C ;  update=811859D2: bl 0x811980FC (bool) ; end=811859E4: 811980FC+err
+```
+**关键洞察**：`P5D_JOBFORCE` 只是把 job 的"完成标志"清 0，**跳过了异步 worker 的真实工作**（worker 本应调用 `FUN_8102d53c`/`FUN_8102d544` 等初始化函数）。于是 `init trophy` 之后应创建的对象（如 `FUN_8116f900("title sequence"/0x81309644/0x81309690)` 查询的对象）从未被创建 ⇒ 场景页 update 永远返回 0 ⇒ page1 不前进、无新 draw。
+⇒ **正确解卡方式不是强制完成，而是让异步 worker 真正执行**：需要反编译 `FUN_8116f9dc`（job 派发）与 `FUN_8116fa38`（状态查询）确认 worker 运行机制（guest 线程/fiber/事件），并补齐相应 HLE。
+NEXT：
+```
+① 反编译 FUN_8116f9dc / FUN_8116fa38：job worker 如何被调度（线程? fiber? 事件?）
+② 确认 page1 start=0x8118479C 的 8 步任务链每步 worker 函数，并让它们真正执行
+③ 跟踪 FUN_8116f900（按名字取对象）在 0x81309644/0x81309690 的注册时机（由哪个 step 创建）
+④ 之后 scene 页 update 才会返回 1 → S1_TITLE 推进 → 出现标题 draw
+```
+验证：`out80m_m1059jobforce2.txt`、`scenepages2.txt`（Ghidra 反编译）。 |
+| §18.4528 | Scene page functions decompiled + JOBFORCE2 verification + key insight: forcing job completion skips the worker's real work, so the objects the later steps should create never exist. out80m_m1059jobforce2.txt: [JOBFORCE] still only 1, [JOBFORCE2] 0 -> FUN_8116f8d2 never entered with an incomplete job during page1; after [SEQREQ] page=1 there are no new draws/presents up to n=60.7M. Decompiled the S0-S5 scene page functions (scenepages2.txt, Thumb even addresses): page0 start=811858CE bx lr (empty); page0 update=811858D0 r0=FUN_8116f900(0x81309644,0); return r0!=0; page0 end=811858EC FUN_8116f900(0x81309644,0); if(0) FUN_8115f832('...',0x3c); page1 start=8118591E bl 0x8118479C (the 8-step job init machine!); page1 update=81185926 r0=FUN_8116f900(0x81309690,0); return r0!=0; page1 end=81185942 FUN_8116f900(0x81309690,0); if(0) FUN_8115f832('...',0x58); page2 start=81185A0C bl 0x8113ABB0; update=81185A14 bl 0x8113ABCA (bool); end=81185A26 8113ABCA+err; page4 start=81185A50 bl 0x81111662; update=81185A58 bl 0x811116E8 (bool); end=81185A6A 81111704; page5 start=811859C0 bl 0x8119807C; update=811859D2 bl 0x811980FC (bool); end=811859E4 811980FC+err. KEY INSIGHT: P5D_JOBFORCE only clears the job's completion flag and SKIPS the async worker's real work (the worker should call FUN_8102d53c/FUN_8102d544 etc.); therefore the objects that later steps should create (queried via FUN_8116f900('title sequence'/0x81309644/0x81309690)) are never created -> the scene page update always returns 0 -> page1 does not advance and there are no new draws. => The correct unblock is NOT forced completion but letting the async worker really execute: decompile FUN_8116f9dc (job dispatch) and FUN_8116fa38 (status query) to identify the worker mechanism (guest thread/fiber/event) and implement the corresponding HLE. NEXT: (1) decompile FUN_8116f9dc/FUN_8116fa38 to see how the job worker is scheduled; (2) identify the 8-step task chain workers of page1 start=0x8118479C and make them really run; (3) trace when FUN_8116f900 (get object by name) registers objects 0x81309644/0x81309690 (which step creates them); (4) then the scene page update returns 1 -> S1_TITLE advances -> title draws appear. |
 ```
 [JOBFORCE] #1 state=2 idx=0 job=85B86A1C old_j0C=84618110 -> 0 n=59624745   ← 强制完成 init trophy job
 [IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 r0=85B846EC n=59624745
@@ -491469,3 +491492,43 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M982 P5D_JOBFORCE works - page1 init job force-completed, job state machine advanced state=2 idx=0 -> state=1 idx=1, then the engine issued a SCENE SEQUENCE request [SEQREQ] page=1 with the complete scene page table. Evidence out80m_m1058jobforce.txt: [JOBFORCE] #1 state=2 idx=0 job=85B86A1C old_j0C=84618110 -> 0 n=59624745; [IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59624745; [IDR] at=81185036 state=1 idx=1 handle=85B86A1C n=59644810 (advanced); [SEQREQ] #1 page(r0)=00000001 a1=0 a2=0 a3=0 ctrl=85B843AC table=813B01B4 blk=1500000; [SEQREQ] page0 start=811858CF update=811858D1 end=811858ED; page1 start=8118591F update=81185927 end=81185943; page2 start=81185A0D update=81185A15 end=81185A27; page3 start=810C84D9 update=810C8567 end=810C8583; page4 start=81185A51 update=81185A59 end=81185A6B; page5 start=811859C1 update=811859D3 end=811859E5; [MOVIEPLAY] FUN_8115922C PLAY MOVIE seen (blk=81184722) - will fake completion after movie object exists; [MOVIEFIN] invoke FUN_81159276(state=1, movie=85B43CAC) / completion cb returned r0=00000000; [PRESENT] #1 result=0; [ABIVTX] #1 vc=3 v0=(-1,-1,1) v1=(3,-1,1); at n=62.6M only 1 draw/present, window capture mean=80.7 nonblack=12488/35624 but game window black. The [SEQREQ] page table gives the scene chaining mechanism (S0->S5): page0-5 start/update/end. The movie-play request and fake completion callback are flowing. NEXT: extend JOBFORCE to a generic completion point (clear +0xC for any job at FUN_8116f8d2 entry) to let the remaining steps advance; decompile/probe page1 start/update (0x8118591F/0x81185927) and page0 (0x811858CF/8D1) to see what the scene loop waits for; check time advancement (VTIME/P1TICK) or run longer; once page1 draws appear the RT captures show title elements (engine-drawn).
 
 LOOKUP: P5D_JOBFORCE, [JOBFORCE], [SEQREQ], page0 811858CF/811858D1/811858ED, page1 8118591F/81185927/81185943, page2 81185A0D/81185A15/81185A27, page3 810C84D9/810C8567/810C8583, page4 81185A51/81185A59/81185A6B, page5 811859C1/811859D3/811859E5, 85B86A1C, 84618110, [MOVIEPLAY], [MOVIEFIN], 8115922C, 81159276 -> §18.4526 [relevant: job stall root cause], §18.4525 [relevant: CRI stall]
+### 18.4528 PORT M983: 场景页函数反编译 + "强制完成会跳过 worker 工作"的关键洞察
+
+1) `out80m_m1059jobforce2.txt`：
+```
+[JOBFORCE] #1 ... n=59624745
+[JOBFORCE2] 0        ← FUN_8116f8d2 在 page1 后续从未以未完成 job 进入
+[SEQREQ] #1 page=00000001 ...（page0..page5 指针表）
+（到 n=60.7M 仍无新 draw/present）
+```
+2) 场景页函数反编译（`scenepages2.txt`，Thumb 偶数地址）：
+```
+page0 start=811858CE: bx lr                                    // 空
+page0 update=811858D0: r0 = FUN_8116f900(0x81309644,0); return r0 != 0
+page0 end=811858EC:    FUN_8116f900(0x81309644,0); if(!r0) FUN_8115f832("...",0x3c)
+page1 start=8118591E:  bl 0x8118479C                            // ★ page1 start = job 初始化步骤机（8 步）
+page1 update=81185926: r0 = FUN_8116f900(0x81309690,0); return r0 != 0
+page1 end=81185942:    FUN_8116f900(0x81309690,0); if(!r0) FUN_8115f832("...",0x58)
+page2 start=81185A0C:  bl 0x8113ABB0;  update=81185A14: bl 0x8113ABCA(bool); end=81185A26: 8113ABCA+err
+page4 start=81185A50:  bl 0x81111662;  update=81185A58: bl 0x811116E8(bool); end=81185A6A: 81111704
+page5 start=811859C0:  bl 0x8119807C;  update=811859D2: bl 0x811980FC(bool); end=811859E4: 811980FC+err
+```
+`FUN_8116f900(name, 0)` = 按名字/ID 取对象（page update 用它轮询对象是否就绪）。
+
+3) **关键洞察**：
+- `P5D_JOBFORCE` 只清"完成标志"，**跳过了异步 worker 的真实工作**（worker 本应调用 `FUN_8102d53c`/`FUN_8102d544` 等初始化函数）；
+- 于是 `init trophy` 之后应创建的对象（`FUN_8116f900(0x81309644/0x81309690)` 查询的对象）从未存在；
+- 场景页 update 永远返回 0 ⇒ page1 不推进、无新 draw；
+- **正确解卡 = 让异步 worker 真正执行**（而不是强制完成）。
+NEXT：
+```
+① 反编译 FUN_8116f9dc（job 派发）/ FUN_8116fa38（状态查询）：worker 如何被调度（线程/fiber/事件）
+② 找 page1 start=0x8118479C 8 步任务链的 worker 函数并让其真正执行
+③ 跟踪 FUN_8116f900 对象 0x81309644/0x81309690 的注册时机（哪个 step 创建）
+④ 之后 scene update 返回 1 → S1_TITLE 推进 → 标题 draw
+```
+验证：`out80m_m1059jobforce2.txt`、`scenepages2.txt`。
+
+ANTI-FORGETTING ENTRY. Keywords: M983 scene page functions decompiled (scenepages2.txt, Thumb even addresses): page0 start=811858CE bx lr; page0 update=811858D0 r0=FUN_8116f900(0x81309644,0); return r0!=0; page0 end=811858EC; page1 start=8118591E bl 0x8118479C (8-step job init machine); page1 update=81185926 r0=FUN_8116f900(0x81309690,0); return r0!=0; page1 end=81185942; page2 start=81185A0C bl 0x8113ABB0 update=81185A14 bl 0x8113ABCA end=81185A26; page4 start=81185A50 bl 0x81111662 update=81185A58 bl 0x811116E8 end=81185A6A 81111704; page5 start=811859C0 bl 0x8119807C update=811859D2 bl 0x811980FC end=811859E4. FUN_8116f900(name,0) = get object by name/ID (page update polls object readiness). KEY INSIGHT: P5D_JOBFORCE only clears the job completion flag and SKIPS the async worker's real work (worker should call FUN_8102d53c/FUN_8102d544 etc.), so the objects later steps create (FUN_8116f900(0x81309644/0x81309690)) never exist, scene page update always returns 0, page1 does not advance and there are no new draws. The correct unblock is to let the async worker really execute. Evidence out80m_m1059jobforce2.txt: [JOBFORCE] 1, [JOBFORCE2] 0, [SEQREQ] page=1 then no new draws up to n=60.7M. NEXT: decompile FUN_8116f9dc (job dispatch) / FUN_8116fa38 (status query) to identify the worker scheduling (guest thread/fiber/event); find the 8-step worker functions of page1 start=0x8118479C and make them really run; trace when FUN_8116f900 registers objects 0x81309644/0x81309690; then scene update returns 1 -> S1_TITLE advances -> title draws.
+
+LOOKUP: scenepages2.txt, page0 811858CE/811858D0/811858EC, page1 8118591E/81185926/81185942, 8118479C, 8116f900, 0x81309644, 0x81309690, page2 8113ABB0/8113ABCA, page4 81111662/811116E8/81111704, page5 8119807C/811980FC, [JOBFORCE2], out80m_m1059jobforce2.txt -> §18.4527 [relevant: JOBFORCE advance], §18.4526 [relevant: job stall]
