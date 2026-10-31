@@ -944,6 +944,20 @@
 | M926 | §18.4471: ★★★★★ **BT57 栈回溯成功 → 反编译定位 page1 卡点：`FUN_8122D91C` 是 CRI 异步加载驱动，`while(FUN_8128E9BC(op,&st), st==1) { ...; DelayThreadCB(10); }` —— page1 卡在 CRI 加载 op 状态永远为 1（busy）**。`[BT57]`（`out62m_m1007bt57b.txt`，n=60M..62M 共 5 组，高度一致）主栈返回链：
 | M927 | §18.4472: **CRIOP 首份数据：page1 在 n=59,634,683 提交了一个 CRI 异步加载 op（`op=84DAB768`），但状态查询函数 pc 落在基本块边界之外 → 改进探针为"记录 submit 的 op 指针 + 每 300k n dump op 结构 16 字"**。`out62m_m1008criop.txt`：
 | M928 | §18.4473: ★★★★★★ **重大根因：GFD job worker 线程因"信号量 token 不对齐"而死 → 反编译 `FUN_811E68C8` 证明 worker 取到 NULL 任务函数指针（`INDIRECT-MISS reg1=0 target=0 block=811E6928`，`[THREXIT] pc=FFFFFFFD lr=811E6936`，5 个线程 40012000–40016000 在 n=59,454,348 全死）；修复 WaitSema/SignalSema token 转移**。证据与推理链：
+| M929 | §18.4474: ★★★★★★★ **sema 修复解锁渲染：首次 GXM BeginScene 发生（`[FRAMEBEGIN] frame=1`）！随后 `[BADMEM] va=0x6C stub=812B1400` 崩溃 = `sceGxmReserveFragmentDefaultUniformBuffer` ABI 空实现用了过期 out 指针 → 补真实现**。`out62m_m1011sematok.txt`（sema token 修复版）关键证据：
+1) **整场 `[THREXIT]` 0、`[INDIRECT-MISS]` 0** —— GFD job worker 全部存活；
+2) page1 首次加载事件：`[IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 n=59452293 late=1`（与修复前 state=1/handle=85B8591C 不同，走了真正的首读路径）；
+3) `[GFD] #4 at=81198C8E n=59454838 late=0 flags=00000003 ctr=1`；
+4) **渲染开始**：`[FRAMEBEGIN] frame=1 img=0 cmd=...`（Vulkan 后端真正开始帧）；`[WARN] [STUB] sceGxmSetViewport called - NOT IMPLEMENTED`；
+   看门狗 `hle_ring` 显示完整 GXM 场景调用链：
+   `812B1470(BeginScene)@811EBC28 812B1300(SetViewport)@811EBC50 812B16C0@811EBC86 812B1650@811EBC98 812B12E0(SetVertexProgram)@811EFDCA 812B1560@811F0526 812B1400(ReserveFragmentDefaultUBO)@811EBFD2 812B0DE6/0E6E ...`
+5) 崩溃：`[BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400` ——
+   `gxm_abi_call_7B1FABB6`（ReserveFragmentDefaultUniformBuffer）原先直接调用后端 **`(void)` 占位实现**，该实现解引用一个过期的 out 指针（0x6C）→ BADMEM → 运行中止。**修复（18.4474）**：
+   - `gxm_abi.cpp`：为 `0x812B1400`(NID 7B1FABB6, ReserveFragment) 与 `0x812B14F0`(NID 97118913, ReserveVertex) 写**真 ABI 实现**：
+     `ubo_va = p5d_abi_guest_alloc(0x1000); slot = gxm_abi_xlate(regs[1]); memcpy(slot,&ubo_va,4); return 0;`（不再调用后端空实现）
+   - `recomp_harness.cpp`：新增强符号 `extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); }`
+6) 2.5M 冒烟（`out2m_m1012gxmubo.txt`）：`[CRIFSHLE] binit_after=816A0BA0`、`[THREXIT]` 0、`[INDIRECT-MISS]` 0、`[BADMEM]` 0、exit=0。已启动 **62M 长跑**（`out62m_m1013gxmubo.txt`）验证 BeginScene→EndScene→Present 全链路与首帧。NEXT: 读 `[FRAMEBEGIN]`/`[FRAMEEND]`/`[PRESENT]`/`[GXM]` 计数与 page1 推进。 |
+| §18.4474 | sema fix unlocked rendering: the FIRST GXM BeginScene happens ([FRAMEBEGIN] frame=1)! Then [BADMEM] va=0x6C stub=812B1400 crash = sceGxmReserveFragmentDefaultUniformBuffer ABI stub used a stale out pointer -> implemented it for real. out62m_m1011sematok.txt (sema token fix) key evidence: (1) the whole run has [THREXIT] 0 and [INDIRECT-MISS] 0 - all GFD job workers alive; (2) first page1 load event: [IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 n=59452293 late=1 (differs from the pre-fix state=1/handle=85B8591C, i.e. the real first-read path ran); (3) [GFD] #4 at=81198C8E n=59454838 late=0 flags=00000003 ctr=1; (4) rendering started: [FRAMEBEGIN] frame=1 img=0 cmd=... (Vulkan backend actually begins a frame); [WARN] [STUB] sceGxmSetViewport called - NOT IMPLEMENTED; the watchdog hle_ring shows the full GXM scene call chain: 812B1470(BeginScene)@811EBC28 812B1300(SetViewport)@811EBC50 812B16C0@811EBC86 812B1650@811EBC98 812B12E0(SetVertexProgram)@811EFDCA 812B1560@811F0526 812B1400(ReserveFragmentDefaultUBO)@811EBFD2 812B0DE6/0E6E; (5) crash: [BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400 - gxm_abi_call_7B1FABB6 (ReserveFragmentDefaultUniformBuffer) used to call the backend (void) placeholder which dereferenced a stale out pointer (0x6C) -> BADMEM -> run aborted. FIX 18.4474: in gxm_abi.cpp implement real ABI for 0x812B1400 (NID 7B1FABB6 ReserveFragment) and 0x812B14F0 (NID 97118913 ReserveVertex): ubo_va = p5d_abi_guest_alloc(0x1000); slot = gxm_abi_xlate(regs[1]); memcpy(slot,&ubo_va,4); return 0 (no backend call). In recomp_harness.cpp add strong symbol extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); }. 2.5M smoke out2m_m1012gxmubo.txt: binit_after=816A0BA0, [THREXIT] 0, [INDIRECT-MISS] 0, [BADMEM] 0, exit=0. 62M run started out62m_m1013gxmubo.txt to verify BeginScene->EndScene->Present and the first frame. NEXT: read [FRAMEBEGIN]/[FRAMEEND]/[PRESENT]/[GXM] counters and page1 progress. |
 1) `out62m_m1009criop2.txt` 中 `[THREXIT]`（5 条，n 定位 59,454,348）：
 ```
 [TCREATE2] tid=40012000..40016000 entry=811E68C9 (GFD job workers)
@@ -487447,3 +487461,52 @@ NEXT：检查 `[THREXIT]`/`[INDIRECT-MISS]` 是否彻底消失、page1 是否推
 ANTI-FORGETTING ENTRY. Keywords: M928 GFD job worker death root cause + sema token fix: out62m_m1009criop2.txt shows 5 [THREXIT] badblock tid=40012000..40016000 pc=FFFFFFFD lr=811E6936 at n=59,454,348; threads entry 811E68C9 = GFD job workers; [SCREATE] obj=50013000 init=0 name='gfdJobCountSema', 50014000 init=10240 'gfdJobEmptySema', 50015000 init=0 'gfdJobCountSema', 50016000 init=8 'gfdJobEmptySema'; [SEM] wait obj=50013000 need=1 have=0; [INDIRECT-MISS] reg1=00000000 target=00000000 block=811E6928. Decompiled FUN_811E68C8: puVar2 = *(u32**)(param_2+4); if (puVar2[4]!=2) do { WaitSema(*puVar2,1,0); lock mutex puVar2+3; iVar3=puVar2[7] (read idx +0x1C); FUN_811e6a4c(&local_40, puVar2[5]+iVar3*0x20, 0x20) (32-byte job entry from queue at +0x14); idx++ wrap at puVar2[6] (+0x18); unlock; (*local_40)(auStack_3c) (job entry word0 = function pointer); puVar2[0xb]--; } while (puVar2[4]!=2). ROOT CAUSE: our WaitSema blocks a thread without deducting the token and SignalSema wakes a waiter without deducting the token either (and the resumed guest does not decrement), so the count is inflated -> workers wake on extra counts -> dequeue empty slot -> call NULL (INDIRECT-MISS target=0) -> threads die; hence page1 CRI load-op completion callback 0x8128D503 (registered via FUN_81290a60(op+0xc,...,0x8128D503,op)) never runs -> op status forever 1. FIX 18.4473: WaitSema guest-block sets g_thr_wait_bits=need, g_thr_wait_mode=0x5E4A, erases g_thr_wake_vt[g_cur_thr]; SignalSema transfers the token (if wait_mode==0x5E4A: if count>=need { count-=need; waiting=0; ready=1; break; }) else old behavior. 2.5M smoke out2m_m1010sematok.txt: binit_after=816A0BA0, [THREXIT] 0, [INDIRECT-MISS] 0, [PREEMPT] 10, exit=0, BADMEM=0. 62M run started out62m_m1011sematok.txt; NEXT: check THREXIT/INDIRECT-MISS gone and page1 advances (ctr/[IDR]/[SEQST]/[GXM] BeginScene).
 
 LOOKUP: 0x811E68C8, 0x811E6928, 0x811E68C9, 0x50013000, 0x50014000, 0x50015000, 0x50016000, 0x8128D503, 0x5E4A, out62m_m1011sematok.txt -> §18.4472 [relevant: CRIOP], §18.4471 [relevant: CRI op busy], §18.4272 [relevant: sema HLE]
+### 18.4474 PORT M929: ★ sema 修复解锁渲染首帧 BeginScene；修 GXM ReserveDefaultUniformBuffer ABI（BADMEM va=0x6C）
+
+1) `out62m_m1011sematok.txt`（sema token 修复后）关键结果：
+```
+[THREXIT] 0        [INDIRECT-MISS] 0         <- GFD job worker 存活
+[IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 r0=85B846EC n=59452293 late=1
+[GFD] #4 at=81198C8E n=59454838 late=0 flags=00000003 ctr=1 fib=848463A0
+[FRAMEBEGIN] frame=1 img=0 cmd=0000025c73daa8d0          <- Vulkan 后端真正开始帧!!
+[WARN] [STUB] sceGxmSetViewport called - NOT IMPLEMENTED
+[WD] hle_ring: 812B1470@811EBC28 812B1300@811EBC50 812B16C0@811EBC86 812B1650@811EBC98
+                812B2270@811E6A52 812B2270@811E6A52 812B2270@811E6A52 812B12E0@811EFDCA
+                812B1560@811F0526 812B1400@811EBFD2
+```
+GXM 调用映射：812B1470=sceGxmBeginScene、812B1300=sceGxmSetViewport、812B12E0=sceGxmSetVertexProgram、
+812B1400=sceGxmReserveFragmentDefaultUniformBuffer、812B14F0=sceGxmReserveVertexDefaultUniformBuffer。
+2) 崩溃点：`[BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400`
+→ `gxm_abi_call_7B1FABB6` 原实现直接调后端 `(void)` 占位 `sceGxmReserveFragmentDefaultUniformBuffer()`，
+该占位实现解引用一个**过期 out 指针**（0x6C）→ BADMEM → 运行中止（无 done 行）。
+3) **修复（18.4474）**：
+`gxm_abi.cpp` — 为两个 Reserve 写**真 ABI**：
+```cpp
+extern "C" uint32_t gxm_abi_call_7B1FABB6(uint32_t* regs, uint32_t* stack_args) {   // fragment
+    (void)stack_args;
+    const uint32_t out_va = (regs ? regs[1] : 0u);     // void ** uniformBuffer
+    uint32_t ubo_va = p5d_abi_guest_alloc(0x1000u);
+    if (!ubo_va) return 0x80000001u;
+    uint8_t* slot = reinterpret_cast<uint8_t*>(gxm_abi_xlate(out_va));
+    if (slot) std::memcpy(slot, &ubo_va, sizeof(ubo_va));
+    return 0u;
+}
+// vertex 版（gxm_abi_call_97118913）同构
+```
+`recomp_harness.cpp` — 强符号：
+```cpp
+extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); }
+```
+4) 2.5M 冒烟（`out2m_m1012gxmubo.txt`）：
+```
+[CRIFSHLE] criFs_Initialize -> 0 n=5000 binit_after=816A0BA0
+[THREXIT] 0   [INDIRECT-MISS] 0   [BADMEM] 0
+done: blocks=2500000 ... exit=0
+```
+5) 已启动 62M 长跑：`out62m_m1013gxmubo.txt`（sema fix + GXM UBO ABI fix + P1TICK）。
+NEXT：检查 `[FRAMEBEGIN]`/`[FRAMEEND]`/present 计数、是否继续绘制到 EndScene/Present、page1 是否完成（`ctr`/`[IDR]`/`[SEQST]`/`[GXM]`）。
+验证：`out62m_m1011sematok.txt`（FRAMEBEGIN/BADMEM 证据）、`out2m_m1012gxmubo.txt`（冒烟）、`out62m_m1013gxmubo.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M929 sema fix unlocked GXM rendering: out62m_m1011sematok.txt has [THREXIT] 0 / [INDIRECT-MISS] 0 (all GFD job workers alive), first page1 load event [IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 n=59452293 late=1, [GFD] #4 at=81198C8E ctr=1, and the FIRST GXM FRAME: [FRAMEBEGIN] frame=1 img=0 cmd=... plus [WARN] [STUB] sceGxmSetViewport NOT IMPLEMENTED; watchdog hle_ring full GXM scene chain 812B1470(BeginScene)@811EBC28 812B1300(SetViewport)@811EBC50 812B16C0 812B1650 812B12E0(SetVertexProgram)@811EFDCA 812B1560 812B1400(ReserveFragmentDefaultUBO)@811EBFD2; then crash [BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400 because gxm_abi_call_7B1FABB6 called the backend (void) placeholder which dereferenced a stale out pointer. FIX 18.4474: real ABI for 812B1400 (NID 7B1FABB6 ReserveFragment) and 812B14F0 (NID 97118913 ReserveVertex): ubo_va = p5d_abi_guest_alloc(0x1000); slot = gxm_abi_xlate(regs[1]); memcpy(slot,&ubo_va,4); return 0; plus strong extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); } in recomp_harness.cpp. 2.5M smoke out2m_m1012gxmubo.txt: binit_after=816A0BA0, [THREXIT] 0, [INDIRECT-MISS] 0, [BADMEM] 0, exit=0. 62M run started out62m_m1013gxmubo.txt; NEXT: check [FRAMEBEGIN]/[FRAMEEND]/present counters, whether drawing continues to EndScene/Present, and whether page1 completes (ctr/[IDR]/[SEQST]/[GXM]).
+
+LOOKUP: 0x812B1470, 0x812B1300, 0x812B12E0, 0x812B1400, 0x812B14F0, 0x7B1FABB6, 0x97118913, p5d_abi_guest_alloc, 0x8128D503, out62m_m1011sematok.txt, out62m_m1013gxmubo.txt -> §18.4473 [relevant: sema token fix], §18.4472 [relevant: CRIOP]

@@ -87,6 +87,8 @@ inline void* gxm_abi_xlate(uint32_t guest_va) {
     return host ? reinterpret_cast<void*>(static_cast<uintptr_t>(host)) : nullptr;
 }
 
+extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n);   // 18.4474 M929: strong impl in recomp_harness.cpp
+
 inline uint32_t gxm_abi_untranslate_ptr(const void* host_ptr) {
     if (!host_ptr) return 0u;
     return p5d_abi_untranslate(host_ptr);
@@ -692,15 +694,16 @@ extern "C" uint32_t gxm_abi_call_70C86868(uint32_t* regs, uint32_t* stack_args) 
 }
 
 extern "C" uint32_t gxm_abi_call_7B1FABB6(uint32_t* regs, uint32_t* stack_args) {
-    // guest ABI:   int sceGxmReserveFragmentDefaultUniformBuffer(SceGxmContext * context, void ** uniformBuffer)
-    // backend ABI: SceInt32 sceGxmReserveFragmentDefaultUniformBuffer(void)   [runtime has a `(void)` placeholder / STUB_LOG only]
-    (void)regs;
+    // 18.4474 M929: REAL implementation - allocate a 0x1000 guest UBO, write its guest VA to *out.
+    // guest ABI: int sceGxmReserveFragmentDefaultUniformBuffer(SceGxmContext * context, void ** uniformBuffer)
+    // The old body called the backend (void) placeholder which dereferenced a stale out pointer -> [BADMEM] va=0x6C.
     (void)stack_args;
-#if GXM_ABI_CALL_STUB_IMPLS
-    return (uint32_t)sceGxmReserveFragmentDefaultUniformBuffer();   // logs [STUB] via STUB_LOG
-#else
-    return 0u;   // same observable value as the current stub
-#endif
+    const uint32_t out_va = (regs ? regs[1] : 0u);
+    uint32_t ubo_va = p5d_abi_guest_alloc(0x1000u);
+    if (!ubo_va) return 0x80000001u;
+    uint8_t* slot = reinterpret_cast<uint8_t*>(gxm_abi_xlate(out_va));
+    if (slot) std::memcpy(slot, &ubo_va, sizeof(ubo_va));
+    return 0u;
 }
 
 extern "C" uint32_t gxm_abi_call_80CCEDBB(uint32_t* regs, uint32_t* stack_args) {
@@ -886,15 +889,16 @@ extern "C" uint32_t gxm_abi_call_91236858(uint32_t* regs, uint32_t* stack_args) 
 }
 
 extern "C" uint32_t gxm_abi_call_97118913(uint32_t* regs, uint32_t* stack_args) {
-    // guest ABI:   int sceGxmReserveVertexDefaultUniformBuffer(SceGxmContext * context, void ** uniformBuffer)
-    // backend ABI: SceInt32 sceGxmReserveVertexDefaultUniformBuffer(void)   [runtime has a `(void)` placeholder / STUB_LOG only]
-    (void)regs;
+    // 18.4474 M929: REAL implementation - allocate a 0x1000 guest UBO, write its guest VA to *out.
+    // guest ABI: int sceGxmReserveVertexDefaultUniformBuffer(SceGxmContext * context, void ** uniformBuffer)
+    // The old body called the backend (void) placeholder which dereferenced a stale out pointer -> [BADMEM] va=0x6C.
     (void)stack_args;
-#if GXM_ABI_CALL_STUB_IMPLS
-    return (uint32_t)sceGxmReserveVertexDefaultUniformBuffer();   // logs [STUB] via STUB_LOG
-#else
-    return 0u;   // same observable value as the current stub
-#endif
+    const uint32_t out_va = (regs ? regs[1] : 0u);
+    uint32_t ubo_va = p5d_abi_guest_alloc(0x1000u);
+    if (!ubo_va) return 0x80000001u;
+    uint8_t* slot = reinterpret_cast<uint8_t*>(gxm_abi_xlate(out_va));
+    if (slot) std::memcpy(slot, &ubo_va, sizeof(ubo_va));
+    return 0u;
 }
 
 extern "C" uint32_t gxm_abi_call_9D83CA3B(uint32_t* regs, uint32_t* stack_args) {

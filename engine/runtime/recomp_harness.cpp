@@ -667,6 +667,8 @@ static uint32_t hle_malloc(uint32_t n) {
       if (g_big2n++ < 30) { printf("[BIG2] n=%08X -> %08X\n", n, b2); fflush(stdout); } return hle_malloc_ret(b2); } }
   printf("[HLE] malloc OOM n=%u (all heaps full)\n", n); return 0;
 }
+extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); }   // 18.4474 M929: guest allocator for GXM ABI out-params (UBO)
+
 static std::map<uint32_t,uint32_t> g_prog_header_by_id;   // 18.4259: SceGxmShaderPatcher register map (id -> GXP program header VA)
 static uint32_t g_prog_id_ctr = 0;
 static uint32_t g_fprog_last = 0, g_vprog_last = 0, g_last_rt = 0;
