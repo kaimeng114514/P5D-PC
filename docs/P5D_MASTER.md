@@ -953,6 +953,42 @@
 | M935 | §18.4480: ★★★★★★★ **实现 GXP→SPIR-V→Vulkan 管线接线（首帧最后一环）：harness 在 GXM ABI 分发前捕获 SetVertex/FragmentProgram 的 GXP 程序、FNV-1a64 哈希、查 `spv_all/gxp_manifest.txt`，并在每次 Draw 前调用 `p5d::vulkan::select_real_pipeline()` 绑定真实管线**。实现（全部在 `recomp_harness.cpp` 的 `hle_call` GXMABI 分发块内）：
 | M936 | §18.4481: **发现 page1 渲染走的是 GXM "Precomputed" 路径（不调用 SetVertex/FragmentProgram），因此上一版 ABIGXP 捕获没触发；已把捕获钩子扩展到 `sceGxmPrecomputedVertexStateInit`/`sceGxmPrecomputedFragmentStateInit`**。证据（`out62m_m1017pipe.txt`，管线接线版 62M 运行）：
 | M937 | §18.4482: **关键发现：所有 Precomputed*Init 的 program 参数 r1=0 —— 因为 ShaderPatcher 的 `RegisterProgram`/`CreateVertexProgram`/`CreateFragmentProgram` 是 STUB（返回 0 且不写 out 参数），app 的 program id/句柄全是 0；已实现假句柄链：RegisterProgram 输出假 id（记录 id→spv）、Create*Program 输出假 program 对象（记录 obj→spv）、Precomputed*Init 从对象映射捕获 v/f spv**。证据（`out62m_m1018pipe2.txt`）：
+| M938 | §18.4483: ★★★★★★★ **假句柄链全链打通：`[ABIPGID]`→`[ABIPGOBJ]`→`[ABIOBJ]`→SPIR-V 加载成功（`[SHADERMOD] ok`）→ `vkCreateGraphicsPipelines` 被调用！但首帧前崩溃（C0000005），原因是"Draw"子串把 `sceGxmPrecomputedDrawInit` 也当成 draw，过早创建管线；已改为只匹配真正的 `sceGxmDraw`**。`out62m_m1019shaderhandles.txt` 证据：
+1) **GXP→SPIR-V 映射完全正确**（12 条）：
+```
+[ABIPGID] id=8540B000 hash=A71B28370132FF67 spv=gxp_vert_0000.gxp.spv n=1717
+[ABIPGID] id=8540B020 hash=26F80E96E57EB001 spv=gxp_frag_0000.gxp.spv n=1717
+[ABIPGID] id=8540B040 hash=FEDFC230E83B40F3 spv=gxp_vert_0001.gxp.spv
+[ABIPGID] id=8540B060 hash=BEEA90FD4B545170 spv=gxp_frag_0001.gxp.spv   ← 全部命中 manifest
+...
+[ABIPGOBJ] vert obj=8540C000 spv=gxp_vert_0000.gxp.spv
+[ABIPGOBJ] frag obj=8540C040 spv=gxp_frag_0000.gxp.spv
+...
+```
+2) **Precomputed 状态捕获成功**：
+```
+[ABICAP] name=sceGxmPrecomputedFragmentStateInit frag=1 r1=8540EA80 r2=8F950D80
+[ABICAP] name=sceGxmPrecomputedVertexStateInit frag=0 r1=8540E800 r2=8F950E80
+[ABIOBJ] frag obj=8540EA80 spv=gxp_frag_0160.gxp.spv
+[ABIOBJ] vert obj=8540E800 spv=gxp_vert_0026.gxp.spv
+```
+3) **SPIR-V 模块加载成功 + 管线创建开始**：
+```
+err: [SHADERMOD] ok handle=... codeWords=3340
+err: [SHADERMOD] ok handle=... codeWords=1874
+err: [REALPIPE-CREATE] before vkCreateGraphicsPipelines v=C:/dev/p5d_build/spv_all/gxp_vert_0026.gxp.spv f=.../gxp_frag_0160.gxp.spv
+```
+4) 崩溃：`[CRASH] code=C0000005 addr=00007fff5dff33c6 blk=812B1520 pc_last=812B1520`
+   —— 发生在 `sceGxmPrecomputedDrawInit` 调用内！因为 M935 的管线选择条件是 `strstr(_ge->name,"Draw")`，
+   而 "PrecomputedDrawInit" 也含 "Draw" → 在 PrecomputedDrawInit 里提前创建管线（此时上下文不完整）→ vkCreateGraphicsPipelines 崩溃。
+5) **修复（18.4483）**：条件改为只匹配真正 draw：
+```cpp
+if (strncmp(_ge->name, "sceGxmDraw", 10) == 0 && !_abi_vspv.empty() && !_abi_fspv.empty()) { ... select_real_pipeline ... }
+```
+（排除 sceGxmPrecomputedDrawInit / GetPrecomputedDrawSize 等）。
+6) 编译链接成功；已启动 62M 长跑（`out62m_m1020drawonly.txt`）。
+NEXT：确认管线只在真实 `sceGxmDraw`（BeginScene 内）创建、崩溃是否消失、`[REAL-PIPE]`/draw/EndScene/present → **首帧可见画面**。 |
+| §18.4483 | The fake-handle chain is fully connected: [ABIPGID] -> [ABIPGOBJ] -> [ABIOBJ] -> SPIR-V load OK ([SHADERMOD] ok) -> vkCreateGraphicsPipelines is called! But it crashed (C0000005) before the first frame because the substring 'Draw' also matched sceGxmPrecomputedDrawInit and created the pipeline too early; now only the real sceGxmDraw matches. Evidence (out62m_m1019shaderhandles.txt): (1) GXP->SPIR-V mapping is exactly right (12 entries): [ABIPGID] id=8540B000 hash=A71B28370132FF67 spv=gxp_vert_0000; id=8540B020 hash=26F80E96E57EB001 spv=gxp_frag_0000; id=8540B040 hash=FEDFC230E83B40F3 spv=gxp_vert_0001; id=8540B060 hash=BEEA90FD4B545170 spv=gxp_frag_0001 ... all hit the manifest; [ABIPGOBJ] vert obj=8540C000 spv=gxp_vert_0000, frag obj=8540C040 spv=gxp_frag_0000 ... (2) Precomputed state capture works: [ABICAP] PrecomputedFragmentStateInit r1=8540EA80; PrecomputedVertexStateInit r1=8540E800; [ABIOBJ] frag obj=8540EA80 spv=gxp_frag_0160; vert obj=8540E800 spv=gxp_vert_0026. (3) SPIR-V modules load OK: err [SHADERMOD] ok codeWords=3340 and 1874; err [REALPIPE-CREATE] before vkCreateGraphicsPipelines v=...gxp_vert_0026.gxp.spv f=...gxp_frag_0160.gxp.spv. (4) Crash [CRASH] code=C0000005 addr=00007fff5dff33c6 blk=812B1520 pc_last=812B1520 happened inside sceGxmPrecomputedDrawInit because the M935 pipeline-selection condition strstr(_ge->name,'Draw') also matched 'PrecomputedDrawInit' -> created the pipeline too early with incomplete context -> vkCreateGraphicsPipelines crashed. (5) FIX 18.4483: condition changed to strncmp(_ge->name,'sceGxmDraw',10)==0 (excludes PrecomputedDrawInit/GetPrecomputedDrawSize). Build+link OK; 62M run started out62m_m1020drawonly.txt; NEXT: confirm the pipeline is created only inside the real sceGxmDraw (inside BeginScene), the crash disappears, [REAL-PIPE]/draw/EndScene/present -> first visible frame. |
 ```
 [ABICAP] name=sceGxmPrecomputedFragmentStateInit frag=1 r1=00000000 r2=8F950D80
 [ABICAP] name=sceGxmPrecomputedVertexStateInit frag=0 r1=00000000 r2=8F950E80
@@ -488041,3 +488077,45 @@ NEXT：检查完整链条 `[ABIPGID]` → `[ABIPGOBJ]` → `[ABIOBJ]` → `[ABIP
 ANTI-FORGETTING ENTRY. Keywords: M937 Precomputed*Init program argument r1 is always 0 because the ShaderPatcher RegisterProgram/CreateVertexProgram/CreateFragmentProgram are STUB_LOG placeholders that return 0 and never write out params, so the app's program ids/handles are all 0. Evidence out62m_m1018pipe2.txt: [ABICAP] PrecomputedFragmentStateInit r1=0 r2=8F950D80; PrecomputedVertexStateInit r1=0 r2=8F950E80; [GXMABI] sceGxmPrecomputedDrawInit va=812B1520 r0=8F745F18 r1=0 r2=8F950E80; sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000; err 'gxm_draw_arrays: no graphics pipeline bound'. FIX 18.4482 in recomp_harness.cpp GXMABI dispatch block: (1) hle_gxp_hash(gxpva) FNV-1a64 with magic 0x00505847/size validation; (2) ShaderPatcherRegisterProgram: hash s->r[1] -> manifest spv name -> write fake programId (0x8540B000+) to out s->r[2] -> _pid2spv[id]=spv, print [ABIPGID]; (3) ShaderPatcherCreateVertexProgram/CreateFragmentProgram: s->r[1]=programId -> _pid2spv -> write fake program object (0x8540C000+) to out _stk[2] -> _vobj2spv/_fobj2spv, print [ABIPGOBJ]; (4) PrecomputedVertexStateInit/PrecomputedFragmentStateInit/PrecomputedDrawInit: s->r[1]=program object -> map -> set _abi_vspv/_abi_fspv, print [ABIOBJ]; (5) before Draw select_real_pipeline("<spvdir>/<v>","<spvdir>/<f>") -> [ABIPIPE]/[REAL-PIPE]. Build+link OK; binary contains [ABIPGID]/[ABIPGOBJ]/[ABIOBJ]. 62M run started out62m_m1019shaderhandles.txt; NEXT: verify [ABIPGID]->[ABIPGOBJ]->[ABIOBJ]->[ABIPIPE]/[REAL-PIPE], disappearance of the draw error, EndScene/present -> first visible frame.
 
 LOOKUP: 0x812B12D0, 0x812B15C0, 0x812B1350, 0x812B1630, 0x812B16D0, 0x812B1520, hle_gxp_hash, [ABIPGID], [ABIPGOBJ], [ABIOBJ], out62m_m1019shaderhandles.txt -> §18.4481 [relevant: Precomputed path], §18.4480 [relevant: pipeline wiring]
+### 18.4483 PORT M938: 假句柄链全链打通 + "Draw" 子串误匹配修复
+
+1) `out62m_m1019shaderhandles.txt` 里程碑级证据：
+**(a) GXP→SPIR-V 映射完全正确**（12 条，全部命中 manifest）：
+```
+[ABIPGID] id=8540B000 hash=A71B28370132FF67 spv=gxp_vert_0000.gxp.spv n=1717
+[ABIPGID] id=8540B020 hash=26F80E96E57EB001 spv=gxp_frag_0000.gxp.spv n=1717
+[ABIPGID] id=8540B040 hash=FEDFC230E83B40F3 spv=gxp_vert_0001.gxp.spv
+[ABIPGID] id=8540B060 hash=BEEA90FD4B545170 spv=gxp_frag_0001.gxp.spv
+...
+[ABIPGOBJ] vert obj=8540C000 spv=gxp_vert_0000.gxp.spv
+[ABIPGOBJ] frag obj=8540C040 spv=gxp_frag_0000.gxp.spv
+...
+```
+**(b) Precomputed 状态捕获成功**：
+```
+[ABICAP] name=sceGxmPrecomputedFragmentStateInit frag=1 r1=8540EA80 r2=8F950D80
+[ABICAP] name=sceGxmPrecomputedVertexStateInit frag=0 r1=8540E800 r2=8F950E80
+[ABIOBJ] frag obj=8540EA80 spv=gxp_frag_0160.gxp.spv
+[ABIOBJ] vert obj=8540E800 spv=gxp_vert_0026.gxp.spv
+```
+**(c) SPIR-V 加载 + 真实管线创建**：
+```
+err: [SHADERMOD] ok handle=... codeWords=3340
+err: [SHADERMOD] ok handle=... codeWords=1874
+err: [REALPIPE-CREATE] before vkCreateGraphicsPipelines v=C:/dev/p5d_build/spv_all/gxp_vert_0026.gxp.spv f=...gxp_frag_0160.gxp.spv
+```
+**(d) 崩溃**：`[CRASH] code=C0000005 blk=812B1520 pc_last=812B1520` = `sceGxmPrecomputedDrawInit` 内部
+2) 根因：M935 管线选择条件 `strstr(_ge->name,"Draw")` 也匹配 **`sceGxmPrecomputedDrawInit` / `GetPrecomputedDrawSize`** →
+在 PrecomputedDrawInit 里提前建管线（渲染上下文不完整）→ `vkCreateGraphicsPipelines` AV。
+3) 修复（18.4483）：
+```cpp
+if (strncmp(_ge->name, "sceGxmDraw", 10) == 0 && !_abi_vspv.empty() && !_abi_fspv.empty()) { ... select_real_pipeline ... }
+```
+4) 编译链接成功；已启动 62M 长跑：`out62m_m1020drawonly.txt`。
+NEXT：确认管线只在真实 `sceGxmDraw`（BeginScene 内）创建、崩溃消失、
+`[REAL-PIPE]`/draw/EndScene/present → **首帧可见画面**。
+验证：`out62m_m1019shaderhandles.txt`（全链证据）、`out62m_m1020drawonly.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M938 fake-handle chain fully connected + 'Draw' substring fix: out62m_m1019shaderhandles.txt shows [ABIPGID] id=8540B000 hash=A71B28370132FF67 spv=gxp_vert_0000; id=8540B020 hash=26F80E96E57EB001 spv=gxp_frag_0000; id=8540B040 hash=FEDFC230E83B40F3 spv=gxp_vert_0001; id=8540B060 hash=BEEA90FD4B545170 spv=gxp_frag_0001 (all manifest hits); [ABIPGOBJ] vert obj=8540C000 spv=gxp_vert_0000, frag obj=8540C040 spv=gxp_frag_0000; [ABICAP] PrecomputedFragmentStateInit r1=8540EA80, PrecomputedVertexStateInit r1=8540E800; [ABIOBJ] frag obj=8540EA80 spv=gxp_frag_0160, vert obj=8540E800 spv=gxp_vert_0026; err [SHADERMOD] ok codeWords=3340/1874; err [REALPIPE-CREATE] before vkCreateGraphicsPipelines v=gxp_vert_0026 f=gxp_frag_0160; then [CRASH] code=C0000005 addr=00007fff5dff33c6 blk=812B1520 pc_last=812B1520 inside sceGxmPrecomputedDrawInit. ROOT: the M935 pipeline-selection condition strstr(_ge->name,'Draw') also matched 'PrecomputedDrawInit' (and GetPrecomputedDrawSize) so the pipeline was created too early with incomplete context -> vkCreateGraphicsPipelines AV. FIX 18.4483: condition strncmp(_ge->name,'sceGxmDraw',10)==0 (real draws only). Build+link OK; 62M run started out62m_m1020drawonly.txt; NEXT: confirm pipeline creation only inside the real sceGxmDraw (inside BeginScene), crash gone, [REAL-PIPE]/draw/EndScene/present -> first visible frame.
+
+LOOKUP: [ABIPGID], [ABIPGOBJ], [ABIOBJ], [SHADERMOD], [REALPIPE-CREATE], 0x8540B000, 0x8540C000, sceGxmPrecomputedDrawInit, out62m_m1020drawonly.txt -> §18.4482 [relevant: fake handles], §18.4480 [relevant: pipeline wiring]

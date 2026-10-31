@@ -1464,7 +1464,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (_h) { auto _it = _abi_man.find(_h); if (_it != _abi_man.end()) {
             if (_frag) _abi_fspv = _it->second; else _abi_vspv = _it->second;
             static int _cn = 0; if (_cn++ < 12) { printf("[ABIGXP] %s obj=%08X gxp=%08X hash=%016llX spv=%s\n", _frag?"frag":"vert", _o, _gxp, (unsigned long long)_h, _it->second.c_str()); fflush(stdout); } } } }
-      if (strstr(_ge->name, "Draw") && !_abi_vspv.empty() && !_abi_fspv.empty()) {
+      if (strncmp(_ge->name, "sceGxmDraw", 10) == 0 && !_abi_vspv.empty() && !_abi_fspv.empty()) {   // 18.4483 M938: only real draws (not PrecomputedDrawInit/Size)
         std::string _vp = _abi_spvdir + "/" + _abi_vspv, _fp = _abi_spvdir + "/" + _abi_fspv;
         int32_t _rc = p5d::vulkan::select_real_pipeline(_vp.c_str(), _fp.c_str());
         static int _pn = 0; if (_pn++ < 20) { printf("[ABIPIPE] v=%s f=%s rc=%d n=%u\n", _abi_vspv.c_str(), _abi_fspv.c_str(), _rc, g_main_n); fflush(stdout); } }
