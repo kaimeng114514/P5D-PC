@@ -1119,6 +1119,27 @@ namespace p5d { namespace vulkan { int32_t upload_gxm_control_resolved(unsigned 
 namespace p5d { namespace vulkan { int32_t upload_gxm_control_to_unit(unsigned int unit, const void* control16, const unsigned char* hostPixels, unsigned int bytes); } }   // 18.4521 M976
 namespace p5d { namespace vulkan { int upload_vertex_stream(const void* data, unsigned int bytes, unsigned int vertex_count); } }   // 18.4498 M953
 static void job_probes(uint32_t pcv, RecState* s) {
+  // 18.4527 M981: P5D_JOBFORCE - force-complete the app async job the page1 init pipeline is waiting on.
+  // Guest FUN_81184ffe is a step state machine: piVar1 = *(u32*)(param_1+8); state=piVar1[0], idx=piVar1[1],
+  // job=piVar1[2]; when state==2 it polls FUN_8116f8d2(job) which returns 0 iff *(u32*)(job+0xC)==0.
+  // Our HLE never completes that async worker, so page1 stalls on the "init trophy" job forever.
+  { static int _jf = -1;
+    if (_jf < 0) { const char* _e = getenv("P5D_JOBFORCE"); _jf = (_e && atoi(_e)) ? 1 : 0; }
+    if (_jf && (pcv & ~1u) == 0x81184FFEu && s->r[0]) {
+      uint32_t _so = 0, _job = 0;
+      { uint8_t* _q = GP(s->r[0] + 8u); if (_q) std::memcpy(&_so, _q, 4); }
+      if (_so) { uint8_t* _q = GP(_so + 8u); if (_q) std::memcpy(&_job, _q, 4); }
+      if (_job) {
+        uint32_t _st = 0, _js = 0, _ix = 0;
+        { uint8_t* _q = GP(_so); if (_q) std::memcpy(&_st, _q, 4); }
+        { uint8_t* _q = GP(_so + 4u); if (_q) std::memcpy(&_ix, _q, 4); }
+        { uint8_t* _q = GP(_job + 0xCu); if (_q) std::memcpy(&_js, _q, 4); }
+        if (_st >= 2u && _js != 0u) {
+          uint32_t _z = 0; uint8_t* _q = GP(_job + 0xCu); if (_q) std::memcpy(_q, &_z, 4);
+          static int _n = 0; if (_n++ < 40) {
+            printf("[JOBFORCE] #%d state=%u idx=%u job=%08X old_j0C=%08X -> 0 n=%u\n", _n, _st, _ix, _job, _js, g_main_n);
+            fflush(stdout); } } } } }
+
   { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
 
   { static int _ri_env = -1; if (_ri_env < 0) { const char* _e = getenv("P5D_RINIT"); _ri_env = (_e && atoi(_e)) ? 1 : 0; }

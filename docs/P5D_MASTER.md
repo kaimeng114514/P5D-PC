@@ -996,6 +996,59 @@
 | M978 | §18.4523: ★★★★★★★★ **实现 `SceVideodecUser` HLE（AOT harness 版）：9 个视频解码 API（stub 0x812B2120–0x812B21A0）从"无名空桩"变为真实假解码——把预解码 NV12 影片帧写入 app 提供的 `SceAvcdecPicture` 输出缓冲，并按 Vita3K 语义回填 `numOfOutput`/frame 尺寸/`info.pts`，让 CRI 认为解码成功并发布帧 → 引擎自己的影片纹理与绘制路径将拿到真实画面（"原版代码自己画"的关键打通）**。实现依据：旧 host `eboot_probe.cpp` 的 `n_avc_*` 实现（h145k80~k949 经验）+ Vita3K `SceVideodecUser.cpp` 权威语义。实现（18.4523，`recomp_harness.cpp`，文件级 `p5d_vdec_hle()`，在 hle_call 入口按 stub VA 分派）：
 | M979 | §18.4524: **Ghidra 反编译 CRI 视频驱动（0x812A8000–0x812AD000，173 个函数）+ 运行验证：视频 HLE 已被调用（`[AVDEC] InitLibrary n=59562930`、`QueryMem 960x544 ref=3 -> 0x240000 n=59563748`），但 **CreateDecoder/Decode 从未被调用**（到 n=62.9M 仍只有 2 条）——CRI 影片管线在"创建解码器"之前就停住了；已反编译出解码器创建/解码驱动的准确调用形态，供下一步定位卡点**。反编译证据（`C:\dev\p5d_build\ghidra_out\vdec_range.txt`，Ghidra 全量分析工程 P5D_FULL）：
 | M980 | §18.4525: **定位 CRI 视频管线卡点：page1 只进入 `FUN_812A8D14`（sceVideodecInitLibrary 封装），**`FUN_812a9140`（CriVavcPsp2 解码器创建）/`FUN_812a9836`/`FUN_812a9fae`（每帧解码驱动）从未被进入**——即引擎在"创建 CriVavcPsp2 解码器对象"之前就停住；已用完整反编译确认该创建函数的全部分支与前置条件，并按旧 host 经验加入 **page1 二次 `criFs_Initialize`（`P5D_CRIFSHLE2_AT`）** 作为解法验证**。证据：
+| M981 | §18.4526: ★★★★★★ **【page1 卡死真凶：app 异步 job "init trophy" 永不完成】Ghidra 反编译 + 运行时探针联合定位：page1 的 `[IDR]` 循环其实就是 guest 函数 `FUN_81184ffe`（异步 job 状态机），它已提交 job `"init trophy"`（job 节点 handle=0xC8=200 与 `[IDR] handle=000000C8` 完全吻合），然后每轮轮询 `FUN_8116f8d2(job)` 等完成——而该 job 的异步 worker（`FUN_8116f9dc` 派发）在我们的 HLE 下永不完成 ⇒ page1 永远停在初始化第一步（state=2 idx=0），后续 title/影片解码全部无法开始。已实现 `P5D_JOBFORCE`：在 guest 进入 0x81184FFE 时把 job 的完成标志 `*(u32*)(job+0xC)` 清零，使 `FUN_8116f8d2` 返回 0 → 状态机推进到下一步（与旧 host 的 CRIFORCE/强制完成思路一致）**。证据：
+1) 反编译 `FUN_81184ffe`（page1 轮询函数，size=218）：
+```c
+piVar1 = (int *)FUN_8116f8a8();          // = *(u32*)(param_1+8) 状态对象
+iVar3 = *piVar1;                          // state
+if (iVar3 < 1) { ... *piVar1=1; piVar1[1]=0; }             // 开始第一步
+else if (iVar3 < 2) {                     // state==1：调用当前步骤函数
+    local_40[0]=0x8118484f; local_40[1]=0x811848fd; ... local_40[8]=0x81184c75;  // 8 个步骤入口表
+    iVar3 = (*(code*)local_40[piVar1[1]])(param_1);  piVar1[2]=iVar3; *piVar1=2;
+}
+else if (iVar3 < 3 && (iVar3 = FUN_8116f8d2(piVar1[2]), iVar3 == 0)) {
+    *piVar1 = 1; piVar1[1] = piVar1[1] + 1;   // ★ 只在这步推进：job 完成才进下一步
+}
+```
+2) 步骤 0 = `FUN_8118484e`（"init trophy"）：
+```c
+FUN_8116f7ca(param_1, "init trophy", 200, 0, 0, 0x81184809, 0x8118483b, puVar3);
+// FUN_8116f7ca 创建 0x1C 字节 job 节点并挂入 DAT_815554c4 链表：
+//   node[0]=name, node[1]=cb1(0x81184809), node[2]=cb2(0x8118483b),
+//   node[3]=FUN_8116f9dc(node,&args)  ← job 状态/完成标志（FUN_8116f8d2 检查 *(node+0xC)==0）
+```
+3) `FUN_8116f8d2(job)`：
+```c
+iVar1 = DAT_815554c4;
+if (param_1 != 0) for (; iVar1; iVar1 = *(int*)(iVar1+0x10))
+    if (iVar1 == param_1) {
+        if (*(int*)(param_1 + 0xc) == 0) return 0;   // ★ 完成
+        return FUN_8116fa38(); }                    // 否则返回非 0（继续等）
+return 0;
+```
+4) 运行日志 `out80m_m1057crifs2.txt` 证据（[IDR] 探针 r5=状态对象，state=2 idx=0 handle=0xC8）：
+```
+[IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 r0=85B846EC n=59584016
+...（每 ~20k blocks 重复，直到 n=59744911 仍 state=2 idx=0）
+```
+→ 与 "init trophy" job handle 0xC8=200 完全对应 = **page1 卡在 init trophy 的异步完成等待**。
+5) 实现（18.4527，`recomp_harness.cpp` job_probes 内）：
+```cpp
+{ static int _jf=-1; if(_jf<0){ const char* _e=getenv("P5D_JOBFORCE"); _jf=(_e&&atoi(_e))?1:0; }
+  if (_jf && (pcv&~1u)==0x81184FFEu && s->r[0]) {
+    uint32_t _so=0,_job=0;
+    { uint8_t* q=GP(s->r[0]+8u); if(q) memcpy(&_so,q,4); }        // 状态对象
+    if(_so){ uint8_t* q=GP(_so+8u); if(q) memcpy(&_job,q,4); }     // job 指针
+    if(_job){ uint32_t _st=0,_js=0,_ix=0;
+      { uint8_t* q=GP(_so);   if(q) memcpy(&_st,q,4); }
+      { uint8_t* q=GP(_so+4); if(q) memcpy(&_ix,q,4); }
+      { uint8_t* q=GP(_job+0xCu); if(q) memcpy(&_js,q,4); }
+      if (_st>=2u && _js!=0u) { uint32_t _z=0; uint8_t* q=GP(_job+0xCu); if(q) memcpy(q,&_z,4);
+        printf("[JOBFORCE] #%d state=%u idx=%u job=%08X old_j0C=%08X -> 0 n=%u\n",...); } } } }
+```
+编译成功（Idle 优先级）；已启动验证运行：`P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1`（`out80m_m1058jobforce.txt`）。
+NEXT：`[JOBFORCE]` 推进 8 个步骤 → page1 场景推进（更多 draw/present）→ 若到达 title/影片阶段则 `[AVDEC] CreateDecoder/Decode` 出现 → 引擎自绘影片内容。 |
+| §18.4526 | page1 stall root cause found: the app async job "init trophy" never completes. Ghidra decompilation + runtime probe: the page1 [IDR] loop is guest function FUN_81184ffe (an async-job state machine) which has submitted the job "init trophy" (job node handle=0xC8=200 exactly matching [IDR] handle=000000C8) and polls FUN_8116f8d2(job) every iteration - and that job's async worker (dispatched by FUN_8116f9dc) never completes under our HLE, so page1 stays at init step 1 (state=2 idx=0) forever and title/movie decode can never start. Implemented P5D_JOBFORCE: when the guest enters 0x81184FFE, clear the job completion flag *(u32*)(job+0xC) so FUN_8116f8d2 returns 0 and the state machine advances to the next step (same idea as the old host's CRIFORCE / forced-completion approach). Evidence: (1) FUN_81184ffe decompiled (page1 poll, size 218): piVar1=(int*)FUN_8116f8a8() = *(u32*)(param_1+8) state object; iVar3=*piVar1; if(iVar3<1){... *piVar1=1; piVar1[1]=0;} else if(iVar3<2){ local_40[0]=0x8118484f; local_40[1]=0x811848fd; ... local_40[8]=0x81184c75; iVar3=(*(code*)local_40[piVar1[1]])(param_1); piVar1[2]=iVar3; *piVar1=2; } else if(iVar3<3 && (iVar3=FUN_8116f8d2(piVar1[2]),iVar3==0)){ *piVar1=1; piVar1[1]=piVar1[1]+1; } (only advances when the job completes). (2) step 0 = FUN_8118484e ('init trophy'): FUN_8116f7ca(param_1,'init trophy',200,0,0,0x81184809,0x8118483b,puVar3); FUN_8116f7ca creates a 0x1C-byte job node in the DAT_815554c4 list: node[0]=name, node[1]=cb1(0x81184809), node[2]=cb2(0x8118483b), node[3]=FUN_8116f9dc(node,&args) (job state/flag checked by FUN_8116f8d2). (3) FUN_8116f8d2(job): iVar1=DAT_815554c4; if(param_1!=0) for(;iVar1;iVar1=*(int*)(iVar1+0x10)) if(iVar1==param_1){ if(*(int*)(param_1+0xc)==0) return 0; return FUN_8116fa38(); } return 0;. (4) runtime out80m_m1057crifs2.txt: [IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 r0=85B846EC n=59584016 ... repeats every ~20k blocks until n=59744911 still state=2 idx=0 = page1 stuck waiting for the init-trophy async completion. (5) Implementation 18.4527 in recomp_harness.cpp job_probes: if P5D_JOBFORCE && (pcv&~1)==0x81184FFE && s->r[0]: _so=rd32(s->r[0]+8); _job=_so?rd32(_so+8):0; _st=rd32(_so); _ix=rd32(_so+4); _js=_job?rd32(_job+0xC):0; if(_st>=2 && _js!=0){ wr32(_job+0xC,0); printf('[JOBFORCE] #%d state=%u idx=%u job=%08X old_j0C=%08X -> 0 n=%u'); }. Compiled OK (Idle priority); verification run started: P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1 (out80m_m1058jobforce.txt). NEXT: [JOBFORCE] advances the 8 steps -> page1 scene progresses (more draws/presents) -> if the title/movie phase is reached, [AVDEC] CreateDecoder/Decode appear -> engine-drawn movie content. |
 1) 新增 guest 入口探针 `[VDECFN]`（`P5D_VDECPROBE=1`，job_probes 内比较 pcv 与 0x812A8D14/8ED8/9140/9836/9FAE）：
 ```
 [VDECFN] pc=812A8D14 r0=812A8D15 r1=816C5798 r2=8132049C r3=81320EF4 sp=84856308 r5=81540690 lr=812A826C n=59562928
@@ -491291,3 +491344,56 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M980 CRI video pipeline stall - page1 only enters FUN_812A8D14 (sceVideodecInitLibrary wrapper); FUN_812a8ed8/FUN_812a9140 (CriVavcPsp2 decoder creation)/FUN_812a9836/FUN_812a9fae (per-frame decode driver) are NEVER entered up to n=60.25M. Probe: new [VDECFN] guest-entry probe in job_probes (P5D_VDECPROBE=1, compares pcv with 0x812A8D14/8ED8/9140/9836/9FAE): [VDECFN] pc=812A8D14 r0=812A8D15 r1=816C5798 r2=8132049C r3=81320EF4 sp=84856308 r5=81540690 lr=812A826C n=59562928 (only 1 entry). FUN_812a9140 decompiled: CriVavcPsp2 decoder creation: iVar1=FUN_812abcd4(param_1,0x100,'CriVavcPsp2: HnObj',4); memset(iVar1,0,0x100); fields; uVar5=FUN_812a8ed8(w,h,max); uVar10=(uVar5+0x3ffff)&0xfffc0000; SceSysmem_B9D5EBDE('criVavcPsp2',0x9408060,uVar10,&local_3c) (sceKernelAllocMemBlock, error E12041804M); SceSysmem_B8EF5818(iVar4,&local_64) (GetMemBlockInfo base, error E12041805M); alignment check 1MB ('E12041901M:Decoder work memory for CDRAM requires 0x%x alignment.'); SceVideodecUser_97E95EDB(0x1001,&local_54{w,h},&local_68); FUN_81279aee(auStack_60,iVar4,0x100000); then if(DAT_8154083c!=1){ *(u32*)(iVar1+0xd0)=0; *(u32*)(iVar1+0xd4)=*(u32*)(iVar1+0xf8); *(u32*)(iVar1+0xd8)=*(u32*)(iVar1+0xfc); iVar4=SceVideodecUser_E82BB69B(0x1001,iVar1+0xd0,&local_48) (sceAvcdecCreateDecoder, error E10120805M); } then input SJ/APU/FrmPool allocations; if(DAT_81540838==1) SceGxm_C61E34FC (sceGxmMapMemory). Memory allocations succeed: [MEMA] AllocMemBlock uid=0000012D size=00C00000 addr=99000000 name=81306058 lr=81153CAE; [MEMB] GetMemBlockInfo uid=0000012D -> base=99000000 size=00C00000 hit=1. Old host experience (h145k461/h145k80): the movie player stalls at 'streamer not built'; old host used P5D_CRIFSHLE to call criFs_Initialize AGAIN during page1. Our run only called it at n=5000 ([CRIFSHLE] criFs_Initialize(NULL,0,0) -> 00000000 n=5000). Implementation 18.4526 in recomp_harness.cpp: second CRI FS init: static long long _cfat2=-1; if(_cfat2<0){ const char* _e2=getenv('P5D_CRIFSHLE2_AT'); _cfat2=_e2?atoll(_e2):-1; } if(_cfat2>0 && (long long)n>=_cfat2){ static int _cfh2=0; if(!_cfh2){ _cfh2=1; uint32_t _cr2=call_guest_cb2(&s,0x8128399Eu,0u,0u,4000000); printf('[CRIFSHLE2] criFs_Initialize -> %08X n=%d',_cr2,n); } } . Verification run: P5D_CRIFSHLE_AT=5000 P5D_CRIFSHLE2_AT=59550000 P5D_VDEC=1 P5D_VDECPROBE=1 -> out80m_m1057crifs2.txt. NEXT: check [CRIFSHLE2] return; whether [AVDEC] CreateDecoder/Decode appear; whether [VDECFN] adds 812A9140/812A9836/812A9FAE; draw counts and RT captures.
 
 LOOKUP: [VDECFN], P5D_VDECPROBE, 0x812A8D14, 0x812A8ED8, 0x812A9140, 0x812A9836, 0x812A9FAE, CriVavcPsp2, E12041804M, E12041805M, E12041901M, E10120805M, DAT_8154083c, DAT_81540838, P5D_CRIFSHLE2_AT, [CRIFSHLE2], out80m_m1057crifs2.txt -> §18.4524 [relevant: CRI video driver decompile], §18.4523 [relevant: video HLE port]
+### 18.4526 PORT M981: page1 卡死真凶 = app 异步 job "init trophy"；P5D_JOBFORCE 强制完成
+
+1) `FUN_81184ffe`（page1 [IDR] 循环函数）反编译：
+```c
+piVar1 = (int *)FUN_8116f8a8();            // = *(u32*)(param_1+8) 状态对象
+iVar3 = *piVar1;                            // state
+if (iVar3 < 1) { *piVar1 = 1; piVar1[1] = 0; }                  // 开始
+else if (iVar3 < 2) {                                            // state==1：执行当前步骤
+    local_40[0]=0x8118484f; local_40[1]=0x811848fd; ... local_40[8]=0x81184c75;  // 8 步入口表
+    iVar3 = (*(code*)local_40[piVar1[1]])(param_1); piVar1[2]=iVar3; *piVar1=2;
+}
+else if (iVar3 < 3 && (iVar3 = FUN_8116f8d2(piVar1[2]), iVar3 == 0)) {
+    *piVar1 = 1; piVar1[1] = piVar1[1] + 1;    // ★ 只有 job 完成才推进
+}
+```
+2) 步骤 0 = `FUN_8118484e`：
+```c
+FUN_8116f7ca(param_1, "init trophy", 200, 0, 0, 0x81184809, 0x8118483b, puVar3);
+// FUN_8116f7ca：创建 0x1C 字节 job 节点挂入 DAT_815554c4 链：
+//   node[0]=name, node[1]=cb1, node[2]=cb2, node[3]=FUN_8116f9dc(node,&args)（完成标志在 node+0xC）
+```
+3) `FUN_8116f8d2(job)`：`if (*(int*)(job+0xC)==0) return 0;` → 完成判定。
+4) 运行日志（`out80m_m1057crifs2.txt`）：
+```
+[IDR] at=81184FFE state=2 idx=0 handle=000000C8 n=59584016
+...（每 ~20k blocks 重复，n=59744911 仍 state=2 idx=0）
+```
+**handle=0xC8=200 与 "init trophy" 的第 3 个参数完全一致** ⇒ page1 卡在 init trophy 异步完成等待。
+5) 实现 `P5D_JOBFORCE`（18.4527，job_probes）：
+```cpp
+if (_jf && (pcv & ~1u) == 0x81184FFEu && s->r[0]) {
+    uint32_t _so=0,_job=0;
+    { uint8_t* q=GP(s->r[0]+8u); if(q) memcpy(&_so,q,4); }
+    if(_so){ uint8_t* q=GP(_so+8u); if(q) memcpy(&_job,q,4); }
+    if(_job){ uint32_t _st=0,_js=0,_ix=0;
+      { uint8_t* q=GP(_so); if(q) memcpy(&_st,q,4); }
+      { uint8_t* q=GP(_so+4); if(q) memcpy(&_ix,q,4); }
+      { uint8_t* q=GP(_job+0xCu); if(q) memcpy(&_js,q,4); }
+      if (_st>=2u && _js!=0u) { uint32_t _z=0; uint8_t* q=GP(_job+0xCu); if(q) memcpy(q,&_z,4);
+        printf("[JOBFORCE] #%d state=%u idx=%u job=%08X old_j0C=%08X -> 0 n=%u\n",...); } } }
+```
+6) 编译成功（Idle 优先级）；验证运行：`P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1` → `out80m_m1058jobforce.txt`
+NEXT：
+```
+① [JOBFORCE] 出现且 8 个步骤依次推进 → page1 场景推进（draw/present 增加）
+② 到达 title/影片阶段 → [AVDEC] CreateDecoder/Decode 出现 → 引擎自绘影片
+③ 若 job 节点链表/回调需要正确语义，改用"模拟 worker 完成"而非直接清标志
+```
+验证：`out80m_m1057crifs2.txt`、`jobmgr.txt`（Ghidra 反编译）、`out80m_m1058jobforce.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M981 page1 stall root cause = app async job 'init trophy' never completes. GHIDRA: guest function FUN_81184ffe is the page1 async-job state machine: piVar1=(int*)FUN_8116f8a8() = *(u32*)(param_1+8); iVar3=*piVar1 (state); state<1 -> init (*piVar1=1, piVar1[1]=0); state<2 -> step dispatch table local_40[0]=0x8118484f, [1]=0x811848fd, [2]=0x81184a07, [3]=0x81184acf, [4]=0x81184bbf, [5]=0x81184d41, [6]=0x81184e41, [7]=0x81184f7b, [8]=0x81184c75; iVar3=step(param_1); piVar1[2]=iVar3; *piVar1=2; state<3 -> if(FUN_8116f8d2(piVar1[2])==0){ *piVar1=1; piVar1[1]++ } (only advances when job completes). Step0 = FUN_8118484e = 'init trophy': FUN_8116f7ca(param_1,'init trophy',200,0,0,0x81184809,0x8118483b,puVar3). FUN_8116f7ca creates a 0x1C-byte job node linked into DAT_815554c4: node[0]=name, node[1]=cb1 0x81184809, node[2]=cb2 0x8118483b, node[3]=FUN_8116f9dc(node,&args) (completion flag at node+0xC). FUN_8116f8d2(job): iVar1=DAT_815554c4; for(;iVar1;iVar1=*(int*)(iVar1+0x10)) if(iVar1==param_1){ if(*(int*)(param_1+0xc)==0) return 0; return FUN_8116fa38(); } return 0;. Runtime evidence out80m_m1057crifs2.txt: [IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 r0=85B846EC n=59584016 ... every ~20k blocks until n=59744911 still state=2 idx=0; handle=0xC8=200 matches the 'init trophy' argument. Implementation 18.4527 P5D_JOBFORCE in recomp_harness.cpp job_probes: if(_jf && (pcv&~1)==0x81184FFE && s->r[0]){ _so=rd32(s->r[0]+8); _job=_so?rd32(_so+8):0; _st=rd32(_so); _ix=rd32(_so+4); _js=_job?rd32(_job+0xC):0; if(_st>=2 && _js!=0){ wr32(_job+0xC,0); printf('[JOBFORCE] #%d state=%u idx=%u job=%08X old_j0C=%08X -> 0 n=%u'); } }. Compiled OK (Idle priority); verification run P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1 -> out80m_m1058jobforce.txt. NEXT: [JOBFORCE] advances the 8 steps -> page1 scene progresses (more draws/presents) -> title/movie phase -> [AVDEC] CreateDecoder/Decode -> engine-drawn movie. If the job list/callbacks need correct semantics, simulate worker completion instead of clearing the flag directly.
+
+LOOKUP: FUN_81184ffe, FUN_8118484e, init trophy, FUN_8116f7ca, FUN_8116f9dc, FUN_8116f8d2, DAT_815554c4, job node +0xC, handle=000000C8, P5D_JOBFORCE, [JOBFORCE], out80m_m1058jobforce.txt, jobmgr.txt -> §18.4525 [relevant: CRI video stall], §18.4524 [relevant: CRI video decompile]
