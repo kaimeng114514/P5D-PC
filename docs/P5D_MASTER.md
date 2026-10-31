@@ -976,6 +976,30 @@
 | M958 | §18.4503: **GXP 参数表解析第一版结果：`pcount=1..6`、`pbase=0xE0/0xF0/0x138/0x1E8/0x1F8` 都能读到，但**没有任何 `cat==0` 的 ATTRIBUTE 项**（`[ABIGXPP]` 只打印出 pcount 行，没有 ATTR 行）→ 说明属性不在 GXP 参数表的 category 0 里（或 category/type 位域解读有误）。已加更深诊断：GXP 参数表原始 16B 项（name/w0 hex/cat/typ/cmp/res/arr）+ `r2-0x40` 内存窗口 + `r2-0x48` 处 8 字节 `SceGxmVertexAttribute` 候选解析（旧 host VATTR 的提示）**。`out62m_m1039vtx2.txt` 证据：
 | M959 | §18.4504: **找到 GXP 参数表解析一直无结果的 bug：`pbase = 0x28 + parameter_offset` 是 **GXP 文件内偏移**，但代码里却用 `GP(_pbase + i*16)` 把它当 **guest VA** 去翻译 → 永远返回 null → 循环立即 break → 既无 `[ABIGXPP] P[]` 也无属性项。已修复为 `_g + _pbase + i*16`（`_g` 是 GXP 的 host 指针），并加 GXP size 边界检查、name 指针用 `_g + offset`。** `out62m_m1040gxpp.txt` 证据：
 | M960 | §18.4505: ★★★★★★★ **重大突破：GXP 参数表解析成功（M959 修复偏移 bug 后），拿到所有顶点程序的**真实属性名/类型/分量数**；并且定位到 attrCount=0 的**最终原因**：引擎自己用 `GetProgramFromId`/`FindParameterByName` 构建 `SceGxmVertexAttribute[]`，而这两个 API 一直返回 0（STUB）→ 引擎只能生成 0 个属性。已实现 **GXM 程序 introspection HLE**（GetProgramFromId 返回 GXP VA；FindParameterByName/Semantic 返回 GXP 内参数项 guest VA；GetCategory/GetResourceIndex 从参数项读字段）**。证据：
+| M961 | §18.4506: ★★★★★★★★ **introspection HLE 生效！引擎成功构建真实顶点属性表：`[ABIVARG] r3`（attrCount）从 0 变为 1/2/3，`[ABIVFMT] attrN=1/2/3`，且格式与 stride 完全自洽：`attr0 fmt=9(F32) comps=3 → 12B`、`attr1 fmt=8(F16) comps=3 → 6B`、`stride=12/18/26` 精确吻合（12 / 12+6 / 12+6+8）**。同时修正属性解码映射为 **vitasdk 真实 `SceGxmAttributeFormat` 枚举**（0=U8,1=S8,2=U16,3=S16,4=U8N,5=S8N,6=U16N,7=S16N,8=F16,9=F32,10=FIXED）。证据（`out62m_m1042introspect.txt`）：
+```
+[ABIPROG] GetProgramFromId id=8540B000 -> gxp=81539944
+[ABIPARAM] BySem prog=81539944 sem=11 idx=0 -> vertex.position -> 81539A24
+[ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000001 ...    ← attrCount=1（之前 0！）
+[ABIVFMT] obj=8540C000 attrN=1 streamN=1 n=1717
+[ABIVFMT]  attr0 stream=0 off=0 fmt=9 comps=3        ← F32×3 = 12B
+[ABIVFMT]  strm0 stride=12 idx=0
+[ABIVFMT] obj=8540C080 attrN=2 streamN=1
+[ABIVFMT]  attr0 stream=0 off=0 fmt=9 comps=3        ← F32×3 = 12B
+[ABIVFMT]  attr1 stream=0 off=12 fmt=8 comps=3       ← F16×3 = 6B（12+6=18=stride ✓）
+[ABIVFMT]  strm0 stride=18 idx=0
+[ABIVFMT] obj=8540C100 attrN=3 ... attr2 off=18 (F16×4=8B) → stride=26 ✓
+```
+真实属性格式分布（统计）：`(F16,2)×4395`、`(F32,3)×3232`、`(F16,3)×3225`、`(U8N,4)×2882`、`(U8,4)×1929`、`(F32,2)×16`、`(F32,4)×4`
+→ 与旧 host `_fsz[11]={1,1,2,2,1,1,2,2,2,4,4}` 完全一致，证明枚举正确。
+**实现（18.4506）**：`abi_decode_attr` 按真实枚举重写：
+```cpp
+// 0=U8,1=S8,2=U16,3=S16,4=U8N(/255),5=S8N(/127),6=U16N(/65535),7=S16N(/32767),8=F16(half->float),9=F32,10=FIXED(/65536)
+```
+`[ABIVTX]` 解包将在 page1 索引绘制时触发（本 run 到 n=26M，尚未到 page1）。
+编译链接成功；已启动 62M 运行（`out62m_m1043realtri.txt`，真实着色器+红 FS）。
+NEXT：`[ABIVTX]` 解包真实顶点（position F32×3、texcoord F16×2/3、color U8N×4...）→ **RT 出现游戏真实几何**（红 FS 涂色）→ 再切真实 FS（需先补 uniform）。 |
+| §18.4506 | Introspection HLE works! The engine now builds real vertex attribute tables: [ABIVARG] r3 (attrCount) went from 0 to 1/2/3, [ABIVFMT] attrN=1/2/3, and the formats are fully consistent with the strides: attr0 fmt=9(F32) comps=3 -> 12B, attr1 fmt=8(F16) comps=3 -> 6B, stride=12/18/26 exactly (12 / 12+6 / 12+6+8). Also corrected the attribute decoding mapping to the REAL vitasdk SceGxmAttributeFormat enum (0=U8,1=S8,2=U16,3=S16,4=U8N,5=S8N,6=U16N,7=S16N,8=F16,9=F32,10=FIXED). Evidence (out62m_m1042introspect.txt): [ABIPROG] GetProgramFromId id=8540B000 -> gxp=81539944; [ABIPARAM] BySem prog=81539944 sem=11 idx=0 -> vertex.position -> 81539A24; [ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000001 (attrCount=1, previously 0); [ABIVFMT] obj=8540C000 attrN=1 streamN=1 n=1717; attr0 stream=0 off=0 fmt=9 comps=3 (F32x3=12B); strm0 stride=12; [ABIVFMT] obj=8540C080 attrN=2; attr0 fmt=9 comps=3 off=0; attr1 fmt=8 comps=3 off=12 (F16x3=6B, 12+6=18=stride); strm0 stride=18; obj=8540C100 attrN=3 attr2 off=18 (F16x4=8B) stride=26. Real attribute format distribution: (F16,2)x4395, (F32,3)x3232, (F16,3)x3225, (U8N,4)x2882, (U8,4)x1929, (F32,2)x16, (F32,4)x4 - identical to the old host's _fsz[11]={1,1,2,2,1,1,2,2,2,4,4} proving the enum. FIX 18.4506: abi_decode_attr rewritten with the real enum: 0=U8,1=S8,2=U16,3=S16,4=U8N(/255),5=S8N(/127),6=U16N(/65535),7=S16N(/32767),8=F16(half->float),9=F32,10=FIXED(/65536). [ABIVTX] unpacking will trigger at page1's indexed draw (this run reached n=26M only, page1 not yet). Build+link OK; 62M run started (out62m_m1043realtri.txt, real shaders + red FS). NEXT: [ABIVTX] unpacks real vertices (position F32x3, texcoord F16x2/3, color U8Nx4...) -> REAL GAME GEOMETRY in the RT (painted red) -> then switch to the real FS (needs uniforms first). |
 1) `out62m_m1041gxpfix.txt`（GXP 解析修复后）真实参数表：
 ```
 [ABIGXPP]  P[0] name=vertex.position      w0=0400 cat=0 typ=0 cmp=4 res=0 arr=1
@@ -489616,3 +489640,45 @@ NEXT：`[ABIPROG]/[ABIPARAM]` 命中 → `[ABIVARG]` 的 r3(attrCount) 应 >0 �
 ANTI-FORGETTING ENTRY. Keywords: M960 GXP parameter tables now parse correctly (after M959 offset fix): vertex programs have real attributes vertex.position (cat=0 typ=0 cmp=4 res=0), vertex.texcoord (res=4), vertex.color (res=4), vertex.weights (res=4), vertex.indices (res=8); uniforms mtxWorldLightViewProj (cat=1 arr=4), mtxLocalToWorld, mtxViewProj (res=16), skinBlendMatrices (arr=1024), bloomPitch (cat=1 typ=1 cmp=2). The FINAL cause of attrCount=0: the engine builds SceGxmVertexAttribute[] itself via GetProgramFromId/FindParameterByName, but both APIs were STUBs returning 0, so the engine produced 0 attributes. Implemented the GXM program introspection HLE 18.4505: sceGxmShaderPatcherGetProgramFromId(programId)->GXP VA via _pid2gxp printing [ABIPROG]; sceGxmProgramFindParameterByName(program,name)->guest VA of the GXP parameter entry (scan pc=g+0x24, po=g+0x28, gsz=g+8, pb=0x28+po, entry 16B, name at entry+nameOffset) printing [ABIPARAM]; sceGxmProgramFindParameterBySemantic(program,semantic,index) mapping position/normal/texcoord[0/1]/color/weights/indices; sceGxmProgramParameterGetCategory(param)->u16@+4 & 0xF; sceGxmProgramParameterGetResourceIndex(param)->u32@+0xC. Engine internal flow from the AOT blocks 0x811EF610/blk_811EFADA/blk_811EFAF6: attribute array at stack sp+0x3C, count at sp+0x10; streams array at sp+0x18, [sp+4]=streamCount, [sp+8]=out; it fills attributes via the introspection APIs then calls CreateVertexProgram. Evidence out62m_m1041gxpfix.txt: [ABIGXPP] P[0] name=vertex.position w0=0400 cat=0 typ=0 cmp=4 res=0 arr=1; P[1] vertex.texcoord res=4; P[1] vertex.color res=4; P[1] mtxLocalToWorld cat=1; P[2] mtxViewProj res=16; ATTR[0] vertex.position typ=0 comp=4 implicit off=0 fmt=4; ATTR[1] vertex.texcoord off=16. Build+link OK (binary contains [ABIPROG]/[ABIPARAM]); 62M verification run started out62m_m1042introspect.txt (real shaders+red FS). NEXT: [ABIPROG]/[ABIPARAM] hits should make [ABIVARG] r3 (attrCount) > 0 -> [ABIVFMT] attrN>0 -> [ABIVTX] unpacks real vertices -> REAL GAME GEOMETRY in the RT.
 
 LOOKUP: sceGxmShaderPatcherGetProgramFromId, sceGxmProgramFindParameterByName, sceGxmProgramFindParameterBySemantic, sceGxmProgramParameterGetCategory, sceGxmProgramParameterGetResourceIndex, [ABIGXPP], [ABIPROG], [ABIPARAM], vertex.position, mtxViewProj, out62m_m1042introspect.txt -> §18.4504 [relevant: GXP offset fix], §18.4502 [relevant: implicit attr layout]
+### 18.4506 PORT M961: introspection HLE 生效（真实属性表）+ 属性格式枚举修正
+
+1) `out62m_m1042introspect.txt`：
+```
+[ABIPROG] GetProgramFromId id=8540B000 -> gxp=81539944
+[ABIPARAM] BySem prog=81539944 sem=11 idx=0 -> vertex.position -> 81539A24
+[ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000001 ...   ← attrCount=1（之前 0）
+[ABIVFMT] obj=8540C000 attrN=1 streamN=1 n=1717
+[ABIVFMT]  attr0 stream=0 off=0 fmt=9 comps=3       ← F32×3 = 12B
+[ABIVFMT]  strm0 stride=12 idx=0
+[ABIVFMT] obj=8540C080 attrN=2 streamN=1
+[ABIVFMT]  attr0 stream=0 off=0 fmt=9 comps=3
+[ABIVFMT]  attr1 stream=0 off=12 fmt=8 comps=3      ← F16×3 = 6B（12+6=18=stride）
+[ABIVFMT]  strm0 stride=18 idx=0
+[ABIVFMT] obj=8540C100 attrN=3 attr2 off=18 (F16×4=8B) → stride=26
+```
+2) 真实属性格式分布（统计）：
+```
+(F16,2)×4395  (F32,3)×3232  (F16,3)×3225  (U8N,4)×2882  (U8,4)×1929  (F32,2)×16  (F32,4)×4
+```
+与 vitasdk `SceGxmAttributeFormat` 完全一致（旧 host `_fsz[11]={1,1,2,2,1,1,2,2,2,4,4}`）：
+```
+0=U8(1) 1=S8(1) 2=U16(2) 3=S16(2) 4=U8N(1) 5=S8N(1) 6=U16N(2) 7=S16N(2) 8=F16(2) 9=F32(4) 10=FIXED(4)
+```
+3) 实现（18.4506）：`abi_decode_attr` 按真实枚举重写：
+```cpp
+// 0=U8,1=S8,2=U16,3=S16,4=U8N(/255),5=S8N(/127),6=U16N(/65535),7=S16N(/32767),8=F16(half->float),9=F32,10=FIXED(/65536)
+```
+4) 编译链接成功；已启动 62M 运行：`out62m_m1043realtri.txt`（真实着色器 + 红 FS）。
+NEXT：page1 索引绘制时 `[ABIVTX]` 解包真实顶点：
+```
+position = F32×3 @0
+texcoord = F16×2/3 或 F32×2
+color    = U8N×4
+→ upload_vertex_stream(真实顶点, vc*128) → RT 出现游戏真实几何（红 FS 涂色）
+```
+之后切真实 FS（需先补 uniform 数据通路）。
+验证：`out62m_m1042introspect.txt`、`out62m_m1043realtri.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M961 introspection HLE works - the engine now builds real vertex attribute tables: [ABIVARG] r3 (attrCount) went 0 -> 1/2/3, [ABIVFMT] attrN=1/2/3, formats consistent with strides: attr0 fmt=9(F32) comps=3 -> 12B; attr1 fmt=8(F16) comps=3 -> 6B; stride 12/18/26 = 12 / 12+6 / 12+6+8. Real vitasdk SceGxmAttributeFormat enum: 0=U8(1B),1=S8(1B),2=U16(2B),3=S16(2B),4=U8N(1B),5=S8N(1B),6=U16N(2B),7=S16N(2B),8=F16(2B),9=F32(4B),10=FIXED(4B) - matches old host _fsz[11]={1,1,2,2,1,1,2,2,2,4,4}. Evidence out62m_m1042introspect.txt: [ABIPROG] GetProgramFromId id=8540B000 -> gxp=81539944; [ABIPARAM] BySem prog=81539944 sem=11 idx=0 -> vertex.position -> 81539A24; [ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000001; [ABIVFMT] obj=8540C000 attrN=1 streamN=1; attr0 stream=0 off=0 fmt=9 comps=3; strm0 stride=12; obj=8540C080 attrN=2 attr0 fmt=9 comps=3 off=0 attr1 fmt=8 comps=3 off=12 stride=18; obj=8540C100 attrN=3 attr2 off=18 stride=26. Attribute format distribution: (F16,2)x4395 (F32,3)x3232 (F16,3)x3225 (U8N,4)x2882 (U8,4)x1929 (F32,2)x16 (F32,4)x4. FIX 18.4506: abi_decode_attr rewritten with the real enum (0=U8,1=S8,2=U16,3=S16,4=U8N/255,5=S8N/127,6=U16N/65535,7=S16N/32767,8=F16 half->float,9=F32,10=FIXED/65536). Build+link OK; 62M run started out62m_m1043realtri.txt (real shaders+red FS). NEXT: page1's indexed draw triggers [ABIVTX] unpacking of real vertices (position F32x3, texcoord F16x2/3, color U8Nx4) -> REAL GAME GEOMETRY in the RT (painted red) -> then switch to the real FS (needs uniforms first).
+
+LOOKUP: [ABIVARG] r3, [ABIVFMT], SceGxmAttributeFormat, abi_decode_attr, _fsz[11], out62m_m1043realtri.txt -> §18.4505 [relevant: introspection HLE], §18.4500 [relevant: vertex capture]

@@ -31,20 +31,27 @@ static void hle_pump_win_messages(void) {}
 // 18.4500 M955: GXM vertex attribute -> float[4] decoder (formats per SceGxmAttributeFormat:
 // 0=UBYTE(norm),1=BYTE(norm),2=USHORT(norm),3=SHORT(norm),4=FLOAT,5=HALF,6=FIXED)
 static void abi_decode_attr(const unsigned char* p, unsigned int fmt, unsigned int comps, float* out) {
+  // 18.4506 M961: REAL vitasdk SceGxmAttributeFormat enum:
+  //   0=U8(1B) 1=S8(1B) 2=U16(2B) 3=S16(2B) 4=U8N(1B) 5=S8N(1B) 6=U16N(2B) 7=S16N(2B)
+  //   8=F16(2B) 9=F32(4B) 10=FIXED(4B)   (sizes match old host _fsz[11]={1,1,2,2,1,1,2,2,2,4,4})
   out[0]=out[1]=out[2]=out[3]=0.0f;
   for (unsigned int c=0;c<comps && c<4;++c) {
-    if (fmt==4) { float f=0.f; std::memcpy(&f,p+c*4u,4); out[c]=f; }
-    else if (fmt==5) { unsigned short hh=0; std::memcpy(&hh,p+c*2u,2);
+    if (fmt==9) { float f=0.f; std::memcpy(&f,p+c*4u,4); out[c]=f; }
+    else if (fmt==8) { unsigned short hh=0; std::memcpy(&hh,p+c*2u,2);
       unsigned int s=(hh>>15)&1u,e=(hh>>10)&0x1Fu,m=hh&0x3FFu; float v;
       if(e==0) v=(float)m*5.9604645e-8f;
-      else if(e==31) v=(m?1e30f:1e30f);
+      else if(e==31) v=1e30f;
       else v=std::ldexp((float)(m|0x400u),(int)e-25);
       out[c]= s? -v : v; }
-    else if (fmt==0) out[c]=(float)p[c]/255.0f;
-    else if (fmt==1) { signed char b=(signed char)p[c]; out[c]=(float)b/127.0f; }
-    else if (fmt==2) { unsigned short u=0; std::memcpy(&u,p+c*2u,2); out[c]=(float)u/65535.0f; }
-    else if (fmt==3) { short s=0; std::memcpy(&s,p+c*2u,2); out[c]=(float)s/32767.0f; }
-    else if (fmt==6) { int sv=0; std::memcpy(&sv,p+c*4u,4); out[c]=(float)sv/65536.0f; }
+    else if (fmt==0) out[c]=(float)p[c];
+    else if (fmt==1) { signed char b=(signed char)p[c]; out[c]=(float)b; }
+    else if (fmt==2) { unsigned short u=0; std::memcpy(&u,p+c*2u,2); out[c]=(float)u; }
+    else if (fmt==3) { short s=0; std::memcpy(&s,p+c*2u,2); out[c]=(float)s; }
+    else if (fmt==4) out[c]=(float)p[c]/255.0f;
+    else if (fmt==5) { signed char b=(signed char)p[c]; out[c]=(float)b/127.0f; }
+    else if (fmt==6) { unsigned short u=0; std::memcpy(&u,p+c*2u,2); out[c]=(float)u/65535.0f; }
+    else if (fmt==7) { short s=0; std::memcpy(&s,p+c*2u,2); out[c]=(float)s/32767.0f; }
+    else if (fmt==10) { int sv=0; std::memcpy(&sv,p+c*4u,4); out[c]=(float)sv/65536.0f; }
     else { float f=0.f; std::memcpy(&f,p+c*4u,4); out[c]=f; }
   }
 }
