@@ -957,6 +957,33 @@
 | M939 | §18.4484: ★★★★★★★ **第一发真实 draw 完整执行：`[REAL-PIPE] #1 OK`（真实 SPIR-V 管线创建成功）、`[FRAMEBEGIN] frame=1`、`[FUBOHOST]` UBO 上传、`[TEXBIND]` 纹理绑定全部发生！** 但 page1 期间 app **不调用 `sceGxmEndScene`**，只调用 `sceGxmBeginScene`×1、`sceGxmDraw`×1、`sceGxmDisplayQueueAddEntry`×2 → 后端 `end_frame()`（提交命令缓冲 + `vkQueuePresentKHR`）从未被调用 → **无 present**。已把 EndScene/DisplayQueueAddEntry 接到后端 `end_frame()`。`out62m_m1020drawonly.txt` 证据：
 | M940 | §18.4485: ★★★★★★★★★ **【首帧上屏成功！】游戏第一次把画面提交到 Vulkan 交换链：`[FRAMESUBMIT] frame=1` + `ef_debug.log` 的 `after submit result=0` / `before present` / `after present result=0` 全部成功**。`out62m_m1021present.txt` 证据：
 | M941 | §18.4486: **首帧截图揭示：M940 上屏的交换链画面是全黑（`[SHOTSTAT] frame=1 max=0 mean=0.00`）——因为游戏渲染到**离屏 RT**（`DisplayQueueAddEntry` 的 color surface data=`8CF00000`/`8D300000`），而我们用 `end_frame()` 直接呈现了空的 swapchain 图像；已改为正确显示路径：`end_scene_pass()` →（首帧）`save_rt_screenshot(cd,"p5d_rt_first.bmp")` → `present_frame(cd)`（内部把 RT 拷贝到 swapchain 再 present）**。证据（`out62m_m1022capture.txt`）：
+| M942 | §18.4487: ★★★★★★★ **离屏 RT 内容成功 present 到窗口：`[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)`——这次呈现的是游戏真实渲染的 RT（`cd=8D300000` 960x544），RT→swapchain `vkCmdCopyImage` 已执行**。`out62m_m1023rtpresent.txt` 证据：
+```
+[ABIRT] save_rt_screenshot(8CF00000) rc=-1        ← 第一个 DisplayQueue 的 RT 尚未入池（返回 -1）
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8D300000 n=59475321
+err: [ENDPASS] cd=00000000 cmd=000001efc0a2a8d0 inRP=1
+err: [RTALIAS] cd=8D300000 alias img=000001efc05330d0 view=000001efc0547d50
+err: [RTPOOL] create cd=8D300000 960x544 pool=1
+err: [PRES] cd=8D300000 cmd=... imgIdx=0 inRP=0 img=000001efc0532ad0 view=...
+err: [CPYIMG] cd=8D300000 src=000001efc0532ad0 960x544 dst=000001efc05306d0 idx=0   ← RT→swapchain 拷贝记录
+err: [CEND] cmd=000001efc0a2a8d0 tid=...
+[PFTIME] #1 ...
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)         ← ★ 真实 RT 内容呈现成功
+```
+结论：
+1) **正确显示路径生效**：`end_scene_pass()` → `present_frame(cd)` → 后端把 `8D300000` RT 拷贝到 swapchain 并 present，`result=0`；
+2) `p5d_rt_first.bmp` 未生成：首帧截图尝试发生在第一个 DisplayQueue（RT `8CF00000`），但该 RT 此时尚未进入 `g_rt_pool`（`rc=-1`）；
+3) 修复（18.4487）：把首帧 RT 截图改为**在后续 DisplayQueue 重试**直到成功：
+```cpp
+static int _cap_done = 0;
+if (!_cap_done) { int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+  if (_rr == 0) { _cap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n", _data, g_main_n); }
+  else { static int _rt = 0; if (_rt++ < 8) printf("[ABIRT] cd=%08X rc=%d (retry next display entry)\n", _data, _rr); } }
+```
+4) 编译链接成功；已启动 62M 长跑（`out62m_m1024rtshot.txt`）生成 `p5d_rt_first.bmp`。
+NEXT：BMP→PNG 查看**游戏真实画面内容**（page1 的渲染结果），并继续推进 page1 完成 → S1 标题页。 |
+| §18.4487 | Offscreen RT content successfully presented to the window: [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS) - this time the game's real rendered RT (cd=8D300000 960x544) was presented, with the RT->swapchain vkCmdCopyImage executed. Evidence (out62m_m1023rtpresent.txt): [ABIRT] save_rt_screenshot(8CF00000) rc=-1 (the first DisplayQueue's RT was not in the pool yet); [ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786 and data=8D300000 n=59475321; err [ENDPASS] cmd=... inRP=1; err [RTALIAS] cd=8D300000 alias img=... view=...; err [RTPOOL] create cd=8D300000 960x544 pool=1; err [PRES] cd=8D300000 cmd=... imgIdx=0 inRP=0 img=000001efc0532ad0 view=...; err [CPYIMG] cd=8D300000 src=000001efc0532ad0 960x544 dst=000001efc05306d0 idx=0 (RT->swapchain copy recorded); err [CEND] cmd=...; [PFTIME] #1 ...; [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS) (the real RT content presented successfully). Conclusions: (1) the correct display path works: end_scene_pass() -> present_frame(cd) -> the backend copies the 8D300000 RT to the swapchain and presents with result=0; (2) p5d_rt_first.bmp was not generated because the first-frame capture attempt happened at the first DisplayQueue (RT 8CF00000) which was not in g_rt_pool yet (rc=-1); (3) FIX 18.4487: make the first-frame RT capture retry on later DisplayQueue entries until it succeeds: static int _cap_done=0; if (!_cap_done) { int _rr = save_rt_screenshot(_data,'p5d_rt_first.bmp'); if (_rr==0) { _cap_done=1; printf('[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n',_data,g_main_n); } else { static int _rt=0; if (_rt++<8) printf('[ABIRT] cd=%08X rc=%d (retry next display entry)\n',_data,_rr); } }. Build+link OK; 62M run started out62m_m1024rtshot.txt producing p5d_rt_first.bmp. NEXT: convert BMP to PNG and inspect the game's real rendered frame (page1 output), and continue pushing page1 completion -> S1 title page. |
 ```
 err: [INFO] Vulkan: Creating screenshot image...
 err: [INFO] Screenshot image created (960x544)
@@ -488347,3 +488374,39 @@ NEXT：`[ABIRT]`/`[CPYIMG]`（RT→swapchain 拷贝）/`[PRESENT]`；`p5d_rt_fir
 ANTI-FORGETTING ENTRY. Keywords: M941 first captured frame was black because the game renders into an offscreen RT (DisplayQueueAddEntry color surface +0 data VA 8CF00000/8D300000) while M940's end_frame() presented the empty swapchain image; switched to the correct display path end_scene_pass() -> first-frame save_rt_screenshot(data,'p5d_rt_first.bmp') -> present_frame(data) (backend records vkCmdCopyImage(RT->swapchain) + barrier + submit + vkQueuePresentKHR). Evidence out62m_m1022capture.txt: [FRAMESUBMIT] frame=1 img=0 cmd=... inRP=0; [INFO] Vulkan: Creating screenshot image...; [INFO] Screenshot image created (960x544); [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_frame_first.bmp (all black); [INFO] Screenshot saved: p5d_frame_first.bmp (960x544). Implementation 18.4486 in recomp_harness.cpp GXMABI dispatch: namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } }; if (name is sceGxmEndScene or sceGxmDisplayQueueAddEntry) { _dq=DisplayQueueAddEntry; _data=*(u32*)GP(s->r[2]); end_scene_pass(); if (_dq && _data) { first frame: save_rt_screenshot(_data,'p5d_rt_first.bmp') printing [ABIRT]; present_frame(_data); } print [ABIDISP]; return 0; }. Build+link OK (binary contains [ABIRT]); 62M run started out62m_m1023rtpresent.txt. NEXT: check [ABIRT]/[CPYIMG]/[PRESENT]; convert p5d_rt_first.bmp to PNG and inspect the real game frame.
 
 LOOKUP: present_frame, save_rt_screenshot, end_scene_pass, [CPYIMG], [SHOTSTAT], p5d_rt_first.bmp, out62m_m1023rtpresent.txt -> §18.4485 [relevant: first present], §18.4484 [relevant: present wiring]
+### 18.4487 PORT M942: 真实 RT 内容 present 成功（result=0）；首帧 RT 截图改为重试
+
+1) `out62m_m1023rtpresent.txt`：
+```
+[ABIRT] save_rt_screenshot(8CF00000) rc=-1          <- 第一个 DisplayQueue 的 RT 未入池
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8CF00000 n=59454786
+[ABIDISP] sceGxmDisplayQueueAddEntry data=8D300000 n=59475321
+err: [ENDPASS] cd=00000000 cmd=000001efc0a2a8d0 inRP=1
+err: [RTALIAS] cd=8D300000 alias img=000001efc05330d0 view=000001efc0547d50
+err: [RTPOOL] create cd=8D300000 960x544 pool=1
+err: [PRES] cd=8D300000 cmd=... imgIdx=0 inRP=0 img=000001efc0532ad0 view=...
+err: [CPYIMG] cd=8D300000 src=000001efc0532ad0 960x544 dst=000001efc05306d0 idx=0
+err: [CEND] cmd=000001efc0a2a8d0 tid=...
+[PFTIME] #1 ...
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)          <- ★ 真实 RT 呈现成功
+```
+2) 结论：
+- **正确显示路径生效**：`end_scene_pass()` → `present_frame(8D300000)` → RT→swapchain 拷贝 → present `result=0`；
+- `p5d_rt_first.bmp` 未生成：首帧截图发生在第一个 DisplayQueue（RT `8CF00000`），此时该 RT 还没进 `g_rt_pool`（`rc=-1`）。
+3) 修复（18.4487）：首帧 RT 截图改为在后续 DisplayQueue 上**重试直到成功**：
+```cpp
+static int _cap_done = 0;
+if (!_cap_done) {
+    int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+    if (_rr == 0) { _cap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n", _data, g_main_n); }
+    else { static int _rt = 0; if (_rt++ < 8) printf("[ABIRT] cd=%08X rc=%d (retry next display entry)\n", _data, _rr); }
+}
+p5d::vulkan::present_frame(_data);
+```
+4) 编译链接成功；已启动 62M 长跑：`out62m_m1024rtshot.txt`。
+NEXT：`p5d_rt_first.bmp` → PNG 查看游戏真实画面（page1 渲染结果）；继续推进 page1 完成 → S1 标题页。
+验证：`out62m_m1023rtpresent.txt`、`out62m_m1024rtshot.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M942 offscreen RT content successfully presented: out62m_m1023rtpresent.txt shows [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS) and [CPYIMG] cd=8D300000 src=000001efc0532ad0 960x544 dst=000001efc05306d0 idx=0, [PRES] cd=8D300000 imgIdx=0 rtimg=..., [RTALIAS] cd=8D300000 alias img=..., [RTPOOL] create cd=8D300000 960x544 pool=1, [ENDPASS] cmd=... inRP=1, [CEND] cmd=...; the correct display path end_scene_pass() -> present_frame(cd) copies the real RT (8D300000) to the swapchain and presents with result=0. p5d_rt_first.bmp was not generated because the first capture attempt used RT 8CF00000 which was not in g_rt_pool yet (rc=-1). FIX 18.4487: retry the first-frame RT capture on later DisplayQueue entries until save_rt_screenshot returns 0 (static _cap_done; print [ABIRT] saved p5d_rt_first.bmp from cd=... n=...; else retry up to 8). Build+link OK; 62M run started out62m_m1024rtshot.txt producing p5d_rt_first.bmp. NEXT: convert BMP to PNG and inspect the real game frame (page1 output); continue page1 completion -> S1 title page.
+
+LOOKUP: present_frame, save_rt_screenshot, [CPYIMG], [PRESENT], [RTPOOL], [RTALIAS], p5d_rt_first.bmp, out62m_m1024rtshot.txt -> §18.4486 [relevant: display path], §18.4485 [relevant: first present]

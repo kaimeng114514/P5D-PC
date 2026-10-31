@@ -1482,9 +1482,11 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (_dq) { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
         p5d::vulkan::end_scene_pass();
         if (_dq && _data) {
-          static int _cap_done = 0;
-          if (!_cap_done) { _cap_done = 1; int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
-            printf("[ABIRT] save_rt_screenshot(%08X) rc=%d\n", _data, _rr); fflush(stdout); }
+          static int _cap_done = 0;   // 18.4487 M942: retry until the RT exists in the pool
+          if (!_cap_done) { int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+            if (_rr == 0) { _cap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n", _data, g_main_n); }
+            else { static int _rt = 0; if (_rt++ < 8) printf("[ABIRT] cd=%08X rc=%d (retry next display entry)\n", _data, _rr); }
+            fflush(stdout); }
           p5d::vulkan::present_frame(_data);
         }
         static int _dn = 0; if (_dn++ < 16) { printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n); fflush(stdout); }
