@@ -967,6 +967,26 @@
 | M949 | §18.4494: ★★★★★★ **候选探测揭示关键真相：BeginScene 的 colorSurface 是 `0x816CBCC4`（image 数据段的全局结构），但其字段全 0——因为**我们从未实现 `sceGxmColorSurfaceInit`（STUB，不写任何字段）**！已实现真实的 ColorSurfaceInit/DepthStencilSurfaceInit HLE，填充 surface 结构。** 证据：
 | M950 | §18.4495: ★★★★★★★ **ColorSurfaceInit 真实实现生效：surface 结构被正确填充（`w=960 h=544 stride=1024 data=8D300000`），且启动期不再 stall。** 3M 冒烟（`out3m_m1033smoke.txt`）：
 | M951 | §18.4496: ★★★★★★ **红 FS + ColorSurfaceInit 验证结果：渲染架构修正生效（`[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544`、`[DRAWST] rp=非空`、viewport 正常 `0,0,960,544`、`[ENDPASS] cd=8D300000`、`[CPYIMG]`、`[PRESENT] result=0`），但 RT 仍全黑 → 定位为：顶点 uniform 全 0（RINIT 零表）导致真实顶点着色器把每个顶点算到 w=0 → 无片元 → 红 FS 也画不出来**。证据（`out62m_m1033rtred.txt`）：
+| M952 | §18.4497: ★★★★★★★★ **重大发现：后端的 `P5D_ZFORCE` 开关注释里记录着上一个项目的"零像素"真凶——顶点变换后 `z > w`（超出 Vulkan 裁剪体 0≤Zc≤Wc），depthClampEnable=FALSE 时整个三角形被裁掉 → 即使管线/绑定/视口全对也一个像素都不写！** 关键原文（`vulkan_backend.cpp` 注释）：
+```
+// h144k34【深度裁剪归因实验——本轮找到的"零像素"根因验证】
+//   [VREAD] 已证明顶点数据、索引、绑定偏移、管线描述符全部正确，[DYNSTATE] 证明 viewport/scissor 正常。
+//   但把绑定的顶点按管线描述符反解出来后，每个顶点的 z 都大于 w：
+//     · vert_0015(主力 pass): loc0=(288.9,165.7, 2.125, 1.0)  → z_ndc=2.125
+//     · vert_0014(背景 quad): loc0=(-1,-1, 2.0, 1.0)..(1,1,2.0) → z_ndc=2.0
+//   Vulkan 规范 27.3：depthClampEnable=FALSE 时图元会被裁剪到 0 ≤ Zc ≤ Wc → z 超界则整个三角形被丢弃。
+//   这正是"所有链路都对却一个像素都不写"的原因。
+//   开关：P5D_ZFORCE=w → z=w（z_ndc=1.0）；P5D_ZFORCE=<float> → z=常数。
+```
+这说明我们当前 `out62m_m1034uni.txt`（[ABIUNI] identity uniform 已生效、rp/viewport 全对、红 FS 仍黑）的根因极可能同样是 **z>w 裁剪**。
+另一个重要发现：后端还有 **`P5D_DBG_VS_BUILTIN=1`（passthrough 顶点着色器）** 与 **`P5D_DIAG_FS_IN=1`（显示 varying 的调试片元）**。
+历史注释还记录：上一项目 **red-FS 曾实现整屏纯红**（几何/混合/深度/呈现全对），此后卡在"app 自己的片元着色器输出全黑（varying/纹理采样语义）"。
+**决定性实验（18.4497）**：`P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red P5D_ZFORCE=w` 重跑 62M：
+- 内置 VS 直接输出测试三角形 NDC 坐标（-0.5..0.5）+ 红 FS + z 强制合法 → **RT 应变红**；
+- 若变红 ⇒ 光栅化/管线/呈现链路彻底打通，剩余工作 = 真实 uniform/顶点/纹理数据上传（与上一项目的卡点一致）。
+已启动 62M 运行（`out62m_m1035redz.txt`）。
+NEXT：读 RT BMP 颜色；变红后：①把 ZFORCE 的修复纳入真实渲染（或保证上传的 MVP 矩阵产生合法 z）；②开始真实 uniform（`sceGxmSetUniformDataF`/Precomputed 版）+ 顶点流上传；③纹理上传（`[TEXBIND] dummy=16` → 真实纹理）。 |
+| §18.4497 | MAJOR DISCOVERY: the backend's P5D_ZFORCE switch comments document the previous project's real "zero pixels" culprit - after vertex transform z > w (outside the Vulkan clip volume 0<=Zc<=Wc); with depthClampEnable=FALSE the whole triangle is clipped away, so even with correct pipeline/binding/viewport not a single pixel is written! Key original text from vulkan_backend.cpp: 'h144k34 depth-clip attribution experiment - the root cause of this round's zero pixels: [VREAD] proved vertex data, indices, binding offsets and pipeline descriptors all correct, [DYNSTATE] proved viewport/scissor normal. But after decoding the bound vertices with the pipeline descriptors, every vertex has z greater than w: vert_0015 (main pass): loc0=(288.9,165.7,2.125,1.0) -> z_ndc=2.125; vert_0014 (background quad): loc0=(-1,-1,2.0,1.0)..(1,1,2.0) -> z_ndc=2.0. Vulkan spec 27.3: with depthClampEnable=FALSE primitives are clipped to 0<=Zc<=Wc -> if z is out of range the whole triangle is discarded. This is exactly why "every link is correct but not a single pixel is written". Switch: P5D_ZFORCE=w -> z=w (z_ndc=1.0); P5D_ZFORCE=<float> -> z=constant.' This means the root cause of our current out62m_m1034uni.txt (identity uniforms active, rp/viewport all correct, red FS still black) is very likely the same z>w clipping. Another important discovery: the backend also has P5D_DBG_VS_BUILTIN=1 (passthrough vertex shader) and P5D_DIAG_FS_IN=1 (debug fragment showing varyings). The historical comments also record that the previous project once achieved a fully red screen with red-FS (geometry/blend/depth/present all correct) and afterwards was stuck on 'the app's own fragment shader outputs all black (varying/texture sampling semantics)'. DECISIVE EXPERIMENT 18.4497: rerun 62M with P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red P5D_ZFORCE=w: the built-in VS directly outputs the test-triangle NDC coordinates (-0.5..0.5), red FS, legal z -> the RT should turn red; if red then rasterization/pipeline/present are fully proven and the remaining work is real uniform/vertex/texture data upload (same sticking point as the previous project). 62M run started (out62m_m1035redz.txt). NEXT: read the RT BMP color; once red: (1) fold the ZFORCE fix into real rendering (or ensure the uploaded MVP matrices produce legal z); (2) start real uniform (sceGxmSetUniformDataF/Precomputed versions) + vertex stream upload; (3) texture upload ([TEXBIND] dummy=16 -> real textures). |
 ```
 [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59454976        ← BeginScene 正确选中 RT
 [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3
@@ -489002,3 +489022,35 @@ NEXT：RT 变红 ⇒ 光栅化/管线/呈现全通 → 转入真实 uniform/顶�
 ANTI-FORGETTING ENTRY. Keywords: M951 red-FS + ColorSurfaceInit verification shows the render architecture fix works: [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] rp non-null and viewport 0,0,960,544; [ENDPASS] cd=8D300000; [CPYIMG] cd=8D300000 960x544; [PRESENT] result=0; but the RT is still all black -> vertex uniforms are all zero (RINIT zero table), so the real vertex shader gxp_vert_0001 computes every vertex to w=0 -> degenerate triangle -> no fragments -> even the red diagnostic FS cannot paint. Evidence out62m_m1033rtred.txt: [REALFS-RED] ready, [FUBOHOST] UBO float 0.00000, RT STATS mean=0.00 max=0 (0,0,0) 100%. EXPERIMENT 18.4496: before the first real draw feed identity matrices via the backend update_uniform_buffer(local_to_world,view_proj): static const float _I[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}; p5d::vulkan::update_uniform_buffer(_I,_I); printf('[ABIUNI] identity vertex uniforms set n=%u\n',g_main_n); the backend memcpy's 128B into uniform_buffer_mapped and flushes. If the test triangle (NDC -0.5..0.5) rasterizes, the red FS paints it red and the RT capture turns red. Build+link OK (binary contains [ABIUNI]); 62M run started out62m_m1034uni.txt with P5D_REALFS=red. NEXT: if the RT turns red then rasterization/pipeline/present all work and work moves to real uniform/vertex data upload; if still black check vertex buffer binding (bound_vertex_count/vertex buffer) and the input assembly layout.
 
 LOOKUP: update_uniform_buffer, [ABIUNI], [FUBOHOST], [DRAWST], P5D_REALFS, out62m_m1033rtred.txt, out62m_m1034uni.txt -> §18.4495 [relevant: ColorSurfaceInit], §18.4492 [relevant: render architecture]
+### 18.4497 PORT M952: 上一项目"零像素"真凶记录 = z>w 深度裁剪；内置 passthrough VS/红 FS/ZFORCE 决定性实验
+
+1) `vulkan_backend.cpp` 中 `P5D_ZFORCE` 的注释原文（h144k34）：
+```
+// [VREAD] 已证明顶点数据、索引、绑定偏移、管线描述符全部正确，[DYNSTATE] 证明 viewport/scissor 正常。
+// 但把绑定的顶点按管线描述符反解出来后，每个顶点的 z 都大于 w：
+//   · vert_0015(主力 pass): loc0=(288.9,165.7, 2.125, 1.0)  → z_ndc=2.125
+//   · vert_0014(背景 quad): loc0=(-1,-1, 2.0, 1.0)..(1,1,2.0) → z_ndc=2.0
+// Vulkan 规范 27.3：depthClampEnable=FALSE 时图元会被裁剪到 0 ≤ Zc ≤ Wc → z 超界则整个三角形被丢弃。
+// 开关：P5D_ZFORCE=w → z=w（z_ndc=1.0）；P5D_ZFORCE=<float> → z=常数。
+```
+→ 与本项目当前 `out62m_m1034uni.txt`（identity uniform 已生效、rp/viewport 全对、红 FS 仍黑）完全吻合。
+2) 后端还有关键诊断开关：
+- **`P5D_DBG_VS_BUILTIN=1`**：用内置 passthrough 顶点着色器（直接输出测试三角形 NDC 坐标）；
+- **`P5D_DIAG_FS_IN=1`**：片元着色器直接输出 varying/Input Location 0（判别 varying 交接）；
+- **`P5D_ZFORCE=w`**：z = w（z_ndc=1.0，合法裁剪体）；
+- **`P5D_FORCE_UBO`**：把 binding0 UBO 整块填色（判别片元读的是哪个 binding）。
+3) 历史注释还记录：上一项目 **red-FS 曾实现整屏纯红**（几何/混合/深度/呈现全对），之后卡在
+   "app 自己的片元着色器输出全黑（varying/location 语义、纹理采样）"。
+4) 决定性实验（18.4497）：`P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red P5D_ZFORCE=w` 重跑 62M：
+- 内置 VS 直出测试三角形（-0.5..0.5）+ 红 FS + z 合法 → **RT 应变红**；
+- 变红 ⇒ 光栅化/管线/呈现链路彻底打通；剩余 = 真实 uniform/顶点/纹理上传（与上一项目卡点一致）。
+5) 已启动 62M 运行：`out62m_m1035redz.txt`。
+NEXT：读 RT BMP 颜色；变红后：
+①把 ZFORCE 修复纳入真实渲染（或保证上传 MVP 矩阵产生合法 z）；
+②真实 uniform（`sceGxmSetUniformDataF`/Precomputed 版）与顶点流上传；
+③纹理上传（`[TEXBIND] dummy=16` → 真实纹理）。
+验证：`out62m_m1034uni.txt`（仍黑）、`out62m_m1035redz.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M952 the backend's P5D_ZFORCE comments record the previous project's real 'zero pixels' culprit: after vertex transform z>w (outside Vulkan clip volume 0<=Zc<=Wc); with depthClampEnable=FALSE the whole triangle is clipped away, so even with correct pipeline/binding/viewport no pixel is written. Original text (h144k34) in vulkan_backend.cpp: [VREAD] proved vertex data/indices/binding/pipeline descriptors correct, [DYNSTATE] viewport/scissor normal, but decoding the bound vertices showed z>w: vert_0015 loc0=(288.9,165.7,2.125,1.0) z_ndc=2.125; vert_0014 loc0=(-1,-1,2.0,1.0)..(1,1,2.0) z_ndc=2.0; Vulkan spec 27.3 clips primitives to 0<=Zc<=Wc when depthClampEnable=FALSE -> entire triangle discarded. Switch: P5D_ZFORCE=w -> z=w (z_ndc=1.0); P5D_ZFORCE=<float> -> z=constant. This matches our current out62m_m1034uni.txt (identity uniforms active, rp/viewport all correct, red FS still black). The backend also has P5D_DBG_VS_BUILTIN=1 (passthrough vertex shader), P5D_DIAG_FS_IN=1 (debug fragment showing varying/Input Location 0), P5D_FORCE_UBO (fill binding0 UBO with a color to find which binding the fragment reads). Historical comments also record the previous project once achieved a fully red screen with red-FS (geometry/blend/depth/present all correct) and then was stuck on 'app's own fragment shader outputs black (varying/location semantics, texture sampling)'. DECISIVE EXPERIMENT 18.4497: rerun 62M with P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red P5D_ZFORCE=w -> built-in VS outputs the test triangle (-0.5..0.5) + red FS + legal z -> RT should turn red; if red rasterization/pipeline/present are fully proven and remaining work is real uniform/vertex/texture upload. 62M run started out62m_m1035redz.txt. NEXT: read RT BMP color; once red: (1) fold the ZFORCE fix into real rendering (or ensure uploaded MVP matrices produce legal z); (2) real uniform (sceGxmSetUniformDataF/Precomputed versions) + vertex stream upload; (3) texture upload ([TEXBIND] dummy=16 -> real textures).
+
+LOOKUP: P5D_ZFORCE, P5D_DBG_VS_BUILTIN, P5D_REALFS, P5D_DIAG_FS_IN, P5D_FORCE_UBO, depthClampEnable, 0<=Zc<=Wc, out62m_m1034uni.txt, out62m_m1035redz.txt -> §18.4496 [relevant: identity uniform experiment], §18.4492 [relevant: render architecture]
