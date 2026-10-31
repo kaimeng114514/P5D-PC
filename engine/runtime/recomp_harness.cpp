@@ -936,13 +936,16 @@ static void pending_req_scan() {
 static int g_periodpump_env = -1;
 static void job_probes(uint32_t pcv, RecState* s) {
   { static int _co_env = -1; if (_co_env < 0) { const char* _e = getenv("P5D_CRIOP"); _co_env = (_e && atoi(_e)) ? 1 : 0; }
+    static uint32_t _cop = 0; static uint32_t _cop_next = 0; static int _cop_sub = 0;
     if (_co_env && g_main_n >= 59500000u) {
       uint32_t _p = pcv & ~1u;
-      if (_p == 0x8128E394u) { static int _su = 0; if (_su++ < 10) { printf("[CRIOP] submit op=%08X a1=%08X a2=%08X a3=%08X n=%u\n", s->r[0], s->r[1], s->r[2], s->r[3], g_main_n); fflush(stdout); } }
-      else if (_p == 0x8128E9BCu) { static int _po = 0; static uint32_t _last = 0; uint32_t _op = s->r[0];
-        if (_op != _last) { _last = _op; if (_po++ < 12) { printf("[CRIOP] poll op=%08X n=%u\n", _op, g_main_n); fflush(stdout); } }
-        static int _pl = 0; if (_pl++ < 40) { uint32_t _w[10] = {0}; uint8_t* _q = GP(_op); if (_q) std::memcpy(_w, _q, sizeof(_w));
-          printf("[CRIOP]  op=%08X words: %08X %08X %08X %08X %08X %08X %08X %08X\n", _op, _w[0],_w[1],_w[2],_w[3],_w[4],_w[5],_w[6],_w[7]); fflush(stdout); } } } }
+      if (_p >= 0x8128E394u && _p < 0x8128E3A0u) { _cop = s->r[0];
+        if (_cop_sub++ < 10) { printf("[CRIOP] submit op=%08X a1=%08X a2=%08X a3=%08X n=%u\n", s->r[0], s->r[1], s->r[2], s->r[3], g_main_n); fflush(stdout); } }
+      if (_cop && g_main_n >= _cop_next) { _cop_next = g_main_n + 300000u;
+        uint32_t _w[16] = {0}; uint8_t* _q = GP(_cop); if (_q) std::memcpy(_w, _q, sizeof(_w));
+        printf("[CRIOP] dump n=%u op=%08X: %08X %08X %08X %08X %08X %08X %08X %08X | %08X %08X %08X %08X %08X %08X %08X %08X\n",
+               g_main_n, _cop, _w[0],_w[1],_w[2],_w[3],_w[4],_w[5],_w[6],_w[7],_w[8],_w[9],_w[10],_w[11],_w[12],_w[13],_w[14],_w[15]);
+        fflush(stdout); } } }
 
   { static int _bt_env = -1; if (_bt_env < 0) { const char* _e = getenv("P5D_BT57"); _bt_env = (_e && atoi(_e)) ? 1 : 0; }
     if (_bt_env && g_main_n >= 60000000u) { static int _btn = 0;

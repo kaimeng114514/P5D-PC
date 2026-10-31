@@ -942,6 +942,17 @@
 | M924 | §18.4469: **GitHub 说明文档（README）全面更新到当前进度（M923/整体 55–60%）**：重写 `README.md` 的状态表与里程碑段（M869–M923），新增"开发状态开关"表（`P5D_GXMABI`/`NOSCHEDRUN`/`GETSELFFIX`/`CRIFSHLE(+AT)`/`THRYIELD`/`PERIODPUMP`/`VTIME`/`WAKE57`/`HLEDUMP(+AT)`/`P1TICK`/`BT57`），更新当前阻塞（S1 boot page1 帧循环不退出 → 无 GXM 绘制）与下一步任务顺序（BT57 栈回溯定位驱动函数 → page1 完成 → 标题页 → GXM BeginScene/Draw/Present → S2–S4）。同时修复 `P5D_BT57` 探针编译错误（`pcv` 作用域 → 改用 `g_cur_block`；重建 `link exit=0`、二进制含 `[BT57]` 标签）。README 内容与 `docs/P5D_MASTER.md` 保持同步（权威细节仍在主文档）。 |
 | M925 | §18.4470: **BT57 栈回溯探针放错位置（在 hle_call 里，pacer 内无 HLE 调用 → 0 条）→ 移入 job_probes（有 pcv+sp），n≥60M 抽 6 次主栈样本；已重启 62M 长跑**。前一次 62M 长跑（`out62m_m1006bt57.txt`，P5D_BT57=1）：n 推进到 **60,865,000**（page1 内），但 `[BT57]` **0 条** —— 原因：BT57 代码被插在 `hle_call` 里且判定 `g_cur_block == 0x8127BB30`，而 CRI 帧节拍器 `FUN_8127BB30` 内部**不调用任何 HLE**（睡眠包装 `FUN_8127C0E8` 调用的是 `0x812B2A80`，此时 g_cur_block=0x812B2A80）→ 条件永不满足。**修复（18.4470）**：把 BT57 移到 `job_probes(pcv, s)`（每个执行块都调用，能拿到真实 pcv 与 s->r[13]），改为 `g_main_n >= 60,000,000` 后每 400k n 抽样一次（共 6 次），打印 pc/fib/thr/sp 并从 sp 向上扫描 0x800 字节，输出落在 `0x80600000..0x81260000`（app/底层代码区）的返回地址，用于还原 page1 驱动调用链。已重启 62M 长跑（`out62m_m1007bt57b.txt`）。NEXT: 读取 `[BT57]` 6 组栈样本 → 还原 page1 驱动函数 → 反编译定位等待条件 → 修复。 |
 | M926 | §18.4471: ★★★★★ **BT57 栈回溯成功 → 反编译定位 page1 卡点：`FUN_8122D91C` 是 CRI 异步加载驱动，`while(FUN_8128E9BC(op,&st), st==1) { ...; DelayThreadCB(10); }` —— page1 卡在 CRI 加载 op 状态永远为 1（busy）**。`[BT57]`（`out62m_m1007bt57b.txt`，n=60M..62M 共 5 组，高度一致）主栈返回链：
+| M927 | §18.4472: **CRIOP 首份数据：page1 在 n=59,634,683 提交了一个 CRI 异步加载 op（`op=84DAB768`），但状态查询函数 pc 落在基本块边界之外 → 改进探针为"记录 submit 的 op 指针 + 每 300k n dump op 结构 16 字"**。`out62m_m1008criop.txt`：
+```
+[CRIOP] submit op=84DAB768 a1=00000000 a2=84856078 a3=00000000 n=59634683
+[FRAMEDUMP] n=60290000 ctr=9 pc=8127B85C blk=8127B7D8
+[CRIOP] poll 0 条
+```
+分析：
+1) `FUN_8128E394(op, a1=0, a2=84856078(out struct), a3=0)` 确实被调用（page1 的加载提交成立），op 堆对象 `0x84DAB768`；
+2) 但 `FUN_8128E9BC`（状态查询）的 pc 探针 0 条 —— 因为 **AOT 基本块边界不等于函数入口**（函数内部循环/分支会把块切到 0x8128EAxx），`pcv == 0x8128E9BC` 过窄；
+3) 因此改为**更稳健的采样**（18.4472）：在 `0x8128E394` 记录 `_cop = s->r[0]`（op 指针），随后对 `_cop` **每 300k n dump op 结构前 16 个字**（`[CRIOP] dump n=... op=...: w0..w15`），不需要命中具体 pc 就能观察状态字随时间变化。已启动 62M 长跑（`out62m_m1009criop2.txt`）。NEXT: 读 `[CRIOP] dump` 序列 → 找出 op 结构中"永远不变的状态字"与"应被写完成的位置" → 对照反编译 `FUN_8128E9BC` 的状态判定 → 补完成投递。 |
+| §18.4472 | First CRIOP data: page1 submits a CRI async load op at n=59,634,683 (op=84DAB768) but the status-query function pc falls outside basic-block boundaries -> changed the probe to 'record the submitted op pointer + dump 16 words of the op struct every 300k n'. out62m_m1008criop.txt: [CRIOP] submit op=84DAB768 a1=00000000 a2=84856078 a3=00000000 n=59634683; [FRAMEDUMP] n=60290000 ctr=9 pc=8127B85C blk=8127B7D8; [CRIOP] poll 0 lines. Analysis: (1) FUN_8128E394(op, a1=0, a2=84856078 (out struct), a3=0) is indeed called (page1 load submission confirmed), op heap object 0x84DAB768; (2) the FUN_8128E9BC (status query) pc probe got 0 lines because AOT basic-block boundaries differ from function entry (internal loop/branch splits blocks into 0x8128EAxx), so pcv == 0x8128E9BC is too narrow; (3) therefore switched to a more robust sampling (18.4472): at 0x8128E394 record _cop = s->r[0] (op pointer), then every 300k n dump the first 16 words of the op struct ([CRIOP] dump n=... op=...: w0..w15) without needing to hit a specific pc. 62M run started (out62m_m1009criop2.txt). NEXT: read the [CRIOP] dump series -> find the op-struct status word that never changes and the location that should be written on completion -> compare with the decompiled FUN_8128E9BC status check -> add completion delivery. |
 `8122D94A 8115DCBC 8115DEBC 8115D206 8122DB0A 81153242 81172EB8 81171EFE 81184788 81159CBE 8116F758 8116FA64 811DB24E 811994F8 81199348 81198D10 81206BEC 8115D7BF 8115D7C7 8116F3C7`
 映射到函数：FUN_8122D91C / FUN_8115DCB2 / FUN_8115DE06 / FUN_8115D200 / FUN_8122DAFA / FUN_81153186 / FUN_81172EAE / FUN_81171EF6 / FUN_81184776 / FUN_8116F748 / FUN_8116FA5C / FUN_811DB020 / FUN_8119934A / FUN_81199336 / FUN_81198C0A / FUN_81206BDC / FUN_8116F3C6。**关键反编译 `FUN_8122D91C`**（`true_seg0_final.c`）：
 ```c
@@ -487307,3 +487318,32 @@ NEXT：读 `[CRIOP]` → 找 op 状态字位置与"应由谁写完成"（哪个�
 ANTI-FORGETTING ENTRY. Keywords: M926 BT57 stack captured in out62m_m1007bt57b.txt (5 consistent samples n=60M..61.6M): 8122D94A 8115DCBC 8115DEBC 8115D206 8122DB0A 81153242 81172EB8 81171EFE 81184788 81159CBE 8116F758 8116FA64 811DB24E 811994F8 81199348 81198D10 81206BEC 8115D7BF 8115D7C7 8116F3C7; mapped FUN_8122D91C/8115DCB2/8115DE06/8115D200/8122DAFA/81153186/81172EAE/81171EF6/81184776/8116F748/8116FA5C/811DB020/8119934A/81199336/81198C0A/81206BDC/8116F3C6. KEY decompile FUN_8122D91C: creates CRI async load op (FUN_8128defc), submits (FUN_8128e394), then while(true){ FUN_8128e9bc(op,&st); if (st != 1) break; FUN_81236d22(); FUN_81236c14(); DelayThreadCB(10ms); } then FUN_8128eb14 (bytes read), FUN_8128ebe8, FUN_8128dc04 (destroy), FUN_8122d696 uses data => page1 stall = CRI async load op status forever 1 (busy); FUN_8128E9BC returns 1 and the 10ms loop never exits (consistent with all observations: DelayThreadCB 10ms loop, no GXM draw, no file-IO HLE calls). Added CRIOP probe (P5D_CRIOP=1) at 0x8128E394 (submit args) and 0x8128E9BC (op pointer + first 8 words of op struct); 62M run started out62m_m1008criop.txt. NEXT: read [CRIOP] -> locate status word and find who should complete the op (which thread/callback) -> add HLE completion delivery -> page1 completes -> title page.
 
 LOOKUP: 0x8122D91C, 0x8128E394, 0x8128E9BC, 0x8128DEFC, 0x8128EB14, 0x8128DC04, FUN_8122D696, P5D_CRIOP, out62m_m1008criop.txt, true_seg0_final.c -> §18.4470 [relevant: BT57 fix], §18.4466 [relevant: CRI pacer]
+### 18.4472 PORT M927: CRIOP 首份数据 + 探针改为 op 结构周期采样
+
+1) `out62m_m1008criop.txt`：
+```
+[CRIOP] submit op=84DAB768 a1=00000000 a2=84856078 a3=00000000 n=59634683
+[CRIOP] poll 0 条
+[FRAMEDUMP] n=60290000 ctr=9 pc=8127B85C blk=8127B7D8 sp=84855FA8 fib=848463A0
+```
+2) 分析：
+- **page1 确实提交了 CRI 异步加载 op**：`FUN_8128E394(op=0x84DAB768, a1=0, a2=0x84856078(out), a3=0)`；
+- `FUN_8128E9BC` 的 pc 探针过窄：AOT **基本块**边界≠函数入口（循环内部被切成 0x8128EAxx 等块），
+  所以 `pcv == 0x8128E9BC` 永不命中；
+- 解决办法：不依赖具体 pc——**在 submit 时记录 op 指针，之后周期 dump op 结构**。
+3) 新探针（18.4472，`P5D_CRIOP=1`，job_probes）：
+```cpp
+static uint32_t _cop = 0, _cop_next = 0; static int _cop_sub = 0;
+if (pcv&~1 in [0x8128E394,0x8128E3A0)) { _cop = s->r[0]; if (_cop_sub++<10) printf("[CRIOP] submit ..."); }
+if (_cop && g_main_n >= _cop_next) { _cop_next = g_main_n + 300000u;
+  uint32_t _w[16]; memcpy(_w, GP(_cop), sizeof(_w));
+  printf("[CRIOP] dump n=%u op=%08X: %08X %08X %08X %08X %08X %08X %08X %08X | %08X ... (16 words)\n", ...); }
+```
+4) 已启动 62M 长跑：`out62m_m1009criop2.txt`。
+NEXT：读 `[CRIOP] dump` 序列 → 找出 op 结构里**恒定的状态字**与完成方应写的位置 → 对照 `FUN_8128E9BC` 反编译
+→ 补 HLE 完成投递 → page1 完成 → 标题页。
+验证：`out62m_m1008criop.txt`（submit 记录、poll=0）、`out62m_m1009criop2.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M927 CRIOP first data in out62m_m1008criop.txt: [CRIOP] submit op=84DAB768 a1=00000000 a2=84856078 a3=00000000 n=59634683 (page1 CRI async load op submitted, heap op object 0x84DAB768, FUN_8128E394) but [CRIOP] poll 0 lines because AOT basic-block boundaries differ from the function entry of FUN_8128E9BC (internal loop splits into 0x8128EAxx), pcv == 0x8128E9BC too narrow. Fix 18.4472: record _cop = s->r[0] at 0x8128E394 then every 300k n dump the first 16 words of the op struct ([CRIOP] dump n=... op=...: w0..w15) without needing a specific pc; 62M run started out62m_m1009criop2.txt (P5D_CRIOP=1). NEXT: read the [CRIOP] dump series -> find the never-changing status word and where completion should be written -> compare with decompiled FUN_8128E9BC status check -> add HLE completion delivery -> page1 completes -> title page.
+
+LOOKUP: 0x84DAB768, 0x8128E394, 0x8128E9BC, 0x8122D91C, P5D_CRIOP, out62m_m1009criop2.txt -> §18.4471 [relevant: CRI op busy], §18.4470 [relevant: BT57]
