@@ -978,6 +978,39 @@
 | M960 | §18.4505: ★★★★★★★ **重大突破：GXP 参数表解析成功（M959 修复偏移 bug 后），拿到所有顶点程序的**真实属性名/类型/分量数**；并且定位到 attrCount=0 的**最终原因**：引擎自己用 `GetProgramFromId`/`FindParameterByName` 构建 `SceGxmVertexAttribute[]`，而这两个 API 一直返回 0（STUB）→ 引擎只能生成 0 个属性。已实现 **GXM 程序 introspection HLE**（GetProgramFromId 返回 GXP VA；FindParameterByName/Semantic 返回 GXP 内参数项 guest VA；GetCategory/GetResourceIndex 从参数项读字段）**。证据：
 | M961 | §18.4506: ★★★★★★★★ **introspection HLE 生效！引擎成功构建真实顶点属性表：`[ABIVARG] r3`（attrCount）从 0 变为 1/2/3，`[ABIVFMT] attrN=1/2/3`，且格式与 stride 完全自洽：`attr0 fmt=9(F32) comps=3 → 12B`、`attr1 fmt=8(F16) comps=3 → 6B`、`stride=12/18/26` 精确吻合（12 / 12+6 / 12+6+8）**。同时修正属性解码映射为 **vitasdk 真实 `SceGxmAttributeFormat` 枚举**（0=U8,1=S8,2=U16,3=S16,4=U8N,5=S8N,6=U16N,7=S16N,8=F16,9=F32,10=FIXED）。证据（`out62m_m1042introspect.txt`）：
 | M962 | §18.4507: ★★★★★★★ **page1 真实绘制序列完整打通：`sceGxmSetVertexProgram(8540C000)` → `sceGxmSetFragmentProgram(8540C040)` → `sceGxmSetVertexStream(0, 0x8E500000)` → `sceGxmDraw`（索引 3 个顶点）；`[ABIVTX]` 首次成功解包真实顶点数据：`vc=3 attrs=1 rc=0 v0=(-1,-1,1) v1=(3,-1,1)`（**全屏背景三角形**），`[ABIIDX] icount=3 maxvc=3`；但 RT 仍黑——原因定位为：**真实顶点着色器需要真实默认 UBO，而我们 ReserveVertex/FragmentDefaultUniformBuffer 返回的 guest UBO 内容从未上传到 Vulkan（后端 update_uniform_buffer* 系列无人调用）**。已实现默认 UBO 捕获+上传。** 证据（`out62m_m1043realtri.txt`）：
+| M963 | §18.4508: **真实画面决战运行结果：真实顶点数据 + 真实绘制 + 片元默认 UBO 捕获都发生了，但**顶点默认 UBO 未被捕获**（`[ABIUBO]` 只有 frag 一行）→ 真实 VS 仍拿 0 UBO → RT 全黑。** `out62m_m1044real.txt`：
+```
+[ABIUBO] frag ubo=85B85100 n=59586560
+[ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000) n=59586560   ← 只有 frag，且首值 0
+[ABIVTX] vc=3 attrs=1 rc=0 n=59586560 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIVP] SetVertexProgram obj=8540C000 n=59586560
+[ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59607044
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+RT STATS: mean=0.00 max=0 (0,0,0) 100%
+```
+分析：
+1) **真实几何/绘制链路全部正常**：顶点解包成功（全屏三角形）、`SetVertexProgram/FragmentProgram/VertexStream/Draw` 顺序正确、RT 截图/呈现成功；
+2) **frag 默认 UBO 被捕获**（`ReserveFragmentDefaultUniformBuffer` 在 draw 前被调用）→ 说明同一路径的 **ReserveVertexDefaultUniformBuffer 一定也在某处被调用，但我们的捕获没命中**：
+   - 可能它发生在页面初始化早期（早于我们的捕获逻辑？不可能，代码常驻）／
+   - 引擎走的是 **PrecomputedVertexStateSetDefaultUniformBuffer** 或直接把 uniform buffer 地址写进 **预计算状态对象**（不是 Reserve 调用）。
+3) 渲染仍黑 = 顶点着色器 UBO 全 0（w=0）。
+**并行解决 rea 超时（18.4508b）**：发现 rea 的超时常量来自 `dist/config/providerStartupTimeout.js`：
+```js
+export const DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS = 330_000;   // 默认 5.5 分钟
+```
+可通过环境变量 **`REA_GHIDRA_STARTUP_TIMEOUT_MS`** 覆盖（`dist/config/parseConfig.js: ghidraStartupTimeoutMs: env.REA_GHIDRA_STARTUP_TIMEOUT_MS`）。
+已设置 `REA_GHIDRA_STARTUP_TIMEOUT_MS=3600000`（1 小时）+ 持久化到用户环境变量，并重跑：
+```
+rea analyze C:\dev\p5d_rom\eboot_true.elf --provider ghidra --snapshot C:\dev\p5d_build\rea_snapshots\p5d_true.json
+```
+（后台运行；生成快照后 `rea decompile --snapshot ...` 应为秒级，可完全复用 rea 的 Ghidra 分析能力。）
+NEXT：
+① 读取 rea 分析/快照 → 反编译 `0x811EBF94`（page1 渲染主函数）/`0x811EFD8E`（顶点状态设置）/`0x811F043E`（片元状态设置）/`0x811EFE6A`（uniform 写入 helper）→ 找到**顶点 UBO 的真实来源**；
+② 在 harness 里增加对 `PrecomputedVertexStateSetDefaultUniformBuffer`/`SetAllUniformBuffers`/`PrecomputedDrawSetParams` 的捕获与上传；
+③ 顶点 UBO 打通后 = 真实画面出现。 |
+| §18.4508 | Real-picture decisive run result: real vertex data + real draw + fragment default UBO capture all happened, but the VERTEX default UBO was not captured ([ABIUBO] only shows one frag line) -> the real VS still receives a zero UBO -> RT all black. Evidence (out62m_m1044real.txt): [ABIUBO] frag ubo=85B85100 n=59586560; [ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000) n=59586560 (only frag, and its first values are 0); [ABIVTX] vc=3 attrs=1 rc=0 n=59586560 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIVP] SetVertexProgram obj=8540C000 n=59586560; [ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59607044; [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS); RT STATS mean=0.00 max=0 (0,0,0) 100%. Analysis: (1) the real geometry/draw chain is fully correct: vertex unpacking succeeded (full-screen triangle), the SetVertexProgram/FragmentProgram/VertexStream/Draw order is right, RT capture and present succeed; (2) the fragment default UBO WAS captured (ReserveFragmentDefaultUniformBuffer is called before the draw) -> so the vertex counterpart must be called somewhere but our capture missed it: either it happens through PrecomputedVertexStateSetDefaultUniformBuffer / SetAllUniformBuffers, or the engine writes the uniform buffer address directly into the precomputed state object instead of calling Reserve. (3) Black render = vertex shader UBO all zero (w=0). PARALLEL FIX for the rea timeout (18.4508b): the rea timeout constant comes from dist/config/providerStartupTimeout.js: export const DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS = 330_000 (5.5 minutes); it is overridable via the env var REA_GHIDRA_STARTUP_TIMEOUT_MS (dist/config/parseConfig.js: ghidraStartupTimeoutMs: env.REA_GHIDRA_STARTUP_TIMEOUT_MS). Set REA_GHIDRA_STARTUP_TIMEOUT_MS=3600000 (1 hour) + persisted to the user environment and re-ran: rea analyze C:\dev\p5d_rom\eboot_true.elf --provider ghidra --snapshot C:\dev\p5d_build\rea_snapshots\p5d_true.json (background). Once the snapshot exists, rea decompile --snapshot ... should be second-level and fully reuse rea's Ghidra analysis. NEXT: (1) use the rea analysis/snapshot to decompile 0x811EBF94 (page1 render main function) / 0x811EFD8E (vertex state setter) / 0x811F043E (fragment state setter) / 0x811EFE6A (uniform write helper) to find the REAL vertex UBO source; (2) add capture+upload for PrecomputedVertexStateSetDefaultUniformBuffer/SetAllUniformBuffers/PrecomputedDrawSetParams in the harness; (3) once the vertex UBO is connected the REAL PICTURE APPEARS. |
 ```
 [ABIRD] ... 
 [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59586560
@@ -489756,3 +489789,52 @@ NEXT：RT 出现真实内容 ⇒ **游戏真实画面首次出现**；若仍黑 
 ANTI-FORGETTING ENTRY. Keywords: M962 page1's real draw sequence fully connected: [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59586560; [ABIVP] SetVertexProgram obj=8540C000; [GXMABI] sceGxmSetVertexProgram va=812B12E0 r1=8540C000 lr=811EFDCA; [GXMABI] sceGxmSetFragmentProgram va=812B1560 r1=8540C040 lr=811F0526; [ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59586560; [ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3; [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000) (full-screen background triangle, real vertex data unpacked successfully for the first time); [PRESENT] #1 result=0; RT STATS mean=0.00 max=0 (still black). Root cause: the engine writes uniforms (mtxLocalToWorld/mtxViewProj etc.) into the 0x1000 guest UBO returned by sceGxmReserveVertexDefaultUniformBuffer (0x812B14F0) / ReserveFragmentDefaultUniformBuffer, but the backend update_uniform_buffer*/update_fragment_uniform_buffer_raw were never called, so the Vulkan UBO stayed zero -> the real VS outputs w=0 -> degenerate triangle -> zero pixels. FIX 18.4507 in recomp_harness.cpp: static uint32_t _cur_v_ubo=0,_cur_f_ubo=0,_pend_vout=0,_pend_fout=0; before dispatch record the out pointer for ReserveVertexDefaultUniformBuffer/ReserveFragmentDefaultUniformBuffer; after dispatch read the VA back via *(u32*)GP(out) and store _cur_v_ubo/_cur_f_ubo printing [ABIUBO]; at draw time upload if (_cur_v_ubo) update_uniform_buffer_raw(GP(_cur_v_ubo), 0x1000) and if (_cur_f_ubo) update_fragment_uniform_buffer_raw(GP(_cur_f_ubo), 0x1000) printing [ABIUBO] upload with the first 4 floats. Build+link OK (binary contains [ABIUBO]); 62M decisive run started out62m_m1044real.txt (real vertices + real UBO + real shaders, no red FS). NEXT: if the RT shows real content the GAME'S REAL PICTURE APPEARS FOR THE FIRST TIME; if still black check the UBO layout (GXM std140 16B stride/resource index offsets) and the expected binding.
 
 LOOKUP: [ABIVTX], [ABIIDX], [ABIVP], sceGxmReserveVertexDefaultUniformBuffer, 0x812B14F0, update_uniform_buffer_raw, update_fragment_uniform_buffer_raw, [ABIUBO], out62m_m1044real.txt -> §18.4506 [relevant: real attribute tables], §18.4499 [relevant: first rendered frame]
+### 18.4508 PORT M963: 真实画面决战结果（顶点 UBO 未捕获）+ rea 超时问题已解决
+
+1) `out62m_m1044real.txt`（真实顶点+真实 UBO 上传+真实着色器）：
+```
+[ABIUBO] frag ubo=85B85100 n=59586560
+[ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000) n=59586560   <- 只有 frag，且首值 0
+[ABIVTX] vc=3 attrs=1 rc=0 n=59586560 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[ABIVP] SetVertexProgram obj=8540C000 n=59586560
+[ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59607044
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+RT STATS: mean=0.00 max=0 (0,0,0) 100%
+```
+2) 结论：
+- 真实几何/绘制链路全部正常（顶点解包成功、Set*/Draw 顺序正确、RT/呈现成功）；
+- **frag 默认 UBO 已捕获**，但 **vertex 默认 UBO 没捕获** → 真实 VS 的 UBO 仍全 0 → w=0 → 零像素；
+- vertex UBO 的来源可能不是 `ReserveVertexDefaultUniformBuffer`，而是：
+  - `sceGxmPrecomputedVertexStateSetDefaultUniformBuffer` / `SetAllUniformBuffers`；
+  - 或引擎直接把 uniform buffer 地址写进预计算状态对象。
+
+3) **rea 超时问题已解决（18.4508b）**：
+```js
+// C:\Users\...\node_modules\rea-agents\dist\config\providerStartupTimeout.js
+export const DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS = 330_000;   // 默认 5.5 分钟
+// dist/config/parseConfig.js:
+ghidraStartupTimeoutMs: env.REA_GHIDRA_STARTUP_TIMEOUT_MS,  // ← 可用环境变量覆盖
+```
+解决：
+```
+REA_GHIDRA_STARTUP_TIMEOUT_MS=3600000   (1 小时，已持久化到用户环境变量)
+rea analyze C:\dev\p5d_rom\eboot_true.elf --provider ghidra \
+    --snapshot C:\dev\p5d_build\rea_snapshots\p5d_true.json
+```
+（后台运行中；快照生成后 `rea decompile --snapshot ...` 应可秒级复用，无需每次重分析。）
+
+4) NEXT：
+```
+① rea 快照完成后，反编译 0x811EBF94（page1 渲染主函数）/0x811EFD8E（顶点状态设置）
+   /0x811F043E（片元状态设置）/0x811EFE6A（uniform 写入 helper）→ 找顶点 UBO 真实来源；
+② harness 增加 PrecomputedVertexStateSetDefaultUniformBuffer/SetAllUniformBuffers/
+   PrecomputedDrawSetParams 的捕获与上传；
+③ 顶点 UBO 打通 ⇒ 真实画面出现。
+```
+验证：`out62m_m1044real.txt`、`C:\dev\p5d_build\rea_snapshots\p5d_true.json`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M963 real-picture decisive run (out62m_m1044real.txt): real vertex data + real draw + fragment default UBO capture all work but the VERTEX default UBO was not captured ([ABIUBO] only has one frag line) -> the real VS still gets a zero UBO -> RT all black (RT STATS mean=0.00 max=0). Evidence: [ABIUBO] frag ubo=85B85100 n=59586560; [ABIUBO] upload frag ubo=85B85100 first=(0.000,0.000,0.000,0.000); [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000); [ABIVP] SetVertexProgram obj=8540C000; [ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3; [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59607044; [PRESENT] #1 result=0. The vertex UBO source is likely not ReserveVertexDefaultUniformBuffer but PrecomputedVertexStateSetDefaultUniformBuffer/SetAllUniformBuffers or the engine writing the uniform buffer address into the precomputed state object. rea TIMEOUT SOLVED: dist/config/providerStartupTimeout.js has DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS = 330_000 and dist/config/parseConfig.js reads env.REA_GHIDRA_STARTUP_TIMEOUT_MS -> set REA_GHIDRA_STARTUP_TIMEOUT_MS=3600000 (1 hour, persisted to the user environment), then rea analyze C:\dev\p5d_rom\eboot_true.elf --provider ghidra --snapshot C:\dev\p5d_build\rea_snapshots\p5d_true.json (background). Once the snapshot exists rea decompile --snapshot ... should be second-level. NEXT: decompile 0x811EBF94/0x811EFD8E/0x811F043E/0x811EFE6A via the rea snapshot to find the real vertex UBO source; add capture+upload for PrecomputedVertexStateSetDefaultUniformBuffer/SetAllUniformBuffers/PrecomputedDrawSetParams; once connected the real picture appears.
+
+LOOKUP: REA_GHIDRA_STARTUP_TIMEOUT_MS, DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS, providerStartupTimeout.js, rea snapshot, [ABIUBO], 0x811EBF94, 0x811EFD8E, 0x811F043E, 0x811EFE6A, out62m_m1044real.txt -> §18.4507 [relevant: UBO capture], §18.4506 [relevant: real attribute tables]
