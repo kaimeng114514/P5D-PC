@@ -950,6 +950,14 @@
 | M932 | §18.4477: **探针判定：RINIT 的零表被 `FUN_811F043E` 覆盖回 0 —— 真正原因是 fragment state 对象字段为 0（shader program 未建立）；RINIT v2 同时写对象字段 +8/+idx*0xC+8**。`out62m_m1015rinit2.txt`（n=59,454,976，第一帧）探针：
 | M933 | §18.4478: ★★★★★ **RINIT v2 成功：BADMEM 消失（`[BADMEM]` 0），page1 恢复推进并持续产生 IDR 事件（n 59.45M→59.73M+），运行继续到 62M 上限**。`out62m_m1016rinit3.txt`（RINIT v2）关键证据：
 | M934 | §18.4479: ★★★★★★ **找到"首帧可见"缺失的整块拼图：SPIR-V 着色器资产与管线选择机制在磁盘上完整存在，只是我们的 AOT harness 从未接线**。证据与发现：
+| M935 | §18.4480: ★★★★★★★ **实现 GXP→SPIR-V→Vulkan 管线接线（首帧最后一环）：harness 在 GXM ABI 分发前捕获 SetVertex/FragmentProgram 的 GXP 程序、FNV-1a64 哈希、查 `spv_all/gxp_manifest.txt`，并在每次 Draw 前调用 `p5d::vulkan::select_real_pipeline()` 绑定真实管线**。实现（全部在 `recomp_harness.cpp` 的 `hle_call` GXMABI 分发块内）：
+1) manifest 懒加载：`P5D_SPV_DIR`（默认 `C:/dev/p5d_build/spv_all`）+ `/gxp_manifest.txt` → `map<u64,string>`；打印 `[ABISPVDIR] dir=... manifest=N`；
+2) 程序捕获：`sceGxmSetVertexProgram`/`SetFragmentProgram` 的 `s->r[1]` = SceGxm{Vertex,Fragment}Program*，其 **+0 = SceGxmProgram*(GXP VA)**；校验 GXP 魔数 `0x00505847`、`sz=*(u32*)(gxp+8)`，对前 sz 字节做 **FNV-1a64**（`h=0xcbf29ce484222325; h^=b; h*=1099511628211`）→ 查 manifest → 记录 `_abi_vspv/_abi_fspv`（打印 `[ABIGXP] vert/frag obj=... gxp=... hash=... spv=...`）；
+3) Draw 前绑定：`sceGxmDraw*` 分发前若两个 spv 名都有 → `p5d::vulkan::select_real_pipeline("<spvdir>/<v>", "<spvdir>/<f>")`（打印 `[ABIPIPE] v=... f=... rc=... n=...`）。
+后端 `select_real_pipeline` 会用真实 SPIR-V 创建 Vulkan 管线（`get_or_create_real_pipeline`，含混合/写掩码），并设置 `g_current_real_pipe`，使 `gxm_draw_arrays` 不再报 "no graphics pipeline bound"。
+编译：`g++ -c gxm_abi.cpp` + 链接全部成功；二进制含 `[ABISPVDIR]/[ABIGXP]/[ABIPIPE]` 标签。
+已启动 62M 长跑（`out62m_m1017pipe.txt`，RINIT + P1TICK + 管线接线）。NEXT: 检查 `[ABISPVDIR]` manifest 数量、`[ABIGXP]` 是否命中、`[ABIPIPE]`/`[REAL-PIPE]` 是否出现、`gxm_draw_arrays` 错误是否消失、是否 EndScene/present → **首帧可见画面**。 |
+| §18.4480 | Implemented the GXP->SPIR-V->Vulkan pipeline wiring (the last link for the first frame): the harness now captures the GXP program of SetVertex/FragmentProgram before the GXM ABI dispatch, hashes it with FNV-1a64, looks up spv_all/gxp_manifest.txt, and calls p5d::vulkan::select_real_pipeline() before every Draw. Implementation (all inside the GXMABI dispatch block of hle_call in recomp_harness.cpp): (1) lazy manifest load: P5D_SPV_DIR (default C:/dev/p5d_build/spv_all) + /gxp_manifest.txt -> map<u64,string>, printing [ABISPVDIR] dir=... manifest=N; (2) program capture: sceGxmSetVertexProgram/SetFragmentProgram's s->r[1] = SceGxm{Vertex,Fragment}Program*, whose +0 = SceGxmProgram* (GXP VA); validate GXP magic 0x00505847 and sz=*(u32*)(gxp+8), FNV-1a64 over the first sz bytes (h=0xcbf29ce484222325; h^=b; h*=1099511628211) -> manifest lookup -> store _abi_vspv/_abi_fspv (print [ABIGXP] vert/frag obj=... gxp=... hash=... spv=...); (3) bind before Draw: if both spv names are known before dispatching sceGxmDraw*, call p5d::vulkan::select_real_pipeline("<spvdir>/<v>", "<spvdir>/<f>") (print [ABIPIPE] v=... f=... rc=... n=...). The backend select_real_pipeline creates the real Vulkan pipeline from the SPIR-V (get_or_create_real_pipeline, including blend/writemask) and sets g_current_real_pipe so gxm_draw_arrays no longer logs 'no graphics pipeline bound'. Build: g++ -c gxm_abi.cpp + full link succeed; the binary contains the [ABISPVDIR]/[ABIGXP]/[ABIPIPE] tags. 62M run started (out62m_m1017pipe.txt, RINIT + P1TICK + pipeline wiring). NEXT: check [ABISPVDIR] manifest count, whether [ABIGXP] hits, whether [ABIPIPE]/[REAL-PIPE] appear, whether the gxm_draw_arrays error disappears, and whether EndScene/present happens -> first visible frame. |
 1) `out62m_m1016rinit3.txt` err 尾部显示 **draw 已尝试**：
 ```
 [FRAMEBEGIN] frame=1 img=0 cmd=...
@@ -487858,3 +487866,48 @@ c) 62M 运行验证：[REAL-PIPE] 出现 → draw → EndScene → present → *
 ANTI-FORGETTING ENTRY. Keywords: M934 first-visible-frame missing piece found: SPIR-V assets + pipeline selection exist on disk but are not wired into the AOT harness. out62m_m1016rinit3.txt err tail: [FRAMEBEGIN] frame=1; [WARN] [STUB] sceGxmSetViewport NOT IMPLEMENTED; [ERROR] gxm_draw_arrays: no graphics pipeline bound; [WARN] [STUB] sceGxmDisplayQueueAddEntry NOT IMPLEMENTED. Backend vulkan_backend.cpp has get_or_create_real_pipeline(vpath,fpath)/select_real_pipeline(vpath,fpath)/g_current_real_pipe; disk has C:\dev\p5d_build\spv_all\ with 4,332 .spv and gxp_manifest.txt (4,331 lines 'hash stage spv'; header '# P5D GXP content-hash manifest (FNV-1a64 over first size bytes of SceGxmProgram)'), plus C:\dev\p5dsrc\assets\gxp_library\ 4,331 .gxp+.spv pairs. Hash/wiring prototype in p5dsrc\src\loader\eboot_probe.cpp: gxp_hash_cached validates *(u32*)gxp==0x00505847 ('GXP\0'), sz=*(u32*)(gxp+8), FNV-1a64 over first sz bytes (h=0xcbf29ce484222325; h^=byte; h*=1099511628211); h121_load_man loads spv_all/gxp_manifest.txt into hash->spv map; at draw time g_cur_vgxp/g_cur_fgxp (captured in SetVertexProgram/SetFragmentProgram from SceGxm{Vertex,Fragment}Program.program @+0) are hashed and select_real_pipeline('spv_all/'+name,...) is called; set_fragment_blend exists. Our ABI layer calls backend for SetVertexProgram (0x812B12E0/NID 31FF8ABD) and SetFragmentProgram (NID AD2F48D9) but does not capture/hash GXP or call select_real_pipeline, and sce_gxm.cpp ShaderPatcher functions are STUB_LOG placeholders so app program handles are 0 (w4=0) and draws have no pipeline. NEXT: (a) gxm_abi.cpp lazy-load the manifest (spv_all/gxp_manifest.txt, fallback C:/dev/p5d_build/spv_all/), capture current v/f spv names from the guest program objects in SetVertex/FragmentProgram; (b) in the draw entry (sceGxmDraw* ABI handler) call p5d::vulkan::select_real_pipeline('spv_all/v','spv_all/f') + set_fragment_blend; (c) run 62M expecting [REAL-PIPE], draw, EndScene, present -> first visible frame.
 
 LOOKUP: spv_all/gxp_manifest.txt, gxp_hash_cached, h121_load_man, select_real_pipeline, get_or_create_real_pipeline, 0x00505847, 0x812B12E0, 31FF8ABD, AD2F48D9, eboot_probe.cpp -> §18.4478 [relevant: draw attempt], §18.4477 [relevant: shader state 0]
+### 18.4480 PORT M935: GXP→SPIR-V→Vulkan 管线接线（首帧最后一环）
+
+1) 目标：让 draw 时 `g_current_real_pipe` 非 0。后端已有：
+```cpp
+SceInt32 get_or_create_real_pipeline(const char* vpath, const char* fpath);  // 加载两个 SPIR-V → 创建 Vulkan 管线
+SceInt32 select_real_pipeline(const char* vpath, const char* fpath);         // 包装，设置 g_current_real_pipe
+```
+2) 需要的数据链：`SceGxm{Vertex,Fragment}Program* @+0 = SceGxmProgram*(GXP VA)` → GXP 字节 → FNV-1a64 →
+`spv_all/gxp_manifest.txt` 查 `hash → gxp_*.spv` 文件名 → `"<spvdir>/<name>"`。
+3) 实现（`recomp_harness.cpp`，`hle_call` 内 `if (g_gxmabi)` 分发块）：
+```cpp
+static std::map<unsigned long long,std::string> _abi_man; static int _abi_man_st=-1; static std::string _abi_spvdir, _abi_vspv, _abi_fspv;
+if (_abi_man_st<0) { _abi_man_st=0;
+  const char* _d=getenv("P5D_SPV_DIR"); _abi_spvdir = _d?_d:"C:/dev/p5d_build/spv_all";
+  std::string _mp = _abi_spvdir + "/gxp_manifest.txt";
+  if (FILE* _f=std::fopen(_mp.c_str(),"rb")) { char _ln[512];
+    while (std::fgets(_ln,sizeof(_ln),_f)) { if(_ln[0]=='#')continue; unsigned long long _h=0; char _st[32]={0},_nm[256]={0};
+      if (std::sscanf(_ln,"%16llx %31s %255s",&_h,_st,_nm)>=3 && _h && _nm[0]) _abi_man[_h]=std::string(_nm); }
+    std::fclose(_f); }
+  printf("[ABISPVDIR] dir=%s manifest=%zu\n", _abi_spvdir.c_str(), _abi_man.size()); }
+if (strstr(_ge->name,"SetVertexProgram") || strstr(_ge->name,"SetFragmentProgram")) {
+  const bool _frag = strstr(_ge->name,"SetFragmentProgram") != nullptr;
+  uint32_t _o = s->r[1]; uint8_t* _q = GP(_o); uint32_t _gxp = 0; if (_q) std::memcpy(&_gxp,_q,4);
+  uint64_t _h = 0; uint8_t* _g = GP(_gxp);
+  if (_g) { uint32_t _mg=0,_sz=0; std::memcpy(&_mg,_g,4); std::memcpy(&_sz,_g+8,4);
+    if (_mg==0x00505847u && _sz>=0x18u && _sz<=0x40000u) { _h=0xcbf29ce484222325ull;
+      for (uint32_t _i=0;_i<_sz;++_i) { _h ^= (uint64_t)_g[_i]; _h *= 1099511628211ull; } } }
+  if (_h) { auto _it=_abi_man.find(_h); if (_it!=_abi_man.end()) {
+      if (_frag) _abi_fspv=_it->second; else _abi_vspv=_it->second;
+      static int _cn=0; if (_cn++<12) printf("[ABIGXP] %s obj=%08X gxp=%08X hash=%016llX spv=%s\n", ...); } } }
+if (strstr(_ge->name,"Draw") && !_abi_vspv.empty() && !_abi_fspv.empty()) {
+  std::string _vp=_abi_spvdir+"/"+_abi_vspv, _fp=_abi_spvdir+"/"+_abi_fspv;
+  int32_t _rc = p5d::vulkan::select_real_pipeline(_vp.c_str(), _fp.c_str());
+  static int _pn=0; if (_pn++<20) printf("[ABIPIPE] v=%s f=%s rc=%d n=%u\n", ...); }
+```
+顶部声明：`namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }`
+4) 编译/链接成功；二进制含 `[ABISPVDIR]/[ABIGXP]/[ABIPIPE]` 标签。
+5) 已启动 62M 长跑：`out62m_m1017pipe.txt`（RINIT + P1TICK + 管线接线）。
+NEXT：验证 `[ABISPVDIR] manifest≈4331`、`[ABIGXP]` 命中、`[ABIPIPE]/[REAL-PIPE]` 出现、
+`gxm_draw_arrays` 错误消失、EndScene/present → **首帧可见画面**。
+验证：`out62m_m1017pipe.txt`（待生成）、`spv_all/gxp_manifest.txt`、后端 `select_real_pipeline`。
+
+ANTI-FORGETTING ENTRY. Keywords: M935 GXP->SPIR-V->Vulkan pipeline wiring implemented (last link for first frame): in recomp_harness.cpp hle_call GXMABI dispatch block, (1) lazy-load spv_all/gxp_manifest.txt into map<u64,string> using env P5D_SPV_DIR (default C:/dev/p5d_build/spv_all), print [ABISPVDIR] dir=... manifest=N; (2) on sceGxmSetVertexProgram/SetFragmentProgram capture s->r[1] = SceGxm{Vertex,Fragment}Program*, whose +0 = SceGxmProgram* (GXP VA); validate GXP magic 0x00505847 and sz=*(u32*)(gxp+8); FNV-1a64 over first sz bytes (h=0xcbf29ce484222325; h^=b; h*=1099511628211); lookup manifest -> store _abi_vspv/_abi_fspv, print [ABIGXP] vert/frag obj=... gxp=... hash=... spv=...; (3) on sceGxmDraw* with both names known call p5d::vulkan::select_real_pipeline("<spvdir>/<v>","<spvdir>/<f>") and print [ABIPIPE] v=... f=... rc=... n=...; top-level declaration namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }. Backend get_or_create_real_pipeline creates the real Vulkan pipeline (blend/writemask) and sets g_current_real_pipe so gxm_draw_arrays no longer reports 'no graphics pipeline bound'. Build+link succeed; binary has [ABISPVDIR]/[ABIGXP]/[ABIPIPE] tags. 62M run started out62m_m1017pipe.txt (RINIT + P1TICK + pipeline wiring); NEXT: check [ABISPVDIR] manifest count (~4331), [ABIGXP] hits, [ABIPIPE]/[REAL-PIPE] appearance, disappearance of the gxm_draw_arrays error, EndScene/present -> first visible frame.
+
+LOOKUP: gxp_manifest.txt, select_real_pipeline, get_or_create_real_pipeline, g_current_real_pipe, FNV-1a64, 0x00505847, P5D_SPV_DIR, [ABIGXP], [ABIPIPE], out62m_m1017pipe.txt -> §18.4479 [relevant: manifest discovery], §18.4478 [relevant: draw attempt]

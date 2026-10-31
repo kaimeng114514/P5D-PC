@@ -936,6 +936,7 @@ static void pending_req_scan() {
 }
 
 static int g_periodpump_env = -1;
+namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 static void job_probes(uint32_t pcv, RecState* s) {
   { static int _ri_env = -1; if (_ri_env < 0) { const char* _e = getenv("P5D_RINIT"); _ri_env = (_e && atoi(_e)) ? 1 : 0; }
     if (_ri_env && g_main_n >= 59400000u) {
@@ -1432,6 +1433,31 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
   if (g_gxmabi) {
     const gxm_abi_entry* _ge = gxm_abi_lookup(stub_va);
     if (_ge) {
+      // 18.4480 M935: GXP->SPIR-V pipeline wiring (was only present in the old eboot_probe host)
+      static std::map<unsigned long long,std::string> _abi_man; static int _abi_man_st = -1; static std::string _abi_spvdir;
+      static std::string _abi_vspv, _abi_fspv;
+      if (_abi_man_st < 0) { _abi_man_st = 0;
+        const char* _d = getenv("P5D_SPV_DIR"); _abi_spvdir = _d ? _d : "C:/dev/p5d_build/spv_all";
+        std::string _mp = _abi_spvdir + "/gxp_manifest.txt";
+        if (FILE* _f = std::fopen(_mp.c_str(), "rb")) { char _ln[512];
+          while (std::fgets(_ln, sizeof(_ln), _f)) { if (_ln[0] == '#') continue; unsigned long long _h = 0; char _st[32] = {0}, _nm[256] = {0};
+            if (std::sscanf(_ln, "%16llx %31s %255s", &_h, _st, _nm) >= 3 && _h && _nm[0]) _abi_man[_h] = std::string(_nm); }
+          std::fclose(_f); }
+        printf("[ABISPVDIR] dir=%s manifest=%zu\n", _abi_spvdir.c_str(), _abi_man.size()); fflush(stdout); }
+      if (strstr(_ge->name, "SetVertexProgram") || strstr(_ge->name, "SetFragmentProgram")) {
+        const bool _frag = strstr(_ge->name, "SetFragmentProgram") != nullptr;
+        uint32_t _o = s->r[1]; uint8_t* _q = GP(_o); uint32_t _gxp = 0; if (_q) std::memcpy(&_gxp, _q, 4);
+        uint64_t _h = 0; uint8_t* _g = GP(_gxp);
+        if (_g) { uint32_t _mg = 0, _sz = 0; std::memcpy(&_mg, _g, 4); std::memcpy(&_sz, _g + 8, 4);
+          if (_mg == 0x00505847u && _sz >= 0x18u && _sz <= 0x40000u) { _h = 0xcbf29ce484222325ull;
+            for (uint32_t _i = 0; _i < _sz; ++_i) { _h ^= (uint64_t)_g[_i]; _h *= 1099511628211ull; } } }
+        if (_h) { auto _it = _abi_man.find(_h); if (_it != _abi_man.end()) {
+            if (_frag) _abi_fspv = _it->second; else _abi_vspv = _it->second;
+            static int _cn = 0; if (_cn++ < 12) { printf("[ABIGXP] %s obj=%08X gxp=%08X hash=%016llX spv=%s\n", _frag?"frag":"vert", _o, _gxp, (unsigned long long)_h, _it->second.c_str()); fflush(stdout); } } } }
+      if (strstr(_ge->name, "Draw") && !_abi_vspv.empty() && !_abi_fspv.empty()) {
+        std::string _vp = _abi_spvdir + "/" + _abi_vspv, _fp = _abi_spvdir + "/" + _abi_fspv;
+        int32_t _rc = p5d::vulkan::select_real_pipeline(_vp.c_str(), _fp.c_str());
+        static int _pn = 0; if (_pn++ < 20) { printf("[ABIPIPE] v=%s f=%s rc=%d n=%u\n", _abi_vspv.c_str(), _abi_fspv.c_str(), _rc, g_main_n); fflush(stdout); } }
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
       auto _t0 = std::chrono::steady_clock::now();
