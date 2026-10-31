@@ -961,6 +961,43 @@
 | M943 | §18.4488: **RT 截图顺序修正：`save_rt_screenshot(cd)` 必须在 `present_frame(cd)` 之后调用**——因为 RT 是在 `present_frame` 内部才 `[RTPOOL] create` 入池的，之前先截图必然 `rc=-1`。`out62m_m1024rtshot.txt` 证据：
 | M944 | §18.4489: **修复游戏窗口显示"未响应"：harness 从未处理 Win32 消息（无 PeekMessage 消息泵），主线程长时间跑 AOT 循环时 Windows 判定窗口挂起；已加入消息泵**。原因：`recomp_harness.cpp` 之前完全没有 `#include <windows.h>` / `PeekMessage`（实测计数 0），而 Vulkan 窗口由后端在 guest 主线程创建，随后主线程一直埋在 AOT/嵌套执行里 → Windows 消息队列积压 → 标题栏"未响应"（白色/幽灵窗口）。修复（18.4489）：
 | M945 | §18.4490: **诚实纠正：M940–M942 的 "present 成功" 只是 `vkQueuePresentKHR result=0`（提交流程成功），画面内容仍全黑——用户观察到窗口纯白/无内容是对的**。实测定量：`p5d_rt_first.bmp`（960x544，M943 修正后成功产出）用 PIL 统计：**mean=0.00、max=0、100% 像素 (0,0,0)** → **RT 内容完全黑**。数据通路缺口（err/日志证据）：
+| M946 | §18.4491: ★★★★★★ **红色片元诊断结果：即使换成常量红色片元着色器，RT 截图仍全黑（mean=0/max=0）→ 定位到根因：后端 `sceGxmBeginScene` **忽略 renderTarget/colorSurface 参数**，永远渲染进 swapchain；而我们的显示路径把**从未被绘制过的 app RT** 拷贝到 swapchain → 把真实绘制内容覆盖成黑色**。证据链：
+1) 红色实验（`out62m_m1028redfs.txt`）：
+```
+err: [REALFS-RED] red diagnostic fragment module ready
+[REAL-PIPE] #1 OK v=gxp_vert_0001 f=gxp_frag_0165 pipe=...
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[RTSHOT] cd=8D300000 ... -> p5d_rt_first.bmp  tl=(0,0,0) tr=(0,0,0) ...
+RT STATS: mean=0.00 max=0 top=(0,0,0) 100%          ← 红色片元仍是黑！
+```
+2) draw 确实发生（`[DRAWST]`）：
+```
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=...
+         vp=0.0,544.0,960.0,-544.0 sc=0,0,960,544 rp=0000000000000000
+```
+3) 后端 `sceGxmBeginScene` 实现（`p5dsrc/src/gxm/sce_gxm.cpp`）：
+```c
+extern "C" SceInt32 sceGxmBeginScene(SceGxmContext context, SceUInt32 flags,
+        const SceGxmRenderTarget* renderTarget, const SceGxmColorSurface* colorSurface,
+        const SceGxmDepthStencilSurface* depthStencilSurface,
+        SceGxmSyncObject* vertexSyncObject, SceGxmSyncObject* fragmentSyncObject) {
+    if (g_backend.initialized) { begin_frame(); ... }   // ← 只用 begin_frame()，参数全忽略
+    return 0;
+}
+```
+`begin_frame()` 内部 `cmd_begin_render_pass` 面向 **swapchain image**（`[FRAMEBEGIN] frame=1 img=0`）→ **所有 draw 都画在 swapchain 上，app 的 RT（8D300000）从未被写入**。
+4) 我们的显示路径（M941/M942）`present_frame(cd)` 却把 **空的 RT** 拷贝到 swapchain 并 present → **真实绘制内容被黑色覆盖** → 用户看到纯白/黑窗口。
+**实验修复（18.4491）**：DisplayQueueAddEntry 时改为：
+```cpp
+if (!_cap_swap) { _cap_swap=1; p5d::vulkan::request_capture("p5d_swap_first.bmp"); }  // 截 swapchain（present 前）
+int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");                 // 同时留 RT 对照
+p5d::vulkan::end_frame();                                                              // 直接提交+present swapchain
+```
+已启动 62M 运行（`out62m_m1029swappresent.txt`，`P5D_REALFS=red`）。
+NEXT：看 `p5d_swap_first.bmp` 是否变红：
+- 变红 ⇒ 绘制/管线/呈现全部正确，问题仅是"RT vs swapchain"的显示源选择 → 正解是把后端 BeginScene 改成真正渲染进 app RT（或继续直接 present swapchain）；
+- 仍黑 ⇒ 渲染更底层问题（顶点数据/FBO）。 |
+| §18.4491 | Red-fragment diagnostic result: even with a constant-red fragment shader the RT capture is still all black (mean=0/max=0) -> root cause found: the backend sceGxmBeginScene IGNORES the renderTarget/colorSurface parameters and always renders into the swapchain, while our display path copies the never-drawn app RT to the swapchain, overwriting the real drawing with black. Evidence chain: (1) red experiment (out62m_m1028redfs.txt): err [REALFS-RED] red diagnostic fragment module ready; [REAL-PIPE] #1 OK v=gxp_vert_0001 f=gxp_frag_0165; [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS); [RTSHOT] cd=8D300000 ... -> p5d_rt_first.bmp tl=(0,0,0) tr=(0,0,0); RT STATS: mean=0.00 max=0 top=(0,0,0) 100% (still black with the red fragment shader!); (2) the draw does happen: [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... vp=0.0,544.0,960.0,-544.0 sc=0,0,960,544 rp=0000000000000000; (3) backend sceGxmBeginScene implementation (p5dsrc/src/gxm/sce_gxm.cpp): extern "C" SceInt32 sceGxmBeginScene(SceGxmContext context, SceUInt32 flags, const SceGxmRenderTarget* renderTarget, const SceGxmColorSurface* colorSurface, const SceGxmDepthStencilSurface* depthStencilSurface, SceGxmSyncObject* vertexSyncObject, SceGxmSyncObject* fragmentSyncObject) { if (g_backend.initialized) { begin_frame(); ... } return 0; } -> uses only begin_frame(), all parameters ignored; begin_frame() calls cmd_begin_render_pass targeting the swapchain image ([FRAMEBEGIN] frame=1 img=0), so all draws go to the swapchain and the app RT (8D300000) is never written; (4) our display path (M941/M942) present_frame(cd) copies the EMPTY RT to the swapchain and presents it -> the real drawing is overwritten by black -> the user sees a white/black window. Experiment fix 18.4491: on DisplayQueueAddEntry do { if (!_cap_swap) { _cap_swap=1; request_capture('p5d_swap_first.bmp'); } int _rr = save_rt_screenshot(_data,'p5d_rt_first.bmp'); end_frame(); } i.e. capture the swapchain before present, keep the RT for comparison, and submit+present the swapchain directly. 62M run started (out62m_m1029swappresent.txt with P5D_REALFS=red). NEXT: check whether p5d_swap_first.bmp turns red: if red -> drawing/pipeline/present are all correct and the only problem is the display source choice (RT vs swapchain) -> proper fix is making the backend BeginScene render into the app RT (or continue presenting the swapchain directly); if still black -> deeper rendering problem (vertex data/FBO). |
 ```
 err: [TEXBIND] #0 real=0 alias=0 dummy=16          ← 16 个纹理全部绑到 dummy（无真实纹理）
 err: [FUBOHOST] #1 ... UBO float: 0.00000 ...      ← 片元 UBO 全 0
@@ -488574,3 +488611,49 @@ c) 顶点流：upload_vertex_stream / PrecomputedDrawSetVertexStream 的 guest V
 ANTI-FORGETTING ENTRY. Keywords: M945 HONEST CORRECTION - 'present succeeded' only means vkQueuePresentKHR returned result=0, the frame content is still black; user seeing a pure-white/empty window is CORRECT. Measured p5d_rt_first.bmp (960x544) with PIL: mean=0.00 max=0 top color (0,0,0) 100% -> RT content entirely black. Data-path gaps: err [TEXBIND] #0 real=0 alias=0 dummy=16 (all 16 textures bound to dummy), err [FUBOHOST] #1 UBO float 0.00000 (fragment UBO all zeros), the M941 RINIT hack overrides DAT_816CBE2C with a zero table so uniforms are zero, [REAL-PIPE] #1 OK only means pipeline/modules created. The structural chain is connected but the render data path is not: textures unbound, uniforms zero, vertex/geometry unverified -> black output. Decisive experiment 18.4490: rerun with P5D_REALFS=red (backend built-in constant-red fragment shader, independent of textures/uniforms); if the RT capture turns red then vertex/raster/pipeline/present are correct and the problem is the texture+uniform data path; if still black the problem is geometry/pipeline binding before draw. 62M run started out62m_m1028redfs.txt. NEXT: fix (a) textures via sceGxmTextureInitLinear/Tiled, SetTexture, PrecomputedFragmentStateSetTexture -> backend upload_texture_to_unit + RT alias; (b) uniforms via sceGxmSetUniformDataF/SetDefaultUniformBuffer/Precomputed variants writing guest data into the real UBO (drop the zero-table hack or only fall back); (c) vertex streams via upload_vertex_stream/PrecomputedDrawSetVertexStream guest VA->host data conversion.
 
 LOOKUP: p5d_rt_first.bmp, [TEXBIND], [FUBOHOST], P5D_REALFS, upload_texture_to_unit, [REAL-PIPE], out62m_m1028redfs.txt -> §18.4489 [relevant: message pump], §18.4488 [relevant: RT screenshot], §18.4486 [relevant: display path]
+### 18.4491 PORT M946: 红色诊断定位根因（BeginScene 忽略 RT → 绘制进 swapchain；display 用空 RT 覆盖）
+
+1) 红色片元实验（`out62m_m1028redfs.txt`）：
+```
+err: [REALFS-RED] red diagnostic fragment module ready
+[REAL-PIPE] #1 OK v=.../gxp_vert_0001.gxp.spv f=.../gxp_frag_0165.gxp.spv pipe=...
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+[RTSHOT] cd=8D300000 ... -> p5d_rt_first.bmp tl=(0,0,0) tr=(0,0,0)
+RT STATS: mean=0.00 max=0 top=(0,0,0) 100%           ← 红色片元仍全黑
+```
+2) draw 确实发生：
+```
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=...
+         vp=0.0,544.0,960.0,-544.0 sc=0,0,960,544 rp=0000000000000000
+```
+3) **后端 `sceGxmBeginScene` 忽略全部参数**（`p5dsrc/src/gxm/sce_gxm.cpp`）：
+```c
+extern "C" SceInt32 sceGxmBeginScene(SceGxmContext context, SceUInt32 flags,
+        const SceGxmRenderTarget* renderTarget, const SceGxmColorSurface* colorSurface,
+        const SceGxmDepthStencilSurface* depthStencilSurface,
+        SceGxmSyncObject* vertexSyncObject, SceGxmSyncObject* fragmentSyncObject) {
+    if (g_backend.initialized) {
+        begin_frame();     // ← 只 begin_frame()；renderTarget/colorSurface 完全没用
+        ...
+    }
+    return 0;
+}
+```
+`begin_frame()` → `cmd_begin_render_pass` 面向 **swapchain image**（`[FRAMEBEGIN] frame=1 img=0`）：
+**所有 draw 画在 swapchain 上，app 的 RT（`8D300000`）从未被写入**。
+4) M941/M942 的显示路径却把 **空 RT** 拷贝到 swapchain 再 present → 真实绘制内容被黑色覆盖 → 用户看到白/黑窗口。
+5) 实验修复（18.4491）：DisplayQueueAddEntry 改为截 swapchain（present 前）+ 留 RT 对照 + 直接 `end_frame()`：
+```cpp
+if (!_cap_swap) { _cap_swap = 1; p5d::vulkan::request_capture("p5d_swap_first.bmp"); }
+int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+p5d::vulkan::end_frame();
+```
+6) 已启动 62M 运行：`out62m_m1029swappresent.txt`（`P5D_REALFS=red`）。
+NEXT：看 `p5d_swap_first.bmp` 是否变红：
+- 变红 ⇒ 绘制/管线/呈现全部正确，只需修正显示源（把后端 BeginScene 改成真正渲染进 app RT，或直接 present swapchain）；
+- 仍黑 ⇒ 渲染更底层问题（顶点数据/FBO）。
+验证：`out62m_m1028redfs.txt`、`out62m_m1029swappresent.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M946 red diagnostic localized the root cause: the backend sceGxmBeginScene ignores renderTarget/colorSurface and always renders into the swapchain while our display path copies the never-drawn app RT to the swapchain, overwriting the real drawing with black. Evidence out62m_m1028redfs.txt: [REALFS-RED] red diagnostic fragment module ready; [REAL-PIPE] #1 OK; [PRESENT] #1 result=0; [RTSHOT] cd=8D300000 -> p5d_rt_first.bmp tl=(0,0,0) tr=(0,0,0); RT STATS mean=0.00 max=0 top=(0,0,0) 100% (still black with red FS); [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... vp=0.0,544.0,960.0,-544.0 sc=0,0,960,544 rp=0000000000000000. Backend sceGxmBeginScene body: if (g_backend.initialized) { begin_frame(); } return 0 - all params ignored; begin_frame() calls cmd_begin_render_pass targeting the swapchain image ([FRAMEBEGIN] frame=1 img=0) so all draws land on the swapchain and the app RT (8D300000) is never written. M941/M942's present_frame(cd) copied the empty RT to the swapchain and presented it -> real drawing overwritten by black. Experiment fix 18.4491: on DisplayQueueAddEntry capture the swapchain before present (request_capture('p5d_swap_first.bmp')), keep the RT screenshot for comparison, and call end_frame() to submit+present the swapchain directly; 62M run started out62m_m1029swappresent.txt with P5D_REALFS=red. NEXT: check whether p5d_swap_first.bmp turns red: if red then drawing/pipeline/present are correct and only the display source choice is wrong (proper fix: make BeginScene render into the app RT, or keep presenting the swapchain directly); if still black there is a deeper rendering problem (vertex data/FBO).
+
+LOOKUP: sceGxmBeginScene, begin_frame, cmd_begin_render_pass, [DRAWST], P5D_REALFS, p5d_swap_first.bmp, out62m_m1029swappresent.txt -> §18.4490 [relevant: black RT], §18.4487 [relevant: RT present]

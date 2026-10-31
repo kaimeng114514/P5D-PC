@@ -1494,12 +1494,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         if (_dq) { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
         p5d::vulkan::end_scene_pass();
         if (_dq && _data) {
-          p5d::vulkan::present_frame(_data);
-          static int _cap_done = 0;   // 18.4488 M943: capture AFTER present (RT enters g_rt_pool inside present_frame)
-          if (!_cap_done) { int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
-            if (_rr == 0) { _cap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp from cd=%08X n=%u\n", _data, g_main_n); }
-            else { static int _rt = 0; if (_rt++ < 8) printf("[ABIRT] cd=%08X rc=%d (retry next display entry)\n", _data, _rr); }
-            fflush(stdout); }
+          // 18.4491 M946 EXPERIMENT: the backend sceGxmBeginScene ignores renderTarget/colorSurface and renders into
+          // the SWAPCHAIN; the app's RT (cd) is never drawn into, so copying RT->swapchain overwrote the real drawing
+          // with black. Here we present the swapchain content directly and capture it (p5d_swap_first.bmp).
+          static int _cap_swap = 0;
+          if (!_cap_swap) { _cap_swap = 1; p5d::vulkan::request_capture("p5d_swap_first.bmp"); }
+          static int _rtcap_done = 0;
+          if (!_rtcap_done) { _rtcap_done = 1; int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+            printf("[ABIRT] rt cd=%08X rc=%d\n", _data, _rr); fflush(stdout); }
+          p5d::vulkan::end_frame();
         }
         static int _dn = 0; if (_dn++ < 16) { printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n); fflush(stdout); }
         s->r[0] = 0; return s->r[14];
