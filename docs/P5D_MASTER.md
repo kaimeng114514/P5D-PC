@@ -962,6 +962,52 @@
 | M944 | §18.4489: **修复游戏窗口显示"未响应"：harness 从未处理 Win32 消息（无 PeekMessage 消息泵），主线程长时间跑 AOT 循环时 Windows 判定窗口挂起；已加入消息泵**。原因：`recomp_harness.cpp` 之前完全没有 `#include <windows.h>` / `PeekMessage`（实测计数 0），而 Vulkan 窗口由后端在 guest 主线程创建，随后主线程一直埋在 AOT/嵌套执行里 → Windows 消息队列积压 → 标题栏"未响应"（白色/幽灵窗口）。修复（18.4489）：
 | M945 | §18.4490: **诚实纠正：M940–M942 的 "present 成功" 只是 `vkQueuePresentKHR result=0`（提交流程成功），画面内容仍全黑——用户观察到窗口纯白/无内容是对的**。实测定量：`p5d_rt_first.bmp`（960x544，M943 修正后成功产出）用 PIL 统计：**mean=0.00、max=0、100% 像素 (0,0,0)** → **RT 内容完全黑**。数据通路缺口（err/日志证据）：
 | M946 | §18.4491: ★★★★★★ **红色片元诊断结果：即使换成常量红色片元着色器，RT 截图仍全黑（mean=0/max=0）→ 定位到根因：后端 `sceGxmBeginScene` **忽略 renderTarget/colorSurface 参数**，永远渲染进 swapchain；而我们的显示路径把**从未被绘制过的 app RT** 拷贝到 swapchain → 把真实绘制内容覆盖成黑色**。证据链：
+| M947 | §18.4492: ★★★★★★★ **找到并实现正确的渲染架构（源自旧 host `eboot_probe.cpp` 的成熟做法）：`BeginScene` 的 colorSurface 在 guest 栈 `[sp+8]`，surface 结构 `+0 flags/+4 width/+8 height/+0xC stride/+0x10 data/+0x14 format/+0x18 type`；正确流程是 `begin_scene_pass(data,w,h)`（画进 app 的 RT，且 `g_cur_pass_rp` 与管线 render pass 匹配）→ `end_scene_pass()` → `present_frame(data)`（RT→swapchain 拷贝+present）**。证据链：
+1) M946 实验（`out62m_m1029swappresent.txt`，红 FS + 直接 present swapchain）：
+```
+err: [REALFS-RED] red diagnostic fragment module ready
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... rp=0000000000000000
+err: [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_swap_first.bmp      ← swapchain 也全黑
+SWAP STATS: mean=0.00 max=0 (0,0,0) 100%
+```
+→ 连 swapchain 都黑 ⇒ 不是"显示源选错"，而是 **draw 被丢弃**：管线创建时 `_rp` 回退到 `g_rp_clear`（离屏 render pass），
+而 draw 记录在 swapchain render pass 中 → **render pass 不兼容 → Vulkan 静默丢弃该 draw**（后端注释里明确写过这个陷阱）。
+2) **旧 host 的成熟实现**（`p5dsrc/src/loader/eboot_probe.cpp`）：
+```cpp
+// BeginScene：r2=RenderTarget；[sp+8]=SceGxmColorSurface*；[sp+0xC]=depthStencil
+SceUInt32 _csurf = gxp_rd(_sp2+8u);
+g_cur_color_cw = gxp_rd(_csurf+4);  g_cur_color_ch = gxp_rd(_csurf+8);
+g_cur_color_stride = gxp_rd(_csurf+0xC); g_cur_color_data = gxp_rd(_csurf+0x10);
+...
+if (p5d::vulkan::g_backend.initialized) p5d::vulkan::begin_scene_pass(g_cur_color_data, g_cur_color_cw, g_cur_color_ch);
+// EndScene：end_scene_pass()（或 P5D_PRESENT_AT=endscene 时 present_frame(g_cur_color_data)）
+// DisplayQueue：present_frame(g_cur_color_data)
+```
+3) **实现（18.4492，`recomp_harness.cpp` GXMABI 分发块）**：
+```cpp
+if (strncmp(_ge->name,"sceGxmBeginScene",16)==0) {
+    uint32_t _sp=s->r[13], _csurf=0; uint8_t* _q=GP(_sp+8u); if(_q) memcpy(&_csurf,_q,4);
+    uint32_t _cd=0,_cw=0,_ch=0;
+    if ((_q=GP(_csurf))!=nullptr) { memcpy(&_cw,_q+4,4); memcpy(&_ch,_q+8,4); memcpy(&_cd,_q+0x10,4); }
+    printf("[ABIBEGIN] surf=%08X data=%08X %ux%u\n", _csurf,_cd,_cw,_ch);
+    if (_cd && _cw && _ch) p5d::vulkan::begin_scene_pass(_cd,_cw,_ch);
+    else p5d::vulkan::begin_frame();
+    return 0;
+}
+if (strncmp(_ge->name,"sceGxmEndScene",14)==0) { p5d::vulkan::end_scene_pass(); return 0; }
+if (strncmp(_ge->name,"sceGxmDisplayQueueAddEntry",26)==0) {
+    uint32_t _data=*(u32*)GP(s->r[2]);
+    p5d::vulkan::end_scene_pass();
+    p5d::vulkan::present_frame(_data);
+    // 首帧 RT 截图（present 后 RT 已入池）
+    save_rt_screenshot(_data,"p5d_rt_first.bmp");
+    return 0;
+}
+```
+顶部声明：`namespace p5d { namespace vulkan { void begin_scene_pass(unsigned,w,h); void begin_frame(); ... } }`
+4) 编译链接成功（二进制含 `[ABIBEGIN]/[ABIEND]`）；已启动 62M 验证运行（`out62m_m1030rtscene.txt`，`P5D_REALFS=red`）。
+NEXT：若 `p5d_rt_first.bmp` 变红 ⇒ 架构修正成功，接下来补纹理/uniform/顶点数据通路；若仍黑 ⇒ 继续查 begin_scene_pass 的 RT framebuffer/管线兼容。 |
+| §18.4492 | Found and implemented the correct render architecture (from the mature old host eboot_probe.cpp): BeginScene's colorSurface is on the guest stack at [sp+8]; the surface struct is +0 flags/+4 width/+8 height/+0xC stride/+0x10 data/+0x14 format/+0x18 type; the correct flow is begin_scene_pass(data,w,h) (draws INTO the app RT and g_cur_pass_rp matches the pipeline render pass) -> end_scene_pass() -> present_frame(data) (RT->swapchain copy + present). Evidence chain: (1) the M946 experiment (out62m_m1029swappresent.txt, red FS + direct swapchain present): err [REALFS-RED] ready; [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... rp=0000000000000000; err [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_swap_first.bmp; SWAP STATS mean=0.00 max=0 (0,0,0) 100% -> even the swapchain is black, so it is NOT a display-source mistake; the DRAW IS DROPPED: pipeline creation fell back to _rp = g_rp_clear (offscreen render pass) while the draw is recorded inside the swapchain render pass -> render pass incompatible -> Vulkan silently drops the draw (the backend comments explicitly warn about this trap). (2) The old host implementation (p5dsrc/src/loader/eboot_probe.cpp): BeginScene: r2=RenderTarget, [sp+8]=SceGxmColorSurface*, [sp+0xC]=depthStencil; _csurf=gxp_rd(sp+8); width=_csurf+4, height=_csurf+8, stride=_csurf+0xC, data=_csurf+0x10; begin_scene_pass(data,width,height); EndScene: end_scene_pass() (or present_frame(data) with P5D_PRESENT_AT=endscene); DisplayQueue: present_frame(data). (3) Implementation 18.4492 in recomp_harness.cpp GXMABI dispatch block: intercept sceGxmBeginScene -> read csurf from GP(sp+8), read width/height/data from GP(csurf)+4/+8/+0x10, print [ABIBEGIN], call begin_scene_pass(data,width,height) (fallback begin_frame); sceGxmEndScene -> end_scene_pass() ([ABIEND]); sceGxmDisplayQueueAddEntry -> data=*(u32*)GP(s->r[2]); end_scene_pass(); present_frame(data); first-frame save_rt_screenshot(data,'p5d_rt_first.bmp') (RT is in the pool after present); declarations namespace p5d { namespace vulkan { void begin_scene_pass(unsigned,w,h); void begin_frame(); ... } }. Build+link OK (binary contains [ABIBEGIN]/[ABIEND]); 62M verification run started (out62m_m1030rtscene.txt with P5D_REALFS=red). NEXT: if p5d_rt_first.bmp turns red the architecture fix works and textures/uniforms/vertex data are next; otherwise keep debugging begin_scene_pass RT framebuffer/pipeline compatibility. |
 1) 红色实验（`out62m_m1028redfs.txt`）：
 ```
 err: [REALFS-RED] red diagnostic fragment module ready
@@ -488657,3 +488703,55 @@ NEXT：看 `p5d_swap_first.bmp` 是否变红：
 ANTI-FORGETTING ENTRY. Keywords: M946 red diagnostic localized the root cause: the backend sceGxmBeginScene ignores renderTarget/colorSurface and always renders into the swapchain while our display path copies the never-drawn app RT to the swapchain, overwriting the real drawing with black. Evidence out62m_m1028redfs.txt: [REALFS-RED] red diagnostic fragment module ready; [REAL-PIPE] #1 OK; [PRESENT] #1 result=0; [RTSHOT] cd=8D300000 -> p5d_rt_first.bmp tl=(0,0,0) tr=(0,0,0); RT STATS mean=0.00 max=0 top=(0,0,0) 100% (still black with red FS); [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... vp=0.0,544.0,960.0,-544.0 sc=0,0,960,544 rp=0000000000000000. Backend sceGxmBeginScene body: if (g_backend.initialized) { begin_frame(); } return 0 - all params ignored; begin_frame() calls cmd_begin_render_pass targeting the swapchain image ([FRAMEBEGIN] frame=1 img=0) so all draws land on the swapchain and the app RT (8D300000) is never written. M941/M942's present_frame(cd) copied the empty RT to the swapchain and presented it -> real drawing overwritten by black. Experiment fix 18.4491: on DisplayQueueAddEntry capture the swapchain before present (request_capture('p5d_swap_first.bmp')), keep the RT screenshot for comparison, and call end_frame() to submit+present the swapchain directly; 62M run started out62m_m1029swappresent.txt with P5D_REALFS=red. NEXT: check whether p5d_swap_first.bmp turns red: if red then drawing/pipeline/present are correct and only the display source choice is wrong (proper fix: make BeginScene render into the app RT, or keep presenting the swapchain directly); if still black there is a deeper rendering problem (vertex data/FBO).
 
 LOOKUP: sceGxmBeginScene, begin_frame, cmd_begin_render_pass, [DRAWST], P5D_REALFS, p5d_swap_first.bmp, out62m_m1029swappresent.txt -> §18.4490 [relevant: black RT], §18.4487 [relevant: RT present]
+### 18.4492 PORT M947: 正确渲染架构（BeginScene→begin_scene_pass(RT) / end_scene_pass / present_frame）
+
+1) M946 实验（`out62m_m1029swappresent.txt`，红 FS + 直接 present swapchain）：
+```
+err: [REALFS-RED] red diagnostic fragment module ready
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... rp=0000000000000000
+err: [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_swap_first.bmp
+SWAP STATS: mean=0.00 max=0 (0,0,0) 100%          <- swapchain 也黑
+```
+=> 不是显示源问题，而是 **draw 被丢弃**：管线创建时 `_rp` 回退到 `g_rp_clear`（离屏 RP），
+而 draw 记录在 swapchain RP 中 → **render pass 不兼容 → Vulkan 静默丢弃 draw**（后端注释里明确写过这个坑）。
+2) 旧 host 成熟实现（`p5dsrc/src/loader/eboot_probe.cpp`）：
+```cpp
+// BeginScene: r2=RenderTarget; [sp+8]=SceGxmColorSurface*; [sp+0xC]=depthStencil
+SceUInt32 _csurf = gxp_rd(_sp2+8u);
+g_cur_color_cw      = gxp_rd(_csurf+4);
+g_cur_color_ch      = gxp_rd(_csurf+8);
+g_cur_color_stride  = gxp_rd(_csurf+0xC);
+g_cur_color_data    = gxp_rd(_csurf+0x10);
+...
+begin_scene_pass(g_cur_color_data, g_cur_color_cw, g_cur_color_ch);
+// EndScene -> end_scene_pass()；DisplayQueue -> present_frame(g_cur_color_data)
+```
+3) 实现（18.4492，`recomp_harness.cpp` GXMABI 分发块）：
+```cpp
+if (strncmp(_ge->name, "sceGxmBeginScene", 16) == 0) {
+    uint32_t _sp = s->r[13]; uint32_t _csurf = 0; uint8_t* _q = GP(_sp + 8u);
+    if (_q) std::memcpy(&_csurf, _q, 4);
+    uint32_t _cd = 0, _cw = 0, _ch = 0;
+    if ((_q = GP(_csurf)) != nullptr) { std::memcpy(&_cw, _q + 4, 4); std::memcpy(&_ch, _q + 8, 4); std::memcpy(&_cd, _q + 0x10, 4); }
+    printf("[ABIBEGIN] surf=%08X data=%08X %ux%u n=%u\n", _csurf, _cd, _cw, _ch, g_main_n);
+    if (_cd && _cw && _ch) p5d::vulkan::begin_scene_pass(_cd, _cw, _ch);
+    else p5d::vulkan::begin_frame();
+    s->r[0] = 0; return s->r[14];
+}
+if (strncmp(_ge->name, "sceGxmEndScene", 14) == 0) { p5d::vulkan::end_scene_pass(); s->r[0]=0; return s->r[14]; }
+if (strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) {
+    uint32_t _data = 0; { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
+    p5d::vulkan::end_scene_pass();
+    if (_data) { p5d::vulkan::present_frame(_data);
+        static int _cap=0; if(!_cap){ int _rr = p5d::vulkan::save_rt_screenshot(_data,"p5d_rt_first.bmp");
+            printf("[ABIRT] cd=%08X rc=%d\n", _data, _rr); if(_rr==0) _cap=1; } }
+    s->r[0] = 0; return s->r[14];
+}
+```
+4) 编译链接成功（二进制含 `[ABIBEGIN]/[ABIEND]`）；已启动 62M 验证运行：`out62m_m1030rtscene.txt`（`P5D_REALFS=red`）。
+NEXT：若 `p5d_rt_first.bmp` 变红 ⇒ 架构修正成功 → 补纹理/uniform/顶点数据通路；若仍黑 ⇒ 查 begin_scene_pass 的 RT framebuffer/管线兼容。
+验证：`out62m_m1029swappresent.txt`、`eboot_probe.cpp`（旧 host 实现）、`out62m_m1030rtscene.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M947 found+implemented the correct render architecture from the old host eboot_probe.cpp: BeginScene colorSurface is on the guest stack at [sp+8]; surface struct fields +0 flags, +4 width, +8 height, +0xC stride, +0x10 data, +0x14 format, +0x18 type; correct flow begin_scene_pass(data,w,h) (draws INTO the app RT and g_cur_pass_rp matches the pipeline render pass) -> end_scene_pass() -> present_frame(data) (RT->swapchain copy+present). Evidence: M946 experiment out62m_m1029swappresent.txt (red FS + direct swapchain present) shows [REALFS-RED] ready, [DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vtxcnt=3 vbuf=... rp=0000000000000000, [SHOTSTAT] frame=1 max=0 mean=0.00 file=p5d_swap_first.bmp, SWAP STATS mean=0.00 max=0 (0,0,0) 100% -> even the swapchain is black, so the draw is dropped: pipeline creation fell back to _rp=g_rp_clear (offscreen RP) while the draw is inside the swapchain RP -> render pass incompatible -> Vulkan silently drops it. Old host impl (p5dsrc/src/loader/eboot_probe.cpp): _csurf=gxp_rd(sp+8); width=_csurf+4; height=_csurf+8; stride=_csurf+0xC; data=_csurf+0x10; begin_scene_pass(data,width,height); EndScene end_scene_pass(); DisplayQueue present_frame(data). Implementation 18.4492 in recomp_harness.cpp GXMABI dispatch: intercept sceGxmBeginScene (read csurf GP(sp+8), read +4/+8/+0x10, print [ABIBEGIN], begin_scene_pass or begin_frame fallback); sceGxmEndScene -> end_scene_pass() ([ABIEND]); sceGxmDisplayQueueAddEntry -> data=*(u32*)GP(s->r[2]); end_scene_pass(); present_frame(data); first-frame save_rt_screenshot(data,'p5d_rt_first.bmp'); declarations namespace p5d { namespace vulkan { void begin_scene_pass(unsigned,w,h); void begin_frame(); ... } }. Build+link OK (binary [ABIBEGIN]/[ABIEND]); 62M verification run out62m_m1030rtscene.txt with P5D_REALFS=red. NEXT: if p5d_rt_first.bmp turns red the architecture is fixed (then textures/uniforms/vertex data); otherwise debug begin_scene_pass RT framebuffer/pipeline compatibility.
+
+LOOKUP: begin_scene_pass, end_scene_pass, present_frame, [ABIBEGIN], [ABIEND], 0x812B1470, eboot_probe.cpp, out62m_m1030rtscene.txt -> §18.4491 [relevant: BeginScene ignores RT], §18.4490 [relevant: black RT]

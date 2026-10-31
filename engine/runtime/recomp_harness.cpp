@@ -949,6 +949,7 @@ static int g_periodpump_env = -1;
 namespace p5d { namespace vulkan { void end_frame(); void present_frame(uint32_t colorData); } }   // 18.4484 M939
 namespace p5d { namespace vulkan { void request_capture(const char* name); } }   // 18.4485 M940
 namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot(unsigned int cd, const char* name); } }   // 18.4486 M941
+namespace p5d { namespace vulkan { void begin_scene_pass(unsigned int colorData, unsigned int w, unsigned int h); void begin_frame(); } }   // 18.4492 M947
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 static void job_probes(uint32_t pcv, RecState* s) {
   { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
@@ -1486,23 +1487,35 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
       // 18.4484 M939: EndScene / DisplayQueueAddEntry -> submit + present (backend end_frame does both)
-      // 18.4486 M941: proper display path - end the scene pass (keep the frame cmd open), optionally dump the
-      // game's real RT to BMP, then present_frame(cd) which records RT->swapchain copy, submits and presents.
-      if (strncmp(_ge->name, "sceGxmEndScene", 14) == 0 || strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) {
-        const bool _dq = strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0;
-        uint32_t _data = 0;
-        if (_dq) { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
+      // 18.4492 M947: REAL render architecture (same as the old eboot_probe host):
+      //   BeginScene(colorSurface on the guest stack at sp+8) -> begin_scene_pass(RT data,w,h)  (draws go INTO the RT,
+      //   pipeline render pass matches g_cur_pass_rp) ; DisplayQueueAddEntry -> end_scene_pass() + present_frame(RT)
+      //   which copies the RT to the swapchain and presents it.
+      if (strncmp(_ge->name, "sceGxmBeginScene", 16) == 0) {
+        uint32_t _sp = s->r[13]; uint32_t _csurf = 0; uint8_t* _q = GP(_sp + 8u);
+        if (_q) std::memcpy(&_csurf, _q, 4);
+        uint32_t _cd = 0, _cw = 0, _ch = 0;
+        if ((_q = GP(_csurf)) != nullptr) { std::memcpy(&_cw, _q + 4, 4); std::memcpy(&_ch, _q + 8, 4); std::memcpy(&_cd, _q + 0x10, 4); }
+        static int _bn = 0; if (_bn++ < 12) { printf("[ABIBEGIN] surf=%08X data=%08X %ux%u n=%u\n", _csurf, _cd, _cw, _ch, g_main_n); fflush(stdout); }
+        if (_cd && _cw && _ch) p5d::vulkan::begin_scene_pass(_cd, _cw, _ch);
+        else p5d::vulkan::begin_frame();
+        s->r[0] = 0; return s->r[14];
+      }
+      if (strncmp(_ge->name, "sceGxmEndScene", 14) == 0) {
+        p5d::vulkan::end_scene_pass();
+        static int _en = 0; if (_en++ < 12) { printf("[ABIEND] end_scene_pass n=%u\n", g_main_n); fflush(stdout); }
+        s->r[0] = 0; return s->r[14];
+      }
+      if (strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) {
+        const bool _dq = true;
+        uint32_t _data = 0; { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
         p5d::vulkan::end_scene_pass();
         if (_dq && _data) {
-          // 18.4491 M946 EXPERIMENT: the backend sceGxmBeginScene ignores renderTarget/colorSurface and renders into
-          // the SWAPCHAIN; the app's RT (cd) is never drawn into, so copying RT->swapchain overwrote the real drawing
-          // with black. Here we present the swapchain content directly and capture it (p5d_swap_first.bmp).
-          static int _cap_swap = 0;
-          if (!_cap_swap) { _cap_swap = 1; p5d::vulkan::request_capture("p5d_swap_first.bmp"); }
+          p5d::vulkan::present_frame(_data);
           static int _rtcap_done = 0;
-          if (!_rtcap_done) { _rtcap_done = 1; int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
-            printf("[ABIRT] rt cd=%08X rc=%d\n", _data, _rr); fflush(stdout); }
-          p5d::vulkan::end_frame();
+          if (!_rtcap_done) { int _rr = p5d::vulkan::save_rt_screenshot(_data, "p5d_rt_first.bmp");
+            if (_rr == 0) { _rtcap_done = 1; printf("[ABIRT] saved p5d_rt_first.bmp cd=%08X n=%u\n", _data, g_main_n); }
+            else { static int _rt = 0; if (_rt++ < 8) printf("[ABIRT] cd=%08X rc=%d\n", _data, _rr); } fflush(stdout); }
         }
         static int _dn = 0; if (_dn++ < 16) { printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n); fflush(stdout); }
         s->r[0] = 0; return s->r[14];
