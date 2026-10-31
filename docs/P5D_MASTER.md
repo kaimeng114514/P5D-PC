@@ -941,6 +941,25 @@
 | M923 | §18.4468: **WAKE57 触发但 page1 不变 → 新假设：page1 "loading" 可能是 guest 侧解压/计算（无 HLE 调用），只是需要更多 n；启动 130M 长跑并把 page1 进度做成 [P1] 每 1M n 节拍打印**。`out64m_m1004wake57.txt`（VTIME+WAKE57）：`[WAKE57] woke loader workers at n=59506176`（**触发成功**）但 page1 仍无变化：n=60,485,000 时 `ctr=9 pc=8127BE36 blk=8127BB28`、`[SEQST] n=60M cur=1 tab=813B01B4 pc=8127B85C`、`[JOB] streamcnt=3 binit=0x816A0BA0`、`[IDR] idx=1`、`[GXM]`/`[TITLEMOV]` 0 —— 唤醒 loader worker 也不足以推进。结合 [H57M]（page1 主上下文只有 libc+DelayThreadCB、无文件 I/O）与 [HLEDUMP]（page1 无任何文件 I/O API）推断：**page1 的"加载"可能是 guest 侧纯计算的解压/初始化（CRI FS 内存内解压等），我们的每次运行其实都在推进，只是 64M 上限时 page1 只跑了 ~4.5M 块（59.5M→64M），不足以跑完**。**新增 `[P1TICK]`（env `P5D_P1TICK=1`）**：`g_main_n >= 59,500,000` 后每 1M n 打印一次 `[P1] n/ctr/seq/pc/fib/gxm(b/e/p 计数)`，用于长跑中直观追踪 page1 是否推进/换页/开始绘制。已启动 **130M 长跑**（`out130m_m1005p1tick.txt`，全部修复 + P1TICK），验证 page1 是否在 n>64M 后完成（`[IDR]` 推进/`[SEQST]` 换页/`[GXM]` BeginScene/`[TITLEMOV]`）。NEXT: 下几轮观察 `[P1]` 序列。 |
 | M924 | §18.4469: **GitHub 说明文档（README）全面更新到当前进度（M923/整体 55–60%）**：重写 `README.md` 的状态表与里程碑段（M869–M923），新增"开发状态开关"表（`P5D_GXMABI`/`NOSCHEDRUN`/`GETSELFFIX`/`CRIFSHLE(+AT)`/`THRYIELD`/`PERIODPUMP`/`VTIME`/`WAKE57`/`HLEDUMP(+AT)`/`P1TICK`/`BT57`），更新当前阻塞（S1 boot page1 帧循环不退出 → 无 GXM 绘制）与下一步任务顺序（BT57 栈回溯定位驱动函数 → page1 完成 → 标题页 → GXM BeginScene/Draw/Present → S2–S4）。同时修复 `P5D_BT57` 探针编译错误（`pcv` 作用域 → 改用 `g_cur_block`；重建 `link exit=0`、二进制含 `[BT57]` 标签）。README 内容与 `docs/P5D_MASTER.md` 保持同步（权威细节仍在主文档）。 |
 | M925 | §18.4470: **BT57 栈回溯探针放错位置（在 hle_call 里，pacer 内无 HLE 调用 → 0 条）→ 移入 job_probes（有 pcv+sp），n≥60M 抽 6 次主栈样本；已重启 62M 长跑**。前一次 62M 长跑（`out62m_m1006bt57.txt`，P5D_BT57=1）：n 推进到 **60,865,000**（page1 内），但 `[BT57]` **0 条** —— 原因：BT57 代码被插在 `hle_call` 里且判定 `g_cur_block == 0x8127BB30`，而 CRI 帧节拍器 `FUN_8127BB30` 内部**不调用任何 HLE**（睡眠包装 `FUN_8127C0E8` 调用的是 `0x812B2A80`，此时 g_cur_block=0x812B2A80）→ 条件永不满足。**修复（18.4470）**：把 BT57 移到 `job_probes(pcv, s)`（每个执行块都调用，能拿到真实 pcv 与 s->r[13]），改为 `g_main_n >= 60,000,000` 后每 400k n 抽样一次（共 6 次），打印 pc/fib/thr/sp 并从 sp 向上扫描 0x800 字节，输出落在 `0x80600000..0x81260000`（app/底层代码区）的返回地址，用于还原 page1 驱动调用链。已重启 62M 长跑（`out62m_m1007bt57b.txt`）。NEXT: 读取 `[BT57]` 6 组栈样本 → 还原 page1 驱动函数 → 反编译定位等待条件 → 修复。 |
+| M926 | §18.4471: ★★★★★ **BT57 栈回溯成功 → 反编译定位 page1 卡点：`FUN_8122D91C` 是 CRI 异步加载驱动，`while(FUN_8128E9BC(op,&st), st==1) { ...; DelayThreadCB(10); }` —— page1 卡在 CRI 加载 op 状态永远为 1（busy）**。`[BT57]`（`out62m_m1007bt57b.txt`，n=60M..62M 共 5 组，高度一致）主栈返回链：
+`8122D94A 8115DCBC 8115DEBC 8115D206 8122DB0A 81153242 81172EB8 81171EFE 81184788 81159CBE 8116F758 8116FA64 811DB24E 811994F8 81199348 81198D10 81206BEC 8115D7BF 8115D7C7 8116F3C7`
+映射到函数：FUN_8122D91C / FUN_8115DCB2 / FUN_8115DE06 / FUN_8115D200 / FUN_8122DAFA / FUN_81153186 / FUN_81172EAE / FUN_81171EF6 / FUN_81184776 / FUN_8116F748 / FUN_8116FA5C / FUN_811DB020 / FUN_8119934A / FUN_81199336 / FUN_81198C0A / FUN_81206BDC / FUN_8116F3C6。**关键反编译 `FUN_8122D91C`**（`true_seg0_final.c`）：
+```c
+iVar4 = FUN_8128defc(&local_5c);                        // 创建 CRI 异步加载 op
+iVar4 = FUN_8128e394(local_5c, param_1, param_2, &DAT_8169e254, 0,0, iVar1, iVar1>>31, uVar2);  // 提交加载
+if (iVar4 == 0) {
+  while (true) {
+    FUN_8128e9bc(local_5c, &local_58);                  // 查询 op 状态
+    if (local_58 != 1) break;                           // 1 = 仍在进行
+    FUN_81236d22(); FUN_81236c14(); FUN_8127c0e8(10);   // 10ms 睡眠后重试
+  }
+  FUN_8128eb14(local_5c, local_48);                     // 取读到的字节数
+  FUN_8128ebe8(local_5c, &local_54); FUN_8128dc04(local_5c);  // 取结果/销毁 op
+  ... FUN_8122d696(...) 使用读入数据 ...
+}
+```
+=> **page1 的等待就是"CRI 异步加载 op 永远 busy"**：`FUN_8128E9BC` 每次都返回状态 1，从不变成 2（完成），所以 10ms 睡眠循环永不退出。**新增 CRIOP 探针（`P5D_CRIOP=1`）**：`0x8128E394`（提交）打印 op/参数；`0x8128E9BC`（状态查询）打印 op 指针与 op 结构前 8 个字（含状态字），已启动 62M 长跑（`out62m_m1008criop.txt`）。NEXT: 读 `[CRIOP]` op 结构字 → 确定状态字位置与"完成方"（哪个线程/回调应写它）→ 补 HLE 完成投递 → page1 完成。 |
+| §18.4471 | BT57 backtrace succeeded -> decompilation pinpoints the page1 stall: FUN_8122D91C is a CRI async-load driver, while(FUN_8128E9BC(op,&st), st==1) { ...; DelayThreadCB(10); } - page1 waits on a CRI load op whose status stays 1 (busy) forever. [BT57] (out62m_m1007bt57b.txt, n=60M..62M, 5 consistent samples) main-stack return chain: 8122D94A 8115DCBC 8115DEBC 8115D206 8122DB0A 81153242 81172EB8 81171EFE 81184788 81159CBE 8116F758 8116FA64 811DB24E 811994F8 81199348 81198D10 81206BEC 8115D7BF 8115D7C7 8116F3C7 mapped to FUN_8122D91C / FUN_8115DCB2 / FUN_8115DE06 / FUN_8115D200 / FUN_8122DAFA / FUN_81153186 / FUN_81172EAE / FUN_81171EF6 / FUN_81184776 / FUN_8116F748 / FUN_8116FA5C / FUN_811DB020 / FUN_8119934A / FUN_81199336 / FUN_81198C0A / FUN_81206BDC / FUN_8116F3C6. KEY decompile of FUN_8122D91C (true_seg0_final.c): iVar4 = FUN_8128defc(&local_5c) (create CRI async load op); iVar4 = FUN_8128e394(local_5c, param_1, param_2, &DAT_8169e254, 0,0, iVar1, iVar1>>31, uVar2) (submit load); if (iVar4==0) { while (true) { FUN_8128e9bc(local_5c, &local_58) (query op status); if (local_58 != 1) break; FUN_81236d22(); FUN_81236c14(); FUN_8127c0e8(10); } ... FUN_8128eb14(local_5c, local_48) (get bytes read); FUN_8128ebe8(local_5c,&local_54); FUN_8128dc04(local_5c) (destroy); FUN_8122d696(...) uses the data } => page1's wait is a CRI async-load op that stays busy: FUN_8128E9BC returns status 1 every time, never 2 (done), so the 10ms sleep loop never exits. Added CRIOP probe (P5D_CRIOP=1): at 0x8128E394 (submit) print op/args; at 0x8128E9BC (status query) print op pointer and the first 8 words of the op struct (including the status word); 62M run started (out62m_m1008criop.txt). NEXT: read [CRIOP] op struct words -> find the status word position and who should set it (which thread/callback completes the op) -> add HLE completion delivery -> page1 completes. |
 | §18.4470 | BT57 backtrace probe was misplaced (in hle_call; the pacer makes no HLE calls -> 0 lines) -> moved into job_probes (has pcv+sp), samples the main stack 6 times after n>=60M; relaunched the 62M run. Previous 62M run (out62m_m1006bt57.txt, P5D_BT57=1): n advanced to 60,865,000 (inside page1) but [BT57] had 0 lines - cause: the BT57 code was inserted in hle_call and tested g_cur_block == 0x8127BB30, while the CRI frame pacer FUN_8127BB30 makes NO HLE calls internally (its sleep wrapper FUN_8127C0E8 calls 0x812B2A80, where g_cur_block=0x812B2A80) -> condition never true. FIX (18.4470): moved BT57 into job_probes(pcv, s) (called for every executed block, giving the real pcv and s->r[13]); after g_main_n >= 60,000,000 sample once every 400k n (6 samples), printing pc/fib/thr/sp and scanning 0x800 bytes upward from sp for return addresses in 0x80600000..0x81260000 (app/low-level code) to reconstruct the page1 driver call chain. Relaunched 62M run (out62m_m1007bt57b.txt). NEXT: read the 6 [BT57] stack samples -> reconstruct the page1 driver function -> decompile to find the wait condition -> fix. |
 | §18.4469 | GitHub README fully refreshed to the current state (M923 / overall 55-60%): rewrote the status table and milestone section (M869-M923), added a "development state switches" table (P5D_GXMABI/NOSCHEDRUN/GETSELFFIX/CRIFSHLE(+AT)/THRYIELD/PERIODPUMP/VTIME/WAKE57/HLEDUMP(+AT)/P1TICK/BT57), updated the current blocker (S1 boot page1 frame loop does not exit -> no GXM drawing) and next-step order (BT57 stack backtrace to find the driver function -> page1 completes -> title page -> GXM BeginScene/Draw/Present -> S2-S4). Also fixed the P5D_BT57 probe compile error (pcv scope -> g_cur_block; rebuilt link exit=0, binary contains the [BT57] tag). README stays in sync with docs/P5D_MASTER.md (authoritative details remain in the master doc). |
 | §18.4468 | WAKE57 fired but page1 unchanged -> new hypothesis: page1 'loading' may be guest-side decompression/computation (no HLE calls) and simply needs more n; started a 130M run with a [P1] per-1M-n progress tick. out64m_m1004wake57.txt (VTIME+WAKE57): [WAKE57] woke loader workers at n=59506176 (fired successfully) but page1 did not change: at n=60,485,000 ctr=9 pc=8127BE36 blk=8127BB28, [SEQST] n=60M cur=1 tab=813B01B4 pc=8127B85C, [JOB] streamcnt=3 binit=0x816A0BA0, [IDR] idx=1, [GXM]/[TITLEMOV] 0. Combining [H57M] (page1 main context only libc+DelayThreadCB, no file I/O) and [HLEDUMP] (no file I/O API at all in page1), we infer page1's 'loading' may be guest-side pure computation (CRI FS in-memory decompression etc.) and our runs are actually progressing, but the 64M limit left only ~4.5M blocks of page1 (59.5M->64M), not enough to finish. Added [P1TICK] (env P5D_P1TICK=1): after g_main_n >= 59,500,000 print [P1] n/ctr/seq/pc/fib/gxm(b/e/p counts) every 1M n to track page1 progress in the long run. A 130M run has been started (out130m_m1005p1tick.txt, all fixes + P1TICK) to verify whether page1 completes after n>64M ([IDR] advance/[SEQST] page switch/[GXM] BeginScene/[TITLEMOV]). NEXT: watch the [P1] series over the next rounds. |
@@ -487231,3 +487250,60 @@ NEXT：读取 `[BT57]` 6 组栈样本 → 还原 page1 驱动调用链 → 反�
 ANTI-FORGETTING ENTRY. Keywords: M925 BT57 probe misplacement fix: previous 62M run out62m_m1006bt57.txt advanced to n=60,865,000 inside page1 but [BT57] 0 lines because the probe was in hle_call and tested g_cur_block == 0x8127BB30 while the CRI frame pacer FUN_8127BB30 makes no HLE calls (its sleep wrapper FUN_8127C0E8 calls 0x812B2A80 DelayThreadCB, so g_cur_block=0x812B2A80). FIX 18.4470: moved BT57 into job_probes(pcv, s) (called per executed block); after g_main_n >= 60,000,000 sample every 400k n (6 samples), print pc/fib/thr/sp and scan 0x800 bytes upward from sp for return addresses in 0x80600000..0x81260000 (max 32). Relaunched 62M run out62m_m1007bt57b.txt (VTIME + BT57 + all scheduling fixes); NEXT: read the 6 [BT57] stack samples to reconstruct the page1 driver call chain, decompile upper functions to find the wait condition, fix -> page1 completes -> title page.
 
 LOOKUP: 0x8127BB30, 0x8127C0E8, 0x812B2A80, job_probes, P5D_BT57, out62m_m1007bt57b.txt -> §18.4469 [relevant: README], §18.4468 [relevant: WAKE57/P1TICK]
+### 18.4471 PORT M926: BT57 定位 page1 卡点 = CRI 异步加载 op 永远 busy
+
+1) `[BT57]` 5 组样本（`out62m_m1007bt57b.txt`，n=60M/60.4M/60.8M/61.2M/61.6M，完全一致）：
+```
+[BT57] #0 n=60000000 pc=8127B85C sp=84855FA8
+[BT57]  app-stack returns: 8122D94A 8115DCBC 8115DEBC 8115D206 8122DB0A 81153242 81172EB8 81171EFE
+                           81184788 81159CBE 8116F758 8116FA64 811DB24E 811994F8 81199348 81198D10
+                           81206BEC 8115D7BF 8115D7C7 8116F3C7
+[BT57] #1 n=60400000 pc=8127BB28 sp=84855FA0 (同一链)
+[BT57] #2 n=60800000 pc=81207612 thr=40017000 sp=848352A0 → 线索: 811F22B9 811F2376 811F22B9 8120768A
+[BT57] #3 n=61200000 pc=8127B374 (同一链)
+[BT57] #4 n=61600000 pc=8128EA78 (同一链)
+```
+2) 栈地址 → 函数映射：
+```
+8122D94A -> FUN_8122D91C (+0x2E)      8115DCBC -> FUN_8115DCB2
+8115DEBC -> FUN_8115DE06              8115D206 -> FUN_8115D200
+8122DB0A -> FUN_8122DAFA              81153242 -> FUN_81153186
+81172EB8 -> FUN_81172EAE              81171EFE -> FUN_81171EF6
+81184788 -> FUN_81184776              8116F758 -> FUN_8116F748
+8116FA64 -> FUN_8116FA5C              811DB24E -> FUN_811DB020
+811994F8 -> FUN_8119934A              81199348 -> FUN_81199336
+81198D10 -> FUN_81198C0A              81206BEC -> FUN_81206BDC
+8116F3C7 -> FUN_8116F3C6
+```
+3) **关键反编译 `FUN_8122D91C`**（`true_seg0_final.c`）：
+```c
+iVar4 = FUN_8128defc(&local_5c);                     // 创建 CRI 异步加载 op
+iVar4 = FUN_8128e394(local_5c, param_1, param_2, &DAT_8169e254, 0, 0,
+                     iVar1, iVar1 >> 0x1f, uVar2);   // 提交加载请求
+if (iVar4 == 0) {
+  while (true) {
+    FUN_8128e9bc(local_5c, &local_58);               // 查询 op 状态
+    if (local_58 != 1) break;                        // !=1 才退出
+    FUN_81236d22(); FUN_81236c14(); FUN_8127c0e8(10); // 10ms 后重试
+  }
+  FUN_8128eb14(local_5c, local_48);                  // 取读取字节数
+  FUN_8128ebe8(local_5c, &local_54);
+  FUN_8128dc04(local_5c);                            // 销毁 op
+  ... FUN_8122d696(uVar2, local_48[0], ...) 使用读入数据 ...
+}
+```
+=> **page1 的"卡住"就是该 CRI 异步加载 op 状态永远为 1（busy）**：`FUN_8128E9BC` 返回 1 → 循环 10ms 睡眠重试，永不退出；与所有观测吻合（DelayThreadCB 10ms 循环、无 GXM 绘制、无文件 I/O HLE 调用）。
+4) 新增 **CRIOP 探针**（env `P5D_CRIOP=1`，job_probes）：
+```cpp
+if (pcv==0x8128E394) printf("[CRIOP] submit op=%08X a1=%08X a2=%08X a3=%08X\n", ...);
+if (pcv==0x8128E9BC) { op=r0; printf("[CRIOP] poll op=%08X\n", op);
+  // 打印 op 结构前 8 个字（状态字应在其中）
+  printf("[CRIOP]  op=%08X words: %08X %08X %08X %08X %08X %08X %08X %08X\n", ...); }
+```
+已启动 62M 长跑：`out62m_m1008criop.txt`。
+NEXT：读 `[CRIOP]` → 找 op 状态字位置与"应由谁写完成"（哪个线程/回调）→ 补 HLE 完成投递 → page1 完成 → 标题页。
+验证：`out62m_m1007bt57b.txt`（BT57 5 组栈）、`true_seg0_final.c`（FUN_8122D91C 反编译）、`out62m_m1008criop.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M926 BT57 stack captured in out62m_m1007bt57b.txt (5 consistent samples n=60M..61.6M): 8122D94A 8115DCBC 8115DEBC 8115D206 8122DB0A 81153242 81172EB8 81171EFE 81184788 81159CBE 8116F758 8116FA64 811DB24E 811994F8 81199348 81198D10 81206BEC 8115D7BF 8115D7C7 8116F3C7; mapped FUN_8122D91C/8115DCB2/8115DE06/8115D200/8122DAFA/81153186/81172EAE/81171EF6/81184776/8116F748/8116FA5C/811DB020/8119934A/81199336/81198C0A/81206BDC/8116F3C6. KEY decompile FUN_8122D91C: creates CRI async load op (FUN_8128defc), submits (FUN_8128e394), then while(true){ FUN_8128e9bc(op,&st); if (st != 1) break; FUN_81236d22(); FUN_81236c14(); DelayThreadCB(10ms); } then FUN_8128eb14 (bytes read), FUN_8128ebe8, FUN_8128dc04 (destroy), FUN_8122d696 uses data => page1 stall = CRI async load op status forever 1 (busy); FUN_8128E9BC returns 1 and the 10ms loop never exits (consistent with all observations: DelayThreadCB 10ms loop, no GXM draw, no file-IO HLE calls). Added CRIOP probe (P5D_CRIOP=1) at 0x8128E394 (submit args) and 0x8128E9BC (op pointer + first 8 words of op struct); 62M run started out62m_m1008criop.txt. NEXT: read [CRIOP] -> locate status word and find who should complete the op (which thread/callback) -> add HLE completion delivery -> page1 completes -> title page.
+
+LOOKUP: 0x8122D91C, 0x8128E394, 0x8128E9BC, 0x8128DEFC, 0x8128EB14, 0x8128DC04, FUN_8122D696, P5D_CRIOP, out62m_m1008criop.txt, true_seg0_final.c -> §18.4470 [relevant: BT57 fix], §18.4466 [relevant: CRI pacer]
