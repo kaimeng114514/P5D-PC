@@ -934,6 +934,26 @@
 | M916 | §18.4461: **page1 期间 HLE 直方图：全是 worker 线程在轮询，主上下文调用被刷屏淹没 → 新增 [H57M] 过滤探针抓主上下文文件 I/O 路径**。130M 门控长跑（`out130m_m994gate.txt`）n 推进到 **63,185,000**（`[FRAMEDUMP] n=63185000 ctr=9 pc=8128EA7E blk=8127C0F8`），`[JOB] n=60M streamcnt=3`（CRI 流仍在加载），`[GXM]`/`[TITLEMOV]` 仍 0。`[H57]`（n≥59M，cap 3000）按线程分组：
 | M917 | §18.4462: **[H57M] 揭示 page1 主上下文只有 libc+DelayThreadCB 睡眠循环（无文件 I/O API 调用）；反汇编确认 FUN_8127C0E8 是"延迟 N ms"包装；新增 [HLEDUMP] 全量直方图枚举 page1 使用的全部 HLE stub**。130M 长跑（`out130m_m996h57m.txt`，带 [H57M]）数据：n=60,355,000（`pc=81283C8A blk=8127B860`），`[SEQST] cur=1`、`[JOB] streamcnt=3`、`[GXM]`/`[TITLEMOV]` 0。**`[H57M]`（2500 条，n≥59.43M，thr=0 主上下文）直方图**：
 | M918 | §18.4463: **HLEDUMP 阈值不可达（62M 太远）→ 改为可配置 `P5D_HLEDUMP_AT` 并重跑；同时记录 page1 卡点的 watchdog 环证据**。前一次 70M HLEDUMP 长跑（`out70m_m997hledump.txt`）在 page1 区域进展很慢（CPU 907s 时 n 仅 60.36M，`[HLEDUMP]` 0 条，因为阈值 62M 未到），但抓到了完整 watchdog 环：`[WD] pcring: 8127B85C 8127B36A 8127B370 8127BB28 8127BE36 8127BE4E **812B2AE0(SetEventFlag)** 8127BE56 8127BB2E 8127B374 8127B860 81283C8A 8128EA78 **8127C0E8/8127C0F4(DelayThreadCB 包装)** 812B2A80`；`hle_ring` 两种：thr=4001D000/40020000 的 `SetEventFlag(60016000,1) + WaitVblankStart` 帧循环；以及 `UnlockLwMutex/WaitEventFlag(60014000)/GetThreadId/…` 的 CRI 内部环。`[PCALL]` 显示 n=54M/56M/58M/60M 主循环 pc 已进入 8127B85C/8127BE4E（CRI FS）。**修复（18.4463）**：`[HLEDUMP]` 阈值改为环境变量 `P5D_HLEDUMP_AT`（默认 62000000，可在 59M 后任意设置），并已用 **`P5D_HLEDUMP_AT=60000000` 启动 62M 长跑**（`out62m_m998hledump2.txt`）——page1 一开始（n=60M）即打印 page1 期间全部 HLE stub 调用直方图 top48。NEXT: 读取 `[HLEDUMP]` → 找出未知/文件相关 stub → 补 HLE。 |
+| M919 | §18.4464: ★★★★★ **[HLEDUMP] 全量直方图（page1 n∈[59M,62M]）：`sceKernelLockLwMutexCB`(0x812B2800) 有 1,740,287 次调用但**完全没有 HLE case**（落到 default 返回 0）→ 等待/唤醒协议被破坏**；已补别名修复。`[HLEDUMP]` distinct=51，top：
+| stub | 次数 | 名称/身份 |
+|---|---|---|
+| 812B28A0 | 10,971,885 | UnlockLwMutex |
+| 812B2830 | 9,231,597 | LockLwMutex |
+| 812B2880 | 9,231,240 | WaitEventFlag |
+| 812B2AE0 | 6,983,166 | SetEventFlag |
+| 812B1810 | 6,101,738 | WaitVblankStart |
+| **812B2800** | **1,740,287** | **sceKernelLockLwMutexCB (NID 0x3148C6B6)——此前无 case！** |
+| 812B27B0 | 1,740,287 | GetThreadId |
+| 812B2AD0/27A0/2A50/2A80 | ~93k each | Signal/WaitSema、DelayThread |
+| 812B2260/22E0/2270/22A0/2250/2200/22D0 | 872/316/292/276/247/19/16 | libc memset/strlen/memcpy/malloc/free/strcmp/strcpy |
+| 812B2910 | 14 | CreateLwMutex |
+| **812B1840 / 812B1930** | 20 / 20 | CtrlReadBufferPositive / TouchRead |
+| **812B2870 / 812B28B0 / 812B28F0** | 1 / 1 / 1 | **sceIoOpen / sceIoLseek / sceIoGetstat**（page1 确实开过文件！）|
+| **812B1720** | **1** | **sceGxmDisplayQueueAddEntry**（有一次显示提交）|
+| 812B21A0 | 1 | **SceVideodecUser VdecInitLibrary**（视频解码库初始化被调用一次）|
+| 812B1B40/1B50/1AD0/1AF0 | 1-9 | Trophy SetupDialog（已 stub 为 OK）|
+结论：page1 主循环 = **mutex + eventflag + vblank 的紧帧循环**；关键缺陷是 **`LockLwMutexCB` 没有实现**（高频 1.74M 次，default 返回 0 使锁永不真正持有/阻塞），而 WaitEventFlag(9.23M) 比 SetEventFlag(6.98M) 多 ~2.25M 次 → 存在**丢失唤醒/等待永不满意的计数器失衡**。**修复（18.4464）**：`case 0x812B2800u:` 并入 `case 0x812B2830u:`（LockLwMutex）共享实现。2.5M 冒烟（`out2m_m999lwmlockcb.txt`）：`[CRIFSHLE] binit_after=816A0BA0`、`[PREEMPT]` 10、exit=0、BADMEM=0。已启动 64M 长跑（`out64m_m1000lwmlockcb.txt`）。NEXT: 看 page1 是否推进（`[IDR]`/`[SEQST]`/`[GXM]`/`[TITLEMOV]`/ctr）。 |
+| §18.4464 | [HLEDUMP] full histogram (page1 n in [59M,62M]): sceKernelLockLwMutexCB (0x812B2800) was called 1,740,287 times with NO HLE case (fell to default returning 0) -> wait/notify protocol broken; added alias fix. [HLEDUMP] distinct=51, top: 812B28A0 UnlockLwMutex 10,971,885; 812B2830 LockLwMutex 9,231,597; 812B2880 WaitEventFlag 9,231,240; 812B2AE0 SetEventFlag 6,983,166; 812B1810 WaitVblankStart 6,101,738; 812B2800 sceKernelLockLwMutexCB (NID 0x3148C6B6) 1,740,287 with no case; 812B27B0 GetThreadId 1,740,287; 812B2AD0/27A0/2A50/2A80 ~93k each (Signal/WaitSema, DelayThread); 812B2260/22E0/2270/22A0/2250/2200/22D0 872/316/292/276/247/19/16 (libc memset/strlen/memcpy/malloc/free/strcmp/strcpy); 812B2910 CreateLwMutex 14; 812B1840/1930 CtrlReadBufferPositive/TouchRead 20/20; 812B2870/28B0/28F0 sceIoOpen/sceIoLseek/sceIoGetstat 1/1/1 (page1 did open a file!); 812B1720 sceGxmDisplayQueueAddEntry 1 (one display submission); 812B21A0 SceVideodecUser VdecInitLibrary 1 (video decoder lib init called once); 812B1B40/1B50/1AD0/1AF0 Trophy SetupDialog (stubbed OK). Conclusion: page1 main loop = tight mutex+eventflag+vblank frame loop; key defect is LockLwMutexCB unimplemented (1.74M calls, default 0 makes lock never actually held/blocked) and WaitEventFlag (9.23M) exceeds SetEventFlag (6.98M) by ~2.25M -> lost wakeups / counter imbalance. FIX 18.4464: case 0x812B2800u merged into case 0x812B2830u (LockLwMutex shared body). 2.5M smoke out2m_m999lwmlockcb.txt: binit_after=816A0BA0, [PREEMPT] 10, exit=0, BADMEM=0. 64M run started out64m_m1000lwmlockcb.txt; NEXT: check page1 progress ([IDR]/[SEQST]/[GXM]/[TITLEMOV]/ctr). |
 | §18.4463 | HLEDUMP threshold unreachable (62M too far) -> made configurable via P5D_HLEDUMP_AT and rerun; also recorded page1 stall watchdog-ring evidence. The previous 70M HLEDUMP run (out70m_m997hledump.txt) progressed very slowly in the page1 region (n only 60.36M at CPU 907s, [HLEDUMP] 0 lines because the 62M threshold was not reached), but captured the full watchdog ring: [WD] pcring 8127B85C 8127B36A 8127B370 8127BB28 8127BE36 8127BE4E 812B2AE0(SetEventFlag) 8127BE56 8127BB2E 8127B374 8127B860 81283C8A 8128EA78 8127C0E8/8127C0F4(DelayThreadCB wrapper) 812B2A80; hle_ring has two kinds: thr=4001D000/40020000 SetEventFlag(60016000,1)+WaitVblankStart frame loop, and the UnlockLwMutex/WaitEventFlag(60014000)/GetThreadId/... CRI internal ring. [PCALL] shows main-loop pc entering 8127B85C/8127BE4E (CRI FS) at n=54M/56M/58M/60M. FIX (18.4463): [HLEDUMP] threshold now comes from env P5D_HLEDUMP_AT (default 62000000, can be set to anything after 59M), and a 62M run was started with P5D_HLEDUMP_AT=60000000 (out62m_m998hledump2.txt) - as soon as page1 starts (n=60M) it prints the full page1 HLE stub histogram top48. NEXT: read [HLEDUMP] -> find unknown/file-related stubs -> add HLE. |
 | va@lr | 次数 | 名称 |
 |---|---|---|
@@ -486987,3 +487007,39 @@ NEXT：读取 `[HLEDUMP]` → 找出未知/文件相关 stub → 补 HLE 读完�
 ANTI-FORGETTING ENTRY. Keywords: M918 HLEDUMP threshold unreachable (62M) so made configurable via env P5D_HLEDUMP_AT (default 62000000); previous 70M HLEDUMP run out70m_m997hledump.txt slow page1 (n only 60.36M at CPU 907s, [HLEDUMP] 0 lines) but captured watchdog rings: [WD] pcring 8127B85C 8127B36A 8127B370 8127BB28 8127BE36 8127BE4E 812B2AE0(SetEventFlag) 8127BE56 8127BB2E 8127B374 8127B860 81283C8A 8128EA78 8127C0E8 8127C0F4 812B2A80 (DelayThreadCB wrapper); hle_ring thr=4001D000: SetEventFlag(60016000,1)@8127BE56 + WaitVblankStart@811539FE alternating; CRI thr ring UnlockLwMutex/GetThreadId/812B2800; [PCALL] n=54M pc=811DFB06, n=56M pc=811DFDC8, n=58M pc=8121CEF4, n=60M pc=8127B85C (CRI FS). 62M run started with P5D_HLEDUMP=1 + P5D_HLEDUMP_AT=60000000 -> out62m_m998hledump2.txt dumps page1 HLE histogram at n=60M; NEXT: read [HLEDUMP] -> find unknown/file-related stubs -> add HLE read-completion -> page1 completes -> title page.
 
 LOOKUP: P5D_HLEDUMP_AT, 0x8127C0E8, 0x60014000, 0x60016000, out62m_m998hledump2.txt -> §18.4462 [relevant: HLEDUMP added], §18.4461 [relevant: H57M]
+### 18.4464 PORT M919: [HLEDUMP] 发现 LockLwMutexCB 未实现（1.74M 次）；补别名修复
+
+1) `[HLEDUMP]`（`out62m_m998hledump2.txt`，n∈[59M,62M] 累计，n≥60M 打印）：distinct=51。
+| stub | 次数 | 身份 |
+|---|---|---|
+| 812B28A0 | 10,971,885 | UnlockLwMutex |
+| 812B2830 | 9,231,597 | LockLwMutex |
+| 812B2880 | 9,231,240 | WaitEventFlag |
+| 812B2AE0 | 6,983,166 | SetEventFlag |
+| 812B1810 | 6,101,738 | WaitVblankStart |
+| **812B2800** | **1,740,287** | **sceKernelLockLwMutexCB（无 case！）** |
+| 812B27B0 | 1,740,287 | GetThreadId |
+| 812B2AD0/27A0/2A50/2A80 | ~93k | Signal/WaitSema/DelayThread |
+| 812B2260/22E0/2270/22A0/2250/2200/22D0 | 872/316/292/276/247/19/16 | libc memset/strlen/memcpy/malloc/free/strcmp/strcpy |
+| 812B2910 | 14 | CreateLwMutex |
+| 812B1840/1930 | 20/20 | CtrlReadBufferPositive/TouchRead |
+| **812B2870/28B0/28F0** | **1/1/1** | **sceIoOpen/sceIoLseek/sceIoGetstat** |
+| **812B1720** | **1** | **sceGxmDisplayQueueAddEntry** |
+| 812B21A0 | 1 | **VdecInitLibrary（SceVideodecUser）** |
+2) 分析：
+- WaitEventFlag(9,231,240) 比 SetEventFlag(6,983,166) 多 **~2,248,074 次** → 有大量等待没有被满足（或语义不等价）；
+- 高频 `LockLwMutexCB` 没有任何 HLE 实现（default r0=0），而对应的非 CB 版 LockLwMutex 有实现——
+  **CB 版路径的锁保护完全缺失**，可能导致等待/唤醒协议的竞争失衡。
+3) 修复（18.4464）：
+```cpp
+case 0x812B2800u:              // sceKernelLockLwMutexCB (NID 0x3148C6B6) - alias of LockLwMutex
+case 0x812B2830u: { ...原 LockLwMutex 实现... }
+```
+4) 2.5M 冒烟（`out2m_m999lwmlockcb.txt`）：`[CRIFSHLE] binit_after=816A0BA0`、`[PREEMPT]` 10 条、exit=0、BADMEM=0。
+5) 已启动 64M 长跑：`out64m_m1000lwmlockcb.txt`。
+NEXT：检查 page1 是否推进（`[IDR]`/`[SEQST]` 换页、`[GXM]` BeginScene、`[TITLEMOV]`、ctr）。
+验证：`out62m_m998hledump2.txt`（HLEDUMP 表）、`out2m_m999lwmlockcb.txt`（冒烟）、`out64m_m1000lwmlockcb.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M919 [HLEDUMP] distinct=51 in out62m_m998hledump2.txt (n in [59M,62M]): UnlockLwMutex 812B28A0 10,971,885; LockLwMutex 812B2830 9,231,597; WaitEventFlag 812B2880 9,231,240; SetEventFlag 812B2AE0 6,983,166; WaitVblankStart 812B1810 6,101,738; sceKernelLockLwMutexCB 812B2800 1,740,287 HAD NO HLE CASE (default 0); GetThreadId 812B27B0 1,740,287; Signal/WaitSema/DelayThread ~93k; libc memset/strlen/memcpy/malloc/free/strcmp/strcpy hundreds; CreateLwMutex 812B2910 14; Ctrl/Touch 20/20; sceIoOpen 812B2870 / sceIoLseek 812B28B0 / sceIoGetstat 812B28F0 1/1/1; sceGxmDisplayQueueAddEntry 812B1720 1; VdecInitLibrary 812B21A0 1; Trophy SetupDialog 1-9. WaitEventFlag exceeds SetEventFlag by ~2.25M -> lost wakeups. FIX 18.4464: case 0x812B2800u merged with case 0x812B2830u (LockLwMutex shared body). 2.5M smoke out2m_m999lwmlockcb.txt: binit_after=816A0BA0, [PREEMPT] 10, exit=0, BADMEM=0. 64M run started out64m_m1000lwmlockcb.txt; NEXT: check page1 progress ([IDR]/[SEQST]/[GXM] BeginScene/[TITLEMOV]/ctr).
+
+LOOKUP: 0x812B2800, 0x3148C6B6, 0x812B2830, 0x812B1720, 0x812B21A0, 0x812B2870, out62m_m998hledump2.txt -> §18.4463 [relevant: HLEDUMP configurable], §18.4462 [relevant: H57M]

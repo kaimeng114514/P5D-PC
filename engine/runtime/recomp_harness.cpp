@@ -1499,6 +1499,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       if (!_lwm_env) { r0 = hle_malloc(64); break; }   // 18.4420: P5D_LWM=0 restores the old (wrong) semantics for A/B isolation
       uint32_t _w = s->r[0]; if (_w) { uint8_t* _p = GP(_w); if (_p) std::memset(_p, 0, 0x20); }
       r0 = 0; break; }
+    case 0x812B2800u:                                                 // 18.4464 M919: sceKernelLockLwMutexCB (NID 0x3148C6B6) - alias of LockLwMutex
     case 0x812B2830u: {                                               // sceKernelLockLwMutex (real lock in host-thread mode, INCLUDING main thread)
       if (g_hostthreads) { uint32_t me = tl_ht_tid ? tl_ht_tid : 0x40010000u; uint32_t w = s->r[0]; auto& e = g_lwm_real[w];
         for (;;) { if (e.first == 0u || e.first == me || g_shutdown) break; if (!g_fastsleep) std::this_thread::sleep_for(std::chrono::microseconds(200)); }
