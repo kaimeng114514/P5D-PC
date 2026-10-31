@@ -1001,6 +1001,34 @@
 | M983 | §18.4528: **场景页函数反编译 + JOBFORCE2 验证 + 关键洞察（强制完成会跳过 worker 实际工作，导致后续对象缺失）**。`out80m_m1059jobforce2.txt`：`[JOBFORCE]` 仍只 1 次、`[JOBFORCE2]` 0 次 → `FUN_8116f8d2` 在 page1 后续从未以"未完成 job"进入；`[SEQREQ] page=1` 出现后到 n=60.7M 无新 draw/present。同时反编译出 **S0–S5 场景页函数本体**（`scenepages2.txt`）：
 | M984 | §18.4529: **异步 job 执行机制反编译：`FUN_8116f9dc` → `FUN_811dab8c` = app 异步 job 队列派发器（作业节点池/优先级队列/互斥量 DAT_816cd9f0，状态 1=入队/2=运行），worker 回调 0x8116fa5d/0x8116fa67，状态查询 `FUN_8116fa38`→`FUN_811daf12`；运行日志确认 **job 消费者线程存在**（`[JOBQ] consumer q=84857A7C thr=40018000` / `q=8489909C thr=40019000`，线程 40011000/40012000/40013000/40014000 entry=811E68C9，信号量 gfdJobCountSema/gfdJobEmptySema/gfdJobEventFlag），但 fiber 模式下消费者不推进 ⇒ 我们提交的 job 永不完成；`P5D_HOSTTHREADS=1` 试验直接卡死在启动早期（无 FRAMEDUMP/PRESENT）⇒ 真实线程模式当前不可用**。证据：
 | M985 | §18.4530: ★★★★★★ **job worker 真实执行点已反编译 + 实现 `P5D_JOBINLINE`（在强制完成前真正调用 worker 回调，让初始化工作真正发生）**。反编译：`FUN_8116f748(node)` = `DAT_815554c0=node; (*(code*)*node)(); DAT_815554c0=0;` → **job 节点的 [0] 字段就是 worker 回调（无参数调用）**；`FUN_8116f75e(node)` = `DAT_815554c0=node; (**(code**)(node+4))();` → **node[1] = 完成回调**，随后从 DAT_815554c4/c8 链表摘除并释放。job 节点（0x1C 字节）布局：`[0]=worker fn, [1]=completion fn, [2]=arg, [3]=FUN_8116f9dc 返回的池节点指针（完成状态）`。init trophy 提交：worker=`0x81184809`（FUN_81184808→FUN_8102d53c/FUN_8102d544 奖杯初始化）、completion=`0x8118483b`；page1 start 的 initDataRead：worker=`0x81184fff`、completion=`LAB_811850da_1`。**实现（18.4530，job_probes）**：当 `P5D_JOBINLINE=1` 且检测到 job 状态机在等未完成 job（state>=2、job+0xC!=0）时，先读 `node[0]`（worker）并 `call_guest_cb(s, worker, 0, 400000)` 真正执行，再让 JOBFORCE 清 `job+0xC` 推进：
+| M986 | §18.4531: **`P5D_JOBINLINE` 试验结果：worker 回调被递归调用导致挂死——但由此确认「job 执行器本来就在 guest 内运行」**。`out80m_m1061jobinline.txt`：
+```
+[JOBINLINE] job=85B86A1C worker=81184809 completion=8118483B n=59624745 -> invoke
+（之后没有 "returned"，运行挂死；看门狗显示 stuck blk=8116F748，[SNAP] r0=85B846EC r14=8116FA64）
+```
+在挂死前的日志里发现 **job 执行器已真实执行**（既有 [PROC]/[PROCWR]/[STEP]/[EXEC2] 探针）：
+```
+[PROC] exec p=85B42A3C cb0=810274E9 cb1=81027A57 nameptr=0000DFD9 n=1500000
+[PROCWR] a=815554C0 v=85B42A3C blk=8116F748     ← FUN_8116f748 设置当前 job
+[STEP] target=8116FA5C in_table=1 n=1500000 fib=848463A0 lr=811DB24E
+[EXEC2] runner #31 ... r0=846180A0 lr=811DB24E   ← 执行器调用 0x8116fa5c（worker 入口）
+[PROC] exec p=85B846EC cb0=81184FFF cb1=811850DB nameptr=00006A29 n=1500000   ← initDataRead worker 0x81184FFF
+```
+**结论**：
+1) **job 执行器（consumer 循环 0x811DB1F0/0x811DB244 → FUN_8116fa5c → worker）本来就在 guest 内运行**，无需我们内联调用；
+2) `P5D_JOBINLINE` 在 job_probes 里递归 `call_guest_cb` 会把 guest 执行重入到执行器中间 → **挂死**，必须保持关闭（opt-in only）；
+3) 真正要查的是：执行器执行完 worker 后，**完成路径（FUN_8116f75e → completion → job 状态清零）为什么没让 `FUN_8116f8d2` 看到完成**——可能是 completion 回调里的 HLE（free/mutex）语义或 job[3] 清零未发生。
+**新增探针（18.4531，`recomp_harness.cpp` job_probes）**：
+```cpp
+if (pcv==0x8116F748) { node=r0; worker=rd32(node); completion=rd32(node+4); printf("[JOBEXEC] ..."); }
+if (pcv==0x8116F75E) { printf("[JOBDONE] node=%08X n=%u"); }
+```
+编译成功（`[JOBEXEC]`×1 `[JOBDONE]`×1）；已启动探针运行：`P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1`（`out80m_m1062jobprobe.txt`，**不启用 JOBINLINE**）。
+NEXT：读 `[JOBEXEC]/[JOBDONE]` 计数与 node/worker：
+- 若 page1 有 JOBEXEC 无 JOBDONE → 执行器卡在 worker 内（worker 调用的 HLE 阻塞）；
+- 若有 JOBDONE 但状态机未推进 → completion/状态清零路径问题；
+- 据此定位最后一个 job 完成环节。 |
+| §18.4531 | P5D_JOBINLINE test result: recursively invoking the worker callback hangs - but this confirms the job executor ALREADY runs jobs inside the guest. out80m_m1061jobinline.txt: [JOBINLINE] job=85B86A1C worker=81184809 completion=8118483B n=59624745 -> invoke, then no 'returned' and the run hangs (watchdog stuck blk=8116F748, [SNAP] r0=85B846EC r14=8116FA64). Before the hang the existing probes show the job executor really executing: [PROC] exec p=85B42A3C cb0=810274E9 cb1=81027A57 nameptr=0000DFD9 n=1500000; [PROCWR] a=815554C0 v=85B42A3C blk=8116F748 (FUN_8116f748 sets the current job); [STEP] target=8116FA5C in_table=1 n=1500000 fib=848463A0 lr=811DB24E; [EXEC2] runner #31 ... r0=846180A0 lr=811DB24E (executor calls 0x8116fa5c = worker entry); [PROC] exec p=85B846EC cb0=81184FFF cb1=811850DB nameptr=00006A29 n=1500000 (initDataRead worker 0x81184FFF). Conclusions: (1) the job executor (consumer loop 0x811DB1F0/0x811DB244 -> FUN_8116fa5c -> worker) already runs inside the guest, no inline call needed; (2) P5D_JOBINLINE recursively calls call_guest_cb from job_probes which re-enters guest execution into the middle of the executor -> hang, so it must stay off (opt-in only); (3) what really needs investigating is why the completion path (FUN_8116f75e -> completion -> job state zeroing) does not make FUN_8116f8d2 see completion - possibly completion-callback HLE (free/mutex) semantics or job[3] zeroing not happening. Added probes 18.4531 in recomp_harness.cpp job_probes: if(pcv==0x8116F748){ node=r0; worker=rd32(node); completion=rd32(node+4); printf('[JOBEXEC] ...'); } if(pcv==0x8116F75E){ printf('[JOBDONE] node=%08X n=%u'); }. Compiled OK ([JOBEXEC] x1 [JOBDONE] x1); probe run started: P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1 (out80m_m1062jobprobe.txt, JOBINLINE OFF). NEXT: read [JOBEXEC]/[JOBDONE] counts and node/worker: if page1 has JOBEXEC but no JOBDONE the executor is stuck inside the worker (an HLE call blocks); if JOBDONE exists but the state machine does not advance it is the completion/job-state-zeroing path; use that to locate the last job-completion link. |
 ```cpp
 uint32_t _wfn=rd32(job), _cfn=rd32(job+4);
 if (_st>=2 && _js!=0 && _wfn) {
@@ -491683,3 +491711,40 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M985 job worker execution point decompiled + P5D_JOBINLINE implemented. FUN_8116f748(node) = DAT_815554c0=node; (*(code*)*node)(); DAT_815554c0=0; => the job node's [0] field is the worker callback (called with no args). FUN_8116f75e(node) = DAT_815554c0=node; (**(code**)(node+4))(); then unlink from DAT_815554c4/c8 and free => node[1] is the completion callback. Job node (0x1C bytes) layout: [0]=worker fn, [1]=completion fn, [2]=arg, [3]=FUN_8116f9dc-returned pool node pointer (completion state). init trophy submit: worker=0x81184809 (FUN_81184808 -> FUN_8102d53c/FUN_8102d544 trophy init), completion=0x8118483b; page1 start's initDataRead: worker=0x81184fff, completion=LAB_811850da_1. Implementation 18.4530 in job_probes: if P5D_JOBINLINE=1 and state>=2 and job+0xC!=0: _wfn=rd32(job); _cfn=rd32(job+4); if(_wfn){ static std::set<uint32_t> _done; if(_done.insert(_wfn).second){ printf('[JOBINLINE] job=%08X worker=%08X completion=%08X -> invoke'); call_guest_cb(s,_wfn,0u,400000); printf('[JOBINLINE] worker=%08X returned'); } } then the existing JOBFORCE clears job+0xC to advance. Compiled OK (Idle priority; binary contains [JOBINLINE] x2 / [JOBFORCE] x1); verification run P5D_JOBFORCE=1 P5D_JOBINLINE=1 P5D_VDEC=1 P5D_VDECPROBE=1 -> out80m_m1061jobinline.txt. NEXT: [JOBINLINE] worker=81184809 ... returned -> init trophy really completes -> FUN_8116f900(0x81309644/0x81309690) finds the objects -> scene page update returns 1 -> page1 advances (new draws/presents) -> S1_TITLE picture; if the worker needs more HLE (GXM/thread/time) keep filling it in.
 
 LOOKUP: M985, P5D_JOBINLINE, [JOBINLINE], FUN_8116f748, FUN_8116f75e, job node [0]=worker [1]=completion [2]=arg [3]=state, 0x81184809, 0x8118483b, 0x81184fff, LAB_811850da_1, FUN_8102d53c, FUN_8102d544, call_guest_cb, out80m_m1061jobinline.txt -> §18.4529 [relevant: job queue dispatcher], §18.4528 [relevant: scene pages]
+### 18.4531 PORT M986: JOBINLINE 递归挂死 → 确认执行器本就在 guest 内运行
+
+1) `out80m_m1061jobinline.txt`：
+```
+[JOBINLINE] job=85B86A1C worker=81184809 completion=8118483B n=59624745 -> invoke
+（无 "returned" → 挂死；[WD] stuck blk=8116F748，[SNAP] r0=85B846EC r14=8116FA64）
+```
+2) 挂死前日志显示 **job 执行器已在 guest 内真实执行**：
+```
+[PROC] exec p=85B42A3C cb0=810274E9 cb1=81027A57 nameptr=0000DFD9 n=1500000
+[PROCWR] a=815554C0 v=85B42A3C blk=8116F748
+[STEP] target=8116FA5C in_table=1 n=1500000 fib=848463A0 lr=811DB24E
+[EXEC2] runner #31 ... r0=846180A0 lr=811DB24E
+[PROC] exec p=85B846EC cb0=81184FFF cb1=811850DB nameptr=00006A29 n=1500000   ← initDataRead worker
+```
+3) 结论：
+- **执行器（0x811DB1F0/0x811DB244 → FUN_8116fa5c → worker）本来就在 guest 内运行**，不需要内联；
+- `P5D_JOBINLINE` 递归 `call_guest_cb` 造成 guest 执行重入 → 挂死，**保持关闭（opt-in）**；
+- 关键问题变成：**执行器执行完 worker 后的完成路径为什么没让 `FUN_8116f8d2` 看到完成**（completion 回调 0x8116f75e 的 unlink/free/job[3] 清零）。
+4) 新增探针（18.4531）：
+```cpp
+if (pcv == 0x8116F748u) { node=s->r[0]; worker=rd32(node); completion=rd32(node+4);
+    printf("[JOBEXEC] #%d node=%08X worker=%08X completion=%08X n=%u\n",...); }
+if (pcv == 0x8116F75Eu) { printf("[JOBDONE] #%d node=%08X n=%u\n", s->r[0], g_main_n); }
+```
+5) 编译成功（`[JOBEXEC]`/`[JOBDONE]` 各 1）；探针运行：`P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1`（`out80m_m1062jobprobe.txt`，JOBINLINE 关闭）
+NEXT：
+```
+① [JOBEXEC]/[JOBDONE] 计数：page1 有 exec 无 done → worker 内 HLE 阻塞；有 done 但状态机不推进 → completion 状态清零问题
+② 据此修最后一个 job 完成环节
+③ page1 推进 → 新 draw → S1_TITLE 画面
+```
+验证：`out80m_m1061jobinline.txt`、`out80m_m1062jobprobe.txt`（生成中）。
+
+ANTI-FORGETTING ENTRY. Keywords: M986 P5D_JOBINLINE recursion hang - but confirmed the job executor already runs inside the guest. out80m_m1061jobinline.txt: [JOBINLINE] job=85B86A1C worker=81184809 completion=8118483B n=59624745 -> invoke then no 'returned', run hangs ([WD] stuck blk=8116F748, [SNAP] r0=85B846EC r14=8116FA64). Before the hang the existing probes show real execution: [PROC] exec p=85B42A3C cb0=810274E9 cb1=81027A57; [PROCWR] a=815554C0 v=85B42A3C blk=8116F748; [STEP] target=8116FA5C in_table=1 lr=811DB24E; [EXEC2] runner #31; [PROC] exec p=85B846EC cb0=81184FFF cb1=811850DB (initDataRead worker). The executor (0x811DB1F0/0x811DB244 -> FUN_8116fa5c -> worker) already runs in the guest, so inline invocation is unnecessary and harmful (re-entrancy hang) - keep P5D_JOBINLINE off. The real question is why the completion path (FUN_8116f75e -> completion -> job[3] zeroing) does not make FUN_8116f8d2 see completion. Added probes 18.4531: if(pcv==0x8116F748){ node=s->r[0]; worker=rd32(node); completion=rd32(node+4); printf('[JOBEXEC] #%d node=%08X worker=%08X completion=%08X n=%u'); } if(pcv==0x8116F75E){ printf('[JOBDONE] #%d node=%08X n=%u',s->r[0],g_main_n); }. Compiled OK; probe run P5D_JOBFORCE=1 P5D_VDEC=1 P5D_VDECPROBE=1 -> out80m_m1062jobprobe.txt (JOBINLINE off). NEXT: read [JOBEXEC]/[JOBDONE] counts: if page1 has exec but no done the executor is stuck inside the worker (an HLE call blocks); if done exists but the state machine does not advance it is the completion/job-state-zeroing path; fix that final link -> page1 advances -> new draws -> S1_TITLE picture.
+
+LOOKUP: P5D_JOBINLINE, [JOBINLINE], [JOBEXEC], [JOBDONE], FUN_8116f748, FUN_8116f75e, 0x8116fa5c, 0x811DB1F0, 0x811DB244, [PROC], [PROCWR], [STEP], [EXEC2], out80m_m1061jobinline.txt, out80m_m1062jobprobe.txt -> §18.4530 [relevant: job worker], §18.4529 [relevant: job queue]

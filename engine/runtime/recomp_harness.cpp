@@ -1143,6 +1143,15 @@ static void job_probes(uint32_t pcv, RecState* s) {
             _p, s->r[0], s->r[1], s->r[2], s->r[3], s->r[13], g_main_n); fflush(stdout); } } } }
 
 
+  // 18.4531 M986: job executor probes (the executor runs guest jobs via FUN_8116f748 -> worker).
+  { uint32_t _p3 = pcv & ~1u;
+    if (_p3 == 0x8116F748u || _p3 == 0x8116F75Eu) {
+      static int _jc = 0, _jd = 0;
+      uint32_t _node = s->r[0], _wf = 0, _cf = 0;
+      if (_p3 == 0x8116F748u) { if (_node) { uint8_t* _q = GP(_node); if (_q) std::memcpy(&_wf, _q, 4);
+          uint8_t* _q2 = GP(_node + 4u); if (_q2) std::memcpy(&_cf, _q2, 4); }
+        if (_jc++ < 40) { printf("[JOBEXEC] #%d node=%08X worker=%08X completion=%08X n=%u\n", _jc, _node, _wf, _cf, g_main_n); fflush(stdout); } }
+      else { if (_jd++ < 40) { printf("[JOBDONE] #%d node=%08X n=%u\n", _jd, _node, g_main_n); fflush(stdout); } } } }
   // 18.4530 M985: P5D_JOBINLINE - before force-completing a stalled async job, actually INVOKE its worker
   // callback (the 0x1C-byte app job node's [0] field, called with no args by FUN_8116f748) so the real
   // initialization work (e.g. init trophy -> FUN_8102d53c/FUN_8102d544) does happen and the objects later
