@@ -981,6 +981,7 @@ namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot
 namespace p5d { namespace vulkan { void begin_scene_pass(unsigned int colorData, unsigned int w, unsigned int h); void begin_frame(); } }   // 18.4492 M947
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 namespace p5d { namespace vulkan { void update_uniform_buffer(const float* local_to_world, const float* view_proj); } }   // 18.4496 M951
+namespace p5d { namespace vulkan { void update_uniform_buffer_raw(const void* data, unsigned int bytes); void update_fragment_uniform_buffer_raw(const void* data, unsigned int bytes); } }   // 18.4507 M962
 namespace p5d { namespace vulkan { int upload_vertex_stream(const void* data, unsigned int bytes, unsigned int vertex_count); } }   // 18.4498 M953
 static void job_probes(uint32_t pcv, RecState* s) {
   { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
@@ -1499,6 +1500,7 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
       static std::map<uint32_t, uint32_t> _pid2gxp;   // 18.4502 M957: program id -> GXP guest VA
       static std::map<uint32_t, uint32_t> _stm2va;
       static uint32_t _cur_vobj = 0;
+      static uint32_t _cur_v_ubo = 0, _cur_f_ubo = 0, _pend_vout = 0, _pend_fout = 0;   // 18.4507 M962
       if (_abi_man_st < 0) { _abi_man_st = 0;
         const char* _d = getenv("P5D_SPV_DIR"); _abi_spvdir = _d ? _d : "C:/dev/p5d_build/spv_all";
         std::string _mp = _abi_spvdir + "/gxp_manifest.txt";
@@ -1770,6 +1772,13 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
             }
             if (!_ok) break;
           }
+          // 18.4507 M962: upload the engine-written default uniform buffers (real VS was receiving zeros)
+          if (_cur_v_ubo) { uint8_t* _src = GP(_cur_v_ubo); if (_src) { p5d::vulkan::update_uniform_buffer_raw(_src, 0x1000u);
+            static int _un=0; if (_un++<8) { printf("[ABIUBO] upload vert ubo=%08X first=(%.3f,%.3f,%.3f,%.3f) n=%u\n", _cur_v_ubo,
+              ((float*)_src)[0], ((float*)_src)[1], ((float*)_src)[2], ((float*)_src)[3], g_main_n); fflush(stdout); } } }
+          if (_cur_f_ubo) { uint8_t* _src = GP(_cur_f_ubo); if (_src) { p5d::vulkan::update_fragment_uniform_buffer_raw(_src, 0x1000u);
+            static int _un2=0; if (_un2++<8) { printf("[ABIUBO] upload frag ubo=%08X first=(%.3f,%.3f,%.3f,%.3f) n=%u\n", _cur_f_ubo,
+              ((float*)_src)[0], ((float*)_src)[1], ((float*)_src)[2], ((float*)_src)[3], g_main_n); fflush(stdout); } } }
           if (_ok) {
             int _rr = p5d::vulkan::upload_vertex_stream(_vtx.data(), (unsigned)(_vc*128u), _vc);
             static int _vn=0; if (_vn++<8) { printf("[ABIVTX] vc=%u attrs=%u rc=%d n=%u v0=(%.3f,%.3f,%.3f,%.3f) v1=(%.3f,%.3f,%.3f,%.3f)\n",
@@ -1777,8 +1786,15 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
           } else { static int _fn=0; if (_fn++<6) { printf("[ABIVTX] FAIL vc=%u attrs=%u cur_obj=%08X streams=%zu n=%u\n", _vc,(unsigned)_av.size(),_cur_vobj,_stm2va.size(),g_main_n); fflush(stdout); } }
         }
       }
+      // 18.4507 M962: capture the reserved default UBO out-pointer, read its value after dispatch
+      if (strstr(_ge->name, "ReserveVertexDefaultUniformBuffer")) { _pend_vout = s->r[1]; }
+      if (strstr(_ge->name, "ReserveFragmentDefaultUniformBuffer")) { _pend_fout = s->r[1]; }
       auto _t0 = std::chrono::steady_clock::now();
       uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk);
+      if (_pend_vout) { uint32_t _va = 0; uint8_t* _q = GP(_pend_vout); if (_q) std::memcpy(&_va, _q, 4);
+        if (_va) { _cur_v_ubo = _va; static int _n=0; if (_n++<8) { printf("[ABIUBO] vert ubo=%08X n=%u\n", _va, g_main_n); fflush(stdout); } } _pend_vout = 0; }
+      if (_pend_fout) { uint32_t _va = 0; uint8_t* _q = GP(_pend_fout); if (_q) std::memcpy(&_va, _q, 4);
+        if (_va) { _cur_f_ubo = _va; static int _n=0; if (_n++<8) { printf("[ABIUBO] frag ubo=%08X n=%u\n", _va, g_main_n); fflush(stdout); } } _pend_fout = 0; }
       { auto _t1 = std::chrono::steady_clock::now(); long long _us = std::chrono::duration_cast<std::chrono::microseconds>(_t1-_t0).count();
         static int _slow = 0; if (_us > 3000 && _slow++ < 80) { printf("[GXMSLOW] %s va=%08X took=%lld us blk=%08X n=%u r0=%08X r1=%08X lr=%08X\n", _ge->name, stub_va, _us, g_cur_block, g_main_n, s->r[0], s->r[1], s->r[14]); fflush(stdout); } }
       { static int _gxrv=0; if (_rv != 0u && _gxrv++ < 80) { printf("[GXMRV] blk=%08X va=%08X nid=%08X name=%s rv=%08X r0=%08X r1=%08X r2=%08X r3=%08X lr=%08X\n", g_cur_block, stub_va, _ge->nid, _ge->name, _rv, s->r[0], s->r[1], s->r[2], s->r[3], s->r[14]); fflush(stdout); } }

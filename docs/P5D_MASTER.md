@@ -977,6 +977,38 @@
 | M959 | §18.4504: **找到 GXP 参数表解析一直无结果的 bug：`pbase = 0x28 + parameter_offset` 是 **GXP 文件内偏移**，但代码里却用 `GP(_pbase + i*16)` 把它当 **guest VA** 去翻译 → 永远返回 null → 循环立即 break → 既无 `[ABIGXPP] P[]` 也无属性项。已修复为 `_g + _pbase + i*16`（`_g` 是 GXP 的 host 指针），并加 GXP size 边界检查、name 指针用 `_g + offset`。** `out62m_m1040gxpp.txt` 证据：
 | M960 | §18.4505: ★★★★★★★ **重大突破：GXP 参数表解析成功（M959 修复偏移 bug 后），拿到所有顶点程序的**真实属性名/类型/分量数**；并且定位到 attrCount=0 的**最终原因**：引擎自己用 `GetProgramFromId`/`FindParameterByName` 构建 `SceGxmVertexAttribute[]`，而这两个 API 一直返回 0（STUB）→ 引擎只能生成 0 个属性。已实现 **GXM 程序 introspection HLE**（GetProgramFromId 返回 GXP VA；FindParameterByName/Semantic 返回 GXP 内参数项 guest VA；GetCategory/GetResourceIndex 从参数项读字段）**。证据：
 | M961 | §18.4506: ★★★★★★★★ **introspection HLE 生效！引擎成功构建真实顶点属性表：`[ABIVARG] r3`（attrCount）从 0 变为 1/2/3，`[ABIVFMT] attrN=1/2/3`，且格式与 stride 完全自洽：`attr0 fmt=9(F32) comps=3 → 12B`、`attr1 fmt=8(F16) comps=3 → 6B`、`stride=12/18/26` 精确吻合（12 / 12+6 / 12+6+8）**。同时修正属性解码映射为 **vitasdk 真实 `SceGxmAttributeFormat` 枚举**（0=U8,1=S8,2=U16,3=S16,4=U8N,5=S8N,6=U16N,7=S16N,8=F16,9=F32,10=FIXED）。证据（`out62m_m1042introspect.txt`）：
+| M962 | §18.4507: ★★★★★★★ **page1 真实绘制序列完整打通：`sceGxmSetVertexProgram(8540C000)` → `sceGxmSetFragmentProgram(8540C040)` → `sceGxmSetVertexStream(0, 0x8E500000)` → `sceGxmDraw`（索引 3 个顶点）；`[ABIVTX]` 首次成功解包真实顶点数据：`vc=3 attrs=1 rc=0 v0=(-1,-1,1) v1=(3,-1,1)`（**全屏背景三角形**），`[ABIIDX] icount=3 maxvc=3`；但 RT 仍黑——原因定位为：**真实顶点着色器需要真实默认 UBO，而我们 ReserveVertex/FragmentDefaultUniformBuffer 返回的 guest UBO 内容从未上传到 Vulkan（后端 update_uniform_buffer* 系列无人调用）**。已实现默认 UBO 捕获+上传。** 证据（`out62m_m1043realtri.txt`）：
+```
+[ABIRD] ... 
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59586560
+[ABIVP] SetVertexProgram obj=8540C000 n=59586560
+[GXMABI] sceGxmSetVertexProgram va=812B12E0 r1=8540C000 lr=811EFDCA
+[GXMABI] sceGxmSetFragmentProgram va=812B1560 r1=8540C040 lr=811F0526
+[ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59586560
+[ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3 n=59586560
+[ABIVTX] vc=3 attrs=1 rc=0 n=59586560 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+RT STATS: mean=0.00 max=0 (0,0,0) 100%      ← 仍黑（UBO 未上传 → 真实 VS 输出 w=0）
+```
+分析：
+1) `ReserveVertexDefaultUniformBuffer(0x812B14F0)` 的 M929 实现会分配 0x1000 guest UBO 并写回 out 指针，引擎把 uniform 数据（`mtxLocalToWorld`/`mtxViewProj` 等）写进该 guest 缓冲；
+2) 但后端从未调用 `update_uniform_buffer_raw`/`update_fragment_uniform_buffer_raw` → Vulkan UBO 全 0 → 真实顶点着色器把 (x,y,z) 变成 w=0 → 三角形退化 → 零像素。
+**实现（18.4507）**：
+```cpp
+static uint32_t _cur_v_ubo=0,_cur_f_ubo=0,_pend_vout=0,_pend_fout=0;
+// 调用前记录 out 指针，dispatch 后读回 VA：
+if (strstr(name,"ReserveVertexDefaultUniformBuffer"))  _pend_vout = s->r[1];
+if (strstr(name,"ReserveFragmentDefaultUniformBuffer")) _pend_fout = s->r[1];
+... dispatch ...
+if (_pend_vout) { uint32_t va=*(u32*)GP(_pend_vout); if(va) _cur_v_ubo=va; printf("[ABIUBO] vert ubo=%08X"); }
+if (_pend_fout) { ... _cur_f_ubo=va; printf("[ABIUBO] frag ubo=%08X"); }
+// draw 时上传：
+if (_cur_v_ubo) { uint8_t* src=GP(_cur_v_ubo); if(src) update_uniform_buffer_raw(src, 0x1000); printf("[ABIUBO] upload vert ubo first=(...) "); }
+if (_cur_f_ubo) { ... update_fragment_uniform_buffer_raw(src, 0x1000); }
+```
+编译链接成功（二进制含 `[ABIUBO]`）；已启动 62M 决战运行（`out62m_m1044real.txt`：真实顶点+真实 UBO+真实着色器，无红 FS）。
+NEXT：若 RT 出现真实内容 → **游戏真实画面首次出现**！若仍黑 → 检查 UBO 布局（GXM std140 16B 步长/资源索引偏移）与顶点着色器期望的 binding。 |
+| §18.4507 | page1's real draw sequence is fully connected: sceGxmSetVertexProgram(8540C000) -> sceGxmSetFragmentProgram(8540C040) -> sceGxmSetVertexStream(0, 0x8E500000) -> sceGxmDraw (3 indexed vertices); [ABIVTX] successfully unpacked real vertex data for the first time: vc=3 attrs=1 rc=0 v0=(-1,-1,1) v1=(3,-1,1) (a full-screen background triangle), [ABIIDX] icount=3 maxvc=3; but the RT is still black - localized to: the real vertex shader needs the real default UBO, and the guest UBO returned by ReserveVertex/FragmentDefaultUniformBuffer was never uploaded to Vulkan (nobody called the backend update_uniform_buffer* functions). Implemented default UBO capture+upload. Evidence (out62m_m1043realtri.txt): [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59586560; [ABIVP] SetVertexProgram obj=8540C000 n=59586560; [GXMABI] sceGxmSetVertexProgram va=812B12E0 r1=8540C000 lr=811EFDCA; [GXMABI] sceGxmSetFragmentProgram va=812B1560 r1=8540C040 lr=811F0526; [ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59586560; [ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3 n=59586560; [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1,-1,1,0) v1=(3,-1,1,0); [PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS); RT STATS mean=0.00 max=0 (0,0,0) 100% (still black because the real VS outputs w=0 with a zero UBO). Analysis: (1) ReserveVertexDefaultUniformBuffer (0x812B14F0, M929 impl) allocates a 0x1000 guest UBO and writes the pointer back via out; the engine writes uniforms (mtxLocalToWorld/mtxViewProj etc.) into that guest buffer; (2) the backend never called update_uniform_buffer_raw/update_fragment_uniform_buffer_raw -> the Vulkan UBO stays zero -> the real vertex shader maps (x,y,z) to w=0 -> degenerate triangle -> zero pixels. Implementation 18.4507: static _cur_v_ubo/_cur_f_ubo/_pend_vout/_pend_fout; before dispatch record the out pointer for ReserveVertexDefaultUniformBuffer/ReserveFragmentDefaultUniformBuffer, after dispatch read the VA back (*(u32*)GP(out)) printing [ABIUBO] vert/frag ubo; at draw time upload: if (_cur_v_ubo) update_uniform_buffer_raw(GP(_cur_v_ubo), 0x1000) printing [ABIUBO] upload vert ubo with the first 4 floats; same for fragment with update_fragment_uniform_buffer_raw. Build+link OK (binary contains [ABIUBO]); 62M decisive run started (out62m_m1044real.txt: real vertices + real UBO + real shaders, no red FS). NEXT: if the RT shows real content, GAME'S REAL PICTURE APPEARS FOR THE FIRST TIME; if still black check the UBO layout (GXM std140 16B stride / resource index offsets) and the binding the vertex shader expects. |
 ```
 [ABIPROG] GetProgramFromId id=8540B000 -> gxp=81539944
 [ABIPARAM] BySem prog=81539944 sem=11 idx=0 -> vertex.position -> 81539A24
@@ -489682,3 +489714,45 @@ color    = U8N×4
 ANTI-FORGETTING ENTRY. Keywords: M961 introspection HLE works - the engine now builds real vertex attribute tables: [ABIVARG] r3 (attrCount) went 0 -> 1/2/3, [ABIVFMT] attrN=1/2/3, formats consistent with strides: attr0 fmt=9(F32) comps=3 -> 12B; attr1 fmt=8(F16) comps=3 -> 6B; stride 12/18/26 = 12 / 12+6 / 12+6+8. Real vitasdk SceGxmAttributeFormat enum: 0=U8(1B),1=S8(1B),2=U16(2B),3=S16(2B),4=U8N(1B),5=S8N(1B),6=U16N(2B),7=S16N(2B),8=F16(2B),9=F32(4B),10=FIXED(4B) - matches old host _fsz[11]={1,1,2,2,1,1,2,2,2,4,4}. Evidence out62m_m1042introspect.txt: [ABIPROG] GetProgramFromId id=8540B000 -> gxp=81539944; [ABIPARAM] BySem prog=81539944 sem=11 idx=0 -> vertex.position -> 81539A24; [ABIVARG] obj=8540C000 r0=85410040 r1=8540B000 r2=84856114 r3=00000001; [ABIVFMT] obj=8540C000 attrN=1 streamN=1; attr0 stream=0 off=0 fmt=9 comps=3; strm0 stride=12; obj=8540C080 attrN=2 attr0 fmt=9 comps=3 off=0 attr1 fmt=8 comps=3 off=12 stride=18; obj=8540C100 attrN=3 attr2 off=18 stride=26. Attribute format distribution: (F16,2)x4395 (F32,3)x3232 (F16,3)x3225 (U8N,4)x2882 (U8,4)x1929 (F32,2)x16 (F32,4)x4. FIX 18.4506: abi_decode_attr rewritten with the real enum (0=U8,1=S8,2=U16,3=S16,4=U8N/255,5=S8N/127,6=U16N/65535,7=S16N/32767,8=F16 half->float,9=F32,10=FIXED/65536). Build+link OK; 62M run started out62m_m1043realtri.txt (real shaders+red FS). NEXT: page1's indexed draw triggers [ABIVTX] unpacking of real vertices (position F32x3, texcoord F16x2/3, color U8Nx4) -> REAL GAME GEOMETRY in the RT (painted red) -> then switch to the real FS (needs uniforms first).
 
 LOOKUP: [ABIVARG] r3, [ABIVFMT], SceGxmAttributeFormat, abi_decode_attr, _fsz[11], out62m_m1043realtri.txt -> §18.4505 [relevant: introspection HLE], §18.4500 [relevant: vertex capture]
+### 18.4507 PORT M962: 真实顶点解包成功（全屏三角形）+ 默认 UBO 捕获/上传实现
+
+1) `out62m_m1043realtri.txt` page1 完整绘制序列：
+```
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59586560
+[ABIVP] SetVertexProgram obj=8540C000 n=59586560
+[GXMABI] sceGxmSetVertexProgram va=812B12E0 r1=8540C000 lr=811EFDCA
+[GXMABI] sceGxmSetFragmentProgram va=812B1560 r1=8540C040 lr=811F0526
+[ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59586560
+[ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3 n=59586560
+[ABIVTX] vc=3 attrs=1 rc=0 n=59586560 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000)
+[PRESENT] #1 imgIdx=0 result=0(VK_SUCCESS)
+RT STATS: mean=0.00 max=0 (0,0,0) 100%
+```
+→ **真实顶点数据已被正确解包**：全屏三角形 (-1,-1,1) / (3,-1,1) / ...，索引 3 个，stride/格式自洽。
+
+2) 仍黑原因：
+- 引擎通过 `sceGxmReserveVertexDefaultUniformBuffer`(0x812B14F0)/`ReserveFragment...` 拿到 guest UBO（0x1000 字节）并写入 uniform（`mtxLocalToWorld`/`mtxViewProj` 等）；
+- 但后端 `update_uniform_buffer*` 从未被调用 → Vulkan UBO 全 0；
+- 真实 VS 用 0 矩阵变换 → w=0 → 三角形退化 → 零像素。
+
+3) 实现（18.4507，`recomp_harness.cpp`）：
+```cpp
+static uint32_t _cur_v_ubo=0, _cur_f_ubo=0, _pend_vout=0, _pend_fout=0;   // 18.4507 M962
+if (strstr(_ge->name,"ReserveVertexDefaultUniformBuffer"))   _pend_vout = s->r[1];
+if (strstr(_ge->name,"ReserveFragmentDefaultUniformBuffer")) _pend_fout = s->r[1];
+... uint32_t _rv = gxm_abi_dispatch(stub_va, s->r, _stk); ...
+if (_pend_vout) { uint32_t _va=0; uint8_t* _q=GP(_pend_vout); if(_q) std::memcpy(&_va,_q,4);
+  if (_va) { _cur_v_ubo=_va; printf("[ABIUBO] vert ubo=%08X\n", _va); } _pend_vout=0; }
+if (_pend_fout) { ... _cur_f_ubo=_va; printf("[ABIUBO] frag ubo=%08X\n", _va); _pend_fout=0; }
+// draw 时：
+if (_cur_v_ubo) { uint8_t* _src=GP(_cur_v_ubo); if(_src) p5d::vulkan::update_uniform_buffer_raw(_src, 0x1000u); }
+if (_cur_f_ubo) { uint8_t* _src=GP(_cur_f_ubo); if(_src) p5d::vulkan::update_fragment_uniform_buffer_raw(_src, 0x1000u); }
+```
+4) 编译链接成功（含 `[ABIUBO]`）；已启动 62M 决战运行：`out62m_m1044real.txt`
+   （真实顶点 + 真实 UBO + 真实着色器，**不启用红 FS**）。
+NEXT：RT 出现真实内容 ⇒ **游戏真实画面首次出现**；若仍黑 → 检查 UBO 布局（GXM std140 / 资源索引偏移）与 VS 期望 binding。
+验证：`out62m_m1043realtri.txt`、`out62m_m1044real.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M962 page1's real draw sequence fully connected: [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 n=59586560; [ABIVP] SetVertexProgram obj=8540C000; [GXMABI] sceGxmSetVertexProgram va=812B12E0 r1=8540C000 lr=811EFDCA; [GXMABI] sceGxmSetFragmentProgram va=812B1560 r1=8540C040 lr=811F0526; [ABIVS] sceGxmSetVertexStream idx=0 va=8E500000 n=59586560; [ABIIDX] icount=3 itype=0 idata=8E600000 maxvc=3; [ABIVTX] vc=3 attrs=1 rc=0 v0=(-1.000,-1.000,1.000,0.000) v1=(3.000,-1.000,1.000,0.000) (full-screen background triangle, real vertex data unpacked successfully for the first time); [PRESENT] #1 result=0; RT STATS mean=0.00 max=0 (still black). Root cause: the engine writes uniforms (mtxLocalToWorld/mtxViewProj etc.) into the 0x1000 guest UBO returned by sceGxmReserveVertexDefaultUniformBuffer (0x812B14F0) / ReserveFragmentDefaultUniformBuffer, but the backend update_uniform_buffer*/update_fragment_uniform_buffer_raw were never called, so the Vulkan UBO stayed zero -> the real VS outputs w=0 -> degenerate triangle -> zero pixels. FIX 18.4507 in recomp_harness.cpp: static uint32_t _cur_v_ubo=0,_cur_f_ubo=0,_pend_vout=0,_pend_fout=0; before dispatch record the out pointer for ReserveVertexDefaultUniformBuffer/ReserveFragmentDefaultUniformBuffer; after dispatch read the VA back via *(u32*)GP(out) and store _cur_v_ubo/_cur_f_ubo printing [ABIUBO]; at draw time upload if (_cur_v_ubo) update_uniform_buffer_raw(GP(_cur_v_ubo), 0x1000) and if (_cur_f_ubo) update_fragment_uniform_buffer_raw(GP(_cur_f_ubo), 0x1000) printing [ABIUBO] upload with the first 4 floats. Build+link OK (binary contains [ABIUBO]); 62M decisive run started out62m_m1044real.txt (real vertices + real UBO + real shaders, no red FS). NEXT: if the RT shows real content the GAME'S REAL PICTURE APPEARS FOR THE FIRST TIME; if still black check the UBO layout (GXM std140 16B stride/resource index offsets) and the expected binding.
+
+LOOKUP: [ABIVTX], [ABIIDX], [ABIVP], sceGxmReserveVertexDefaultUniformBuffer, 0x812B14F0, update_uniform_buffer_raw, update_fragment_uniform_buffer_raw, [ABIUBO], out62m_m1044real.txt -> §18.4506 [relevant: real attribute tables], §18.4499 [relevant: first rendered frame]
