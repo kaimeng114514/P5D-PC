@@ -968,6 +968,36 @@
 | M950 | §18.4495: ★★★★★★★ **ColorSurfaceInit 真实实现生效：surface 结构被正确填充（`w=960 h=544 stride=1024 data=8D300000`），且启动期不再 stall。** 3M 冒烟（`out3m_m1033smoke.txt`）：
 | M951 | §18.4496: ★★★★★★ **红 FS + ColorSurfaceInit 验证结果：渲染架构修正生效（`[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544`、`[DRAWST] rp=非空`、viewport 正常 `0,0,960,544`、`[ENDPASS] cd=8D300000`、`[CPYIMG]`、`[PRESENT] result=0`），但 RT 仍全黑 → 定位为：顶点 uniform 全 0（RINIT 零表）导致真实顶点着色器把每个顶点算到 w=0 → 无片元 → 红 FS 也画不出来**。证据（`out62m_m1033rtred.txt`）：
 | M952 | §18.4497: ★★★★★★★★ **重大发现：后端的 `P5D_ZFORCE` 开关注释里记录着上一个项目的"零像素"真凶——顶点变换后 `z > w`（超出 Vulkan 裁剪体 0≤Zc≤Wc），depthClampEnable=FALSE 时整个三角形被裁掉 → 即使管线/绑定/视口全对也一个像素都不写！** 关键原文（`vulkan_backend.cpp` 注释）：
+| M953 | §18.4498: ★★★★★★ **找到"内置 VS + 红 FS 仍黑"的原因：真实管线的顶点输入布局与测试三角形不匹配——`get_or_create_real_pipeline` 的 `vi` 是「单 binding stride=128（8×vec4），location 0..7 全部 R32G32B32A32」，而 `create_vertex_buffer` 里的 `test_triangle` 只有 28 字节步长 → 按 stride 128 读到的 vertex 1/2 全是垃圾 → 三角形退化/出屏**。证据（`out62m_m1035redz.txt`）：
+```
+err: [REALVS-BUILTIN] passthrough vertex module ready
+err: [REALFS-RED] red diagnostic fragment module ready
+err: [ZFORCE] 0                                          ← ZFORCE 代码在旧 host 顶点解包路径里，本项目未走到
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[DRAWST] #1 vc=3 ... vbuf=... rp=非空 vp=0,0,960,544
+RT STATS: mean=0.00 max=0 (0,0,0) 100%                   ← 仍黑
+```
+后端源码（`vulkan_backend.cpp` get_or_create_real_pipeline）：
+```cpp
+// 【h141】真实顶点流：单 binding stride=128(8*vec4)，location0..7 统一 R32G32B32A32；
+// n_draw 按每程序属性表把顶点 CPU 解包成 per-location vec4(loc0=position,loc1=color,loc2=texcoord...)，缺省补0。
+VkVertexInputBindingDescription vib{}; vib.binding=0; vib.stride=128; ...
+VkVertexInputAttributeDescription via[8]{}; for (_li=0..7){ via[_li].location=_li; format=R32G32B32A32_SFLOAT; offset=_li*16; }
+```
+而 `create_vertex_buffer()` 写入的是 28 字节步长的 `test_triangle`（{-0.5,-0.5,0,1, 1,0,0} 等）。
+**实验（18.4498）**：在首次真实 draw 前用后端 `upload_vertex_stream` 上传符合真实布局的测试三角形：
+```cpp
+static float _tv[3*32];                        // 3 verts * 128 bytes
+static const float _pos[3][4] = {{-0.5,-0.5,0,1},{0.5,-0.5,0,1},{0,0.5,0,1}};
+static const float _col[3][4] = {{1,0,0,1},{0,1,0,1},{0,0,1,1}};
+for (_i=0..2) { memcpy(&_tv[_i*32+0], _pos[_i], 16); memcpy(&_tv[_i*32+4], _col[_i], 16); }
+p5d::vulkan::upload_vertex_stream(_tv, sizeof(_tv), 3u);   // 384 bytes, 3 verts
+printf("[ABITRI] upload_vertex_stream rc=%d (stride128,3 verts)\n", _rr);
+```
++ `P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red`（z=0 天然合法，无需 ZFORCE）。
+编译链接成功（二进制含 `[ABITRI]`）；已启动 62M 运行（`out62m_m1036tri.txt`）。
+NEXT：RT 变红 ⇒ 光栅化/管线/呈现彻底打通 → 转入**真实 GXM 顶点流解包**（按程序属性表把 guest VA 数据解包成 128 字节步长的 per-location vec4）+ 真实 uniform + 纹理。 |
+| §18.4498 | Found why builtin-VS + red-FS was still black: the real pipeline's vertex input layout does not match the test triangle - get_or_create_real_pipeline's vi is ONE binding with stride=128 (8 x vec4), locations 0..7 all R32G32B32A32, while create_vertex_buffer's test_triangle has a 28-byte stride -> reading with stride 128 makes vertices 1/2 garbage -> degenerate/off-screen triangle. Evidence (out62m_m1035redz.txt): err [REALVS-BUILTIN] passthrough vertex module ready; err [REALFS-RED] red diagnostic fragment module ready; err [ZFORCE] 0 (the ZFORCE code lives in the old host vertex-unpack path which this project never reaches); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] #1 vc=3 ... vbuf=... rp non-null vp=0,0,960,544; RT STATS mean=0.00 max=0 (0,0,0) 100% (still black). Backend source (vulkan_backend.cpp get_or_create_real_pipeline): 'h141 real vertex stream: one binding stride=128 (8*vec4), locations 0..7 all R32G32B32A32; n_draw unpacks vertices on the CPU per program attribute table into per-location vec4 (loc0=position, loc1=color, loc2=texcoord...), missing ones zeroed.' VkVertexInputBindingDescription vib{}; vib.binding=0; vib.stride=128; VkVertexInputAttributeDescription via[8]{}; for _li=0..7 { via[_li].location=_li; format=R32G32B32A32_SFLOAT; offset=_li*16; }. But create_vertex_buffer() writes the 28-byte-stride test_triangle. EXPERIMENT 18.4498: before the first real draw upload a layout-correct test triangle via backend upload_vertex_stream: static float _tv[3*32]; static const float _pos[3][4]={{-0.5,-0.5,0,1},{0.5,-0.5,0,1},{0,0.5,0,1}}; static const float _col[3][4]={{1,0,0,1},{0,1,0,1},{0,0,1,1}}; for _i=0..2 { memcpy(&_tv[_i*32+0],_pos[_i],16); memcpy(&_tv[_i*32+4],_col[_i],16); } p5d::vulkan::upload_vertex_stream(_tv,sizeof(_tv),3u); printf('[ABITRI] upload_vertex_stream rc=%d (stride128,3 verts)\n',_rr); with P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red (z=0 is naturally legal, no ZFORCE needed). Build+link OK (binary contains [ABITRI]); 62M run started (out62m_m1036tri.txt). NEXT: if the RT turns red then rasterization/pipeline/present are fully proven and work moves to real GXM vertex stream unpacking (per program attribute table, guest VA data -> 128-byte-stride per-location vec4) + real uniforms + textures. |
 ```
 // h144k34【深度裁剪归因实验——本轮找到的"零像素"根因验证】
 //   [VREAD] 已证明顶点数据、索引、绑定偏移、管线描述符全部正确，[DYNSTATE] 证明 viewport/scissor 正常。
@@ -489054,3 +489084,40 @@ NEXT：读 RT BMP 颜色；变红后：
 ANTI-FORGETTING ENTRY. Keywords: M952 the backend's P5D_ZFORCE comments record the previous project's real 'zero pixels' culprit: after vertex transform z>w (outside Vulkan clip volume 0<=Zc<=Wc); with depthClampEnable=FALSE the whole triangle is clipped away, so even with correct pipeline/binding/viewport no pixel is written. Original text (h144k34) in vulkan_backend.cpp: [VREAD] proved vertex data/indices/binding/pipeline descriptors correct, [DYNSTATE] viewport/scissor normal, but decoding the bound vertices showed z>w: vert_0015 loc0=(288.9,165.7,2.125,1.0) z_ndc=2.125; vert_0014 loc0=(-1,-1,2.0,1.0)..(1,1,2.0) z_ndc=2.0; Vulkan spec 27.3 clips primitives to 0<=Zc<=Wc when depthClampEnable=FALSE -> entire triangle discarded. Switch: P5D_ZFORCE=w -> z=w (z_ndc=1.0); P5D_ZFORCE=<float> -> z=constant. This matches our current out62m_m1034uni.txt (identity uniforms active, rp/viewport all correct, red FS still black). The backend also has P5D_DBG_VS_BUILTIN=1 (passthrough vertex shader), P5D_DIAG_FS_IN=1 (debug fragment showing varying/Input Location 0), P5D_FORCE_UBO (fill binding0 UBO with a color to find which binding the fragment reads). Historical comments also record the previous project once achieved a fully red screen with red-FS (geometry/blend/depth/present all correct) and then was stuck on 'app's own fragment shader outputs black (varying/location semantics, texture sampling)'. DECISIVE EXPERIMENT 18.4497: rerun 62M with P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red P5D_ZFORCE=w -> built-in VS outputs the test triangle (-0.5..0.5) + red FS + legal z -> RT should turn red; if red rasterization/pipeline/present are fully proven and remaining work is real uniform/vertex/texture upload. 62M run started out62m_m1035redz.txt. NEXT: read RT BMP color; once red: (1) fold the ZFORCE fix into real rendering (or ensure uploaded MVP matrices produce legal z); (2) real uniform (sceGxmSetUniformDataF/Precomputed versions) + vertex stream upload; (3) texture upload ([TEXBIND] dummy=16 -> real textures).
 
 LOOKUP: P5D_ZFORCE, P5D_DBG_VS_BUILTIN, P5D_REALFS, P5D_DIAG_FS_IN, P5D_FORCE_UBO, depthClampEnable, 0<=Zc<=Wc, out62m_m1034uni.txt, out62m_m1035redz.txt -> §18.4496 [relevant: identity uniform experiment], §18.4492 [relevant: render architecture]
+### 18.4498 PORT M953: 真实管线顶点布局 stride=128/8×vec4 —— 测试三角形不匹配是"红 FS 仍黑"的原因
+
+1) `out62m_m1035redz.txt`（内置 passthrough VS + 红 FS）：
+```
+err: [REALVS-BUILTIN] passthrough vertex module ready
+err: [REALFS-RED] red diagnostic fragment module ready
+err: [ZFORCE] 0                                        <- ZFORCE 在旧 host 解包路径里，本项目未走到
+[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+[DRAWST] #1 vc=3 inst=1 first=0 pipe=... inrp=1 vcnt=3 vbuf=...
+         vp=0.0,0.0,960.0,544.0 sc=0,0,960,544 rp=000001abc5dc7750
+RT STATS: mean=0.00 max=0 (0,0,0) 100%                 <- 仍黑
+```
+2) 后端真实管线顶点输入（`vulkan_backend.cpp` get_or_create_real_pipeline）：
+```cpp
+// 【h141】真实顶点流：单 binding stride=128(8*vec4)，location0..7 统一 R32G32B32A32；
+// n_draw 按每程序属性表把顶点 CPU 解包成 per-location vec4(loc0=position,loc1=color,loc2=texcoord...)
+VkVertexInputBindingDescription vib{}; vib.binding=0; vib.stride=128; ...
+VkVertexInputAttributeDescription via[8]{}; for(_li=0..7){ via[_li].location=_li; format=R32G32B32A32_SFLOAT; offset=_li*16; }
+```
+但 `create_vertex_buffer()` 写的是 **28 字节步长的 test_triangle** → 按 stride 128 解出的顶点 1/2 是垃圾。
+3) 实验（18.4498）：首次真实 draw 前上传 **符合 128 字节布局**的测试三角形：
+```cpp
+static float _tv[3 * 32];
+static const float _pos[3][4] = {{-0.5f,-0.5f,0.f,1.f},{0.5f,-0.5f,0.f,1.f},{0.f,0.5f,0.f,1.f}};
+static const float _col[3][4] = {{1.f,0.f,0.f,1.f},{0.f,1.f,0.f,1.f},{0.f,0.f,1.f,1.f}};
+for (int _i = 0; _i < 3; ++_i) { memcpy(&_tv[_i*32+0], _pos[_i], 16); memcpy(&_tv[_i*32+4], _col[_i], 16); }
+p5d::vulkan::upload_vertex_stream(_tv, sizeof(_tv), 3u);
+printf("[ABITRI] upload_vertex_stream rc=%d (stride128,3 verts) n=%u\n", _rr, g_main_n);
+```
+4) 运行参数：`P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red`（z=0 天然合法）。
+5) 编译链接成功（含 `[ABITRI]`）；已启动 62M 运行：`out62m_m1036tri.txt`。
+NEXT：变红 ⇒ 光栅化/管线/呈现彻底打通 → 真实 GXM 顶点流解包（程序属性表 → 128B/loc vec4）+ 真实 uniform + 纹理。
+验证：`out62m_m1035redz.txt`、`out62m_m1036tri.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M953 builtin-VS + red-FS still black because the real pipeline's vertex input layout does not match the test triangle: get_or_create_real_pipeline's vi uses ONE binding with stride=128 (8 x vec4) and locations 0..7 all R32G32B32A32 (offset=_li*16), while create_vertex_buffer's test_triangle has a 28-byte stride -> reading with stride 128 makes vertices 1/2 garbage -> degenerate/off-screen triangle. Evidence out62m_m1035redz.txt: [REALVS-BUILTIN] passthrough vertex module ready; [REALFS-RED] ready; [ZFORCE] 0 (ZFORCE code lives in the old host vertex-unpack path, not reached here); [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544; [DRAWST] vc=3 inrp=1 rp non-null vp=0,0,960,544; RT STATS mean=0.00 max=0 (0,0,0) 100%. Backend comment h141: 'real vertex stream: one binding stride=128 (8*vec4), locations 0..7 all R32G32B32A32; n_draw unpacks vertices on the CPU per program attribute table into per-location vec4 (loc0=position, loc1=color, loc2=texcoord...), missing ones zeroed.' EXPERIMENT 18.4498: before the first real draw upload a layout-correct test triangle: static float _tv[3*32]; positions {-0.5,-0.5,0,1},{0.5,-0.5,0,1},{0,0.5,0,1}; colors {1,0,0,1},{0,1,0,1},{0,0,1,1}; memcpy pos at _tv[_i*32+0], col at _tv[_i*32+4]; p5d::vulkan::upload_vertex_stream(_tv,sizeof(_tv),3u); printf('[ABITRI] upload_vertex_stream rc=%d (stride128,3 verts) n=%u\n',_rr,g_main_n); with P5D_DBG_VS_BUILTIN=1 P5D_REALFS=red (z=0 naturally legal, no ZFORCE). Build+link OK (binary contains [ABITRI]); 62M run started out62m_m1036tri.txt. NEXT: if the RT turns red then rasterization/pipeline/present are fully proven and work moves to real GXM vertex stream unpacking (guest VA data -> 128-byte-stride per-location vec4 per program attribute table) + real uniforms + textures.
+
+LOOKUP: stride=128, VkVertexInputBindingDescription, get_or_create_real_pipeline, upload_vertex_stream, [ABITRI], P5D_DBG_VS_BUILTIN, out62m_m1036tri.txt -> §18.4497 [relevant: z>w clipping discovery], §18.4496 [relevant: identity uniform experiment]

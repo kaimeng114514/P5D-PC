@@ -952,6 +952,7 @@ namespace p5d { namespace vulkan { void end_scene_pass(); int save_rt_screenshot
 namespace p5d { namespace vulkan { void begin_scene_pass(unsigned int colorData, unsigned int w, unsigned int h); void begin_frame(); } }   // 18.4492 M947
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 namespace p5d { namespace vulkan { void update_uniform_buffer(const float* local_to_world, const float* view_proj); } }   // 18.4496 M951
+namespace p5d { namespace vulkan { int upload_vertex_stream(const void* data, unsigned int bytes, unsigned int vertex_count); } }   // 18.4498 M953
 static void job_probes(uint32_t pcv, RecState* s) {
   { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
 
@@ -1483,6 +1484,17 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
             static int _cn = 0; if (_cn++ < 12) { printf("[ABIGXP] %s obj=%08X gxp=%08X hash=%016llX spv=%s\n", _frag?"frag":"vert", _o, _gxp, (unsigned long long)_h, _it->second.c_str()); fflush(stdout); } } } }
       if (strncmp(_ge->name, "sceGxmDraw", 10) == 0 && !_abi_vspv.empty() && !_abi_fspv.empty()) {   // 18.4483 M938: only real draws (not PrecomputedDrawInit/Size)
         std::string _vp = _abi_spvdir + "/" + _abi_vspv, _fp = _abi_spvdir + "/" + _abi_fspv;
+        // 18.4498 M953: the real pipeline vertex layout is ONE binding with stride 128 (8 x vec4, locations 0..7);
+        // the built-in test_triangle (28-byte stride) does not match it, so nothing rasterizes. Upload a proper
+        // 128-byte-stride test triangle (loc0 = NDC position) to prove the rasterization path.
+        { static int _tri = 0; if (!_tri) { _tri = 1;
+            static float _tv[3 * 32];
+            for (int _i = 0; _i < 3 * 32; ++_i) _tv[_i] = 0.0f;
+            static const float _pos[3][4] = {{-0.5f,-0.5f,0.f,1.f},{0.5f,-0.5f,0.f,1.f},{0.f,0.5f,0.f,1.f}};
+            static const float _col[3][4] = {{1.f,0.f,0.f,1.f},{0.f,1.f,0.f,1.f},{0.f,0.f,1.f,1.f}};
+            for (int _i = 0; _i < 3; ++_i) { std::memcpy(&_tv[_i*32+0], _pos[_i], 16); std::memcpy(&_tv[_i*32+4], _col[_i], 16); }
+            int _rr = p5d::vulkan::upload_vertex_stream(_tv, (unsigned)sizeof(_tv), 3u);
+            printf("[ABITRI] upload_vertex_stream rc=%d (stride128,3 verts) n=%u\n", _rr, g_main_n); fflush(stdout); } }
         int32_t _rc = p5d::vulkan::select_real_pipeline(_vp.c_str(), _fp.c_str());
         // 18.4496 M951 EXPERIMENT: vertex uniforms are all zero (RINIT zero table) -> the real vertex shader sends every
         // vertex to w=0 -> no fragments -> black even with the red diagnostic FS. Feed identity matrices once.
