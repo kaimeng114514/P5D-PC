@@ -945,6 +945,36 @@
 | M927 | §18.4472: **CRIOP 首份数据：page1 在 n=59,634,683 提交了一个 CRI 异步加载 op（`op=84DAB768`），但状态查询函数 pc 落在基本块边界之外 → 改进探针为"记录 submit 的 op 指针 + 每 300k n dump op 结构 16 字"**。`out62m_m1008criop.txt`：
 | M928 | §18.4473: ★★★★★★ **重大根因：GFD job worker 线程因"信号量 token 不对齐"而死 → 反编译 `FUN_811E68C8` 证明 worker 取到 NULL 任务函数指针（`INDIRECT-MISS reg1=0 target=0 block=811E6928`，`[THREXIT] pc=FFFFFFFD lr=811E6936`，5 个线程 40012000–40016000 在 n=59,454,348 全死）；修复 WaitSema/SignalSema token 转移**。证据与推理链：
 | M929 | §18.4474: ★★★★★★★ **sema 修复解锁渲染：首次 GXM BeginScene 发生（`[FRAMEBEGIN] frame=1`）！随后 `[BADMEM] va=0x6C stub=812B1400` 崩溃 = `sceGxmReserveFragmentDefaultUniformBuffer` ABI 空实现用了过期 out 指针 → 补真实现**。`out62m_m1011sematok.txt`（sema token 修复版）关键证据：
+| M930 | §18.4475: **UBO ABI 修复生效（穿过 ReserveFragment），新 BADMEM 定位为 guest 侧 `DAT_816CBE2C`（渲染 uniform 表指针）=0 导致读 `[0x6C]`；反编译 render 帧路径 `FUN_811EBF94`；加 `P5D_RINIT` 在 page1 开始时初始化该表指针为 0x100 零缓冲**。`out62m_m1013gxmubo.txt`（UBO 修复版）：
+1) `[FRAMEBEGIN] frame=1` 再次出现（`err` 中），随后 `[BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400`——但这次 **stub=812B1400 只是残留字段**，真正出错块是 `0x811EFE6A`（guest 代码）；
+2) 反编译 `FUN_811EBF94`（134B，page1 的 BeginScene 帧路径）：
+```c
+FUN_811efd8e(*(u32*)(DAT_816ccfb0 + 0x20));
+FUN_811f043e(*(u32*)(DAT_816cd120 + 0x20));
+FUN_812b1400(DAT_816cbe78, &local_18);            // ReserveFragmentDefaultUBO -> 我们修复后写入 guest UBO VA
+FUN_811efe6a(local_18, 0x1b, DAT_816cbe2c);       // ★ 读 DAT_816cbe2c[0x1b]（0x1b*4=0x6C）
+FUN_812b14a0(DAT_816cbe78, 0, *DAT_816cbea8);
+FUN_812b15f0(DAT_816cbe78, 0, 0, *DAT_816cbeac, 3);
+FUN_811c52b6();
+```
+`FUN_811EFE6A`（48B）：
+```c
+iVar1 = *(int *)(param_3 + param_2 * 4);   // param_3 = DAT_816cbe2c(0), param_2=0x1b -> 读 0x6C
+if (iVar1 != 0) FUN_812b13b0(param_1, iVar1, 0, ..., ...);
+```
+→ BADMEM 根因：**`DAT_816CBE2C`（渲染 uniform 数据表指针）为 0**。
+3) `DAT_816CBE2C` 在反编译代码中只被 `FUN_811EF526` **重置为 0**；作为"渲染 uniform 上传目标"被多处使用：
+`FUN_811E44D0`：`if ((*(u32*)(DAT_816cbe28+0x48) & 0x10000000) && DAT_816cbe2c) { FUN_812b1400(ctx,&local); if (local) FUN_811efe24(local, DAT_816cbe2c); }` ——
+即它是某个 shader 的 fragment uniform 数据块指针，应由上层 render 状态/资源设置。
+4) **实验补丁（18.4475，env `P5D_RINIT=1`）**：`n>=59,500,000` 时（一次）分配 0x100 零缓冲并把 VA 写入 guest 全局 `0x816CBE2C`：
+```cpp
+uint32_t _tbl = hle_malloc(0x100u);
+uint8_t* _q = GP(0x816CBE2Cu); if (_q && _tbl) std::memcpy(_q, &_tbl, 4);
+printf("[RINIT] DAT_816CBE2C(render uniform table) = %08X\n", _tbl);
+```
+这样 `FUN_811EFE6A` 读到的表项为 0 → `if (iVar1 != 0)` 跳过 → 避免 0x6C 读，让帧继续（可能缺 uniform 但管道可前进）。
+5) 已启动 62M 长跑：`out62m_m1014rinit.txt`（RINIT + P1TICK + UBO 修复）。NEXT: 看是否越过 0x811EFE6A、`[FRAMEBEGIN]/[FRAMEEND]/present` 计数、page1 是否完成。 |
+| §18.4475 | UBO ABI fix took effect (got past ReserveFragment); the new BADMEM is guest-side: DAT_816CBE2C (render uniform table pointer) = 0 so it reads [0x6C]; decompiled the render frame path FUN_811EBF94; added P5D_RINIT to initialize that table pointer to a 0x100 zero buffer at page1 start. out62m_m1013gxmubo.txt (with the UBO fix): (1) [FRAMEBEGIN] frame=1 appears again (in err), then [BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400 - but here stub=812B1400 is only a stale field, the faulting block is guest code 0x811EFE6A; (2) decompiled FUN_811EBF94 (134B, the page1 BeginScene frame path): FUN_811efd8e(*(u32*)(DAT_816ccfb0+0x20)); FUN_811f043e(*(u32*)(DAT_816cd120+0x20)); FUN_812b1400(DAT_816cbe78,&local_18) (ReserveFragmentDefaultUBO -> our fix writes the guest UBO VA); FUN_811efe6a(local_18, 0x1b, DAT_816cbe2c) (reads DAT_816cbe2c[0x1b], 0x1b*4=0x6C); FUN_812b14a0(DAT_816cbe78,0,*DAT_816cbea8); FUN_812b15f0(DAT_816cbe78,0,0,*DAT_816cbeac,3); FUN_811c52b6(). FUN_811EFE6A (48B): iVar1 = *(int *)(param_3 + param_2*4); if (iVar1 != 0) FUN_812b13b0(param_1, iVar1, 0, ...) -> with param_3=DAT_816cbe2c=0, param_2=0x1b it reads 0x6C => BADMEM root cause: DAT_816CBE2C (render uniform data table pointer) is 0. (3) In decompiled code DAT_816CBE2C is only reset to 0 by FUN_811EF526; it is used as a render uniform upload target: FUN_811E44D0: if ((*(u32*)(DAT_816cbe28+0x48) & 0x10000000) && DAT_816cbe2c) { FUN_812b1400(ctx,&local); if (local) FUN_811efe24(local, DAT_816cbe2c); } i.e. it is a shader fragment uniform data block pointer that upper render-state/resource code should set. (4) Experiment 18.4475 env P5D_RINIT=1: at n>=59,500,000 (once) allocate a 0x100 zero buffer and write its VA to guest global 0x816CBE2C: uint32_t _tbl = hle_malloc(0x100u); uint8_t* _q = GP(0x816CBE2Cu); if (_q && _tbl) memcpy(_q,&_tbl,4); printf("[RINIT] ...") so FUN_811EFE6A reads table entry 0 -> skips -> avoids the 0x6C read -> frame can continue (uniform data missing but pipeline proceeds). (5) 62M run started out62m_m1014rinit.txt (RINIT + P1TICK + UBO fix). NEXT: check whether it passes 0x811EFE6A, [FRAMEBEGIN]/[FRAMEEND]/present counters, and page1 completion. |
 1) **整场 `[THREXIT]` 0、`[INDIRECT-MISS]` 0** —— GFD job worker 全部存活；
 2) page1 首次加载事件：`[IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 n=59452293 late=1`（与修复前 state=1/handle=85B8591C 不同，走了真正的首读路径）；
 3) `[GFD] #4 at=81198C8E n=59454838 late=0 flags=00000003 ctr=1`；
@@ -487510,3 +487540,58 @@ NEXT：检查 `[FRAMEBEGIN]`/`[FRAMEEND]`/present 计数、是否继续绘制到
 ANTI-FORGETTING ENTRY. Keywords: M929 sema fix unlocked GXM rendering: out62m_m1011sematok.txt has [THREXIT] 0 / [INDIRECT-MISS] 0 (all GFD job workers alive), first page1 load event [IDR] at=81184FFE ctrl=846180A0 state=2 idx=0 handle=000000C8 n=59452293 late=1, [GFD] #4 at=81198C8E ctr=1, and the FIRST GXM FRAME: [FRAMEBEGIN] frame=1 img=0 cmd=... plus [WARN] [STUB] sceGxmSetViewport NOT IMPLEMENTED; watchdog hle_ring full GXM scene chain 812B1470(BeginScene)@811EBC28 812B1300(SetViewport)@811EBC50 812B16C0 812B1650 812B12E0(SetVertexProgram)@811EFDCA 812B1560 812B1400(ReserveFragmentDefaultUBO)@811EBFD2; then crash [BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400 because gxm_abi_call_7B1FABB6 called the backend (void) placeholder which dereferenced a stale out pointer. FIX 18.4474: real ABI for 812B1400 (NID 7B1FABB6 ReserveFragment) and 812B14F0 (NID 97118913 ReserveVertex): ubo_va = p5d_abi_guest_alloc(0x1000); slot = gxm_abi_xlate(regs[1]); memcpy(slot,&ubo_va,4); return 0; plus strong extern "C" uint32_t p5d_abi_guest_alloc(uint32_t n) { return hle_malloc(n); } in recomp_harness.cpp. 2.5M smoke out2m_m1012gxmubo.txt: binit_after=816A0BA0, [THREXIT] 0, [INDIRECT-MISS] 0, [BADMEM] 0, exit=0. 62M run started out62m_m1013gxmubo.txt; NEXT: check [FRAMEBEGIN]/[FRAMEEND]/present counters, whether drawing continues to EndScene/Present, and whether page1 completes (ctr/[IDR]/[SEQST]/[GXM]).
 
 LOOKUP: 0x812B1470, 0x812B1300, 0x812B12E0, 0x812B1400, 0x812B14F0, 0x7B1FABB6, 0x97118913, p5d_abi_guest_alloc, 0x8128D503, out62m_m1011sematok.txt, out62m_m1013gxmubo.txt -> §18.4473 [relevant: sema token fix], §18.4472 [relevant: CRIOP]
+### 18.4475 PORT M930: UBO 修复生效；新 BADMEM = guest `DAT_816CBE2C` 渲染 uniform 表指针为 0；RINIT 初始化实验
+
+1) `out62m_m1013gxmubo.txt`（含 18.4474 UBO ABI 修复）：
+```
+err: [FRAMEBEGIN] frame=1 img=0 cmd=000001d345c6a8d0
+err: [BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400 ...
+```
+注意：这次 BADMEM 的 `stub=812B1400` 只是**残留字段**，真正出错的是 **guest 基本块 0x811EFE6A**。
+2) 反编译 `FUN_811EBF94`（134B，page1 BeginScene 帧路径）：
+```c
+local_14 = DAT_812b414c;
+FUN_811efd8e(*(undefined4 *)(DAT_816ccfb0 + 0x20));
+FUN_811f043e(*(undefined4 *)(DAT_816cd120 + 0x20));
+FUN_812b1400(DAT_816cbe78,&local_18);              // ReserveFragmentDefaultUBO（已修复）
+FUN_811efe6a(local_18,0x1b,DAT_816cbe2c);          // ★ 读 DAT_816cbe2c[0x1b] = [0x6C]（0x1b*4）
+FUN_812b14a0(DAT_816cbe78,0,*DAT_816cbea8);
+FUN_812b15f0(DAT_816cbe78,0,0,*DAT_816cbeac,3);
+FUN_811c52b6();
+```
+`FUN_811EFE6A`（48B）：
+```c
+iVar1 = *(int *)(param_3 + param_2 * 4);
+if (iVar1 != 0) FUN_812b13b0(param_1,iVar1,0,*(undefined4 *)(&DAT_815142f4 + param_2*0x48),
+                             param_2*0x48 + -0x7eaebd08);
+```
+→ **根因：`DAT_816CBE2C` = 0**（渲染 uniform 数据表指针未初始化）。
+3) 该全局的用途（反编译证据）：
+```
+FUN_811E44D0:
+  if ((*(u32*)(DAT_816cbe28 + 0x48) & 0x10000000) != 0) {
+      if (DAT_816cbe2c != 0) {
+          FUN_812b1400(DAT_816cbe78,&local_20);          // reserve fragment UBO
+          if (local_20 != 0) FUN_811efe24(local_20, DAT_816cbe2c);   // 把该表上传为主 shader uniform
+      }
+      clear dirty bit;
+  }
+```
+即 `DAT_816CBE2C` 是**某个 shader 的 fragment uniform 数据块**，由上层渲染状态/资源设置。
+4) 实验补丁（18.4475，`P5D_RINIT=1`，job_probes）：
+```cpp
+static int _ri_done = 0;
+if (_ri_env && g_main_n >= 59500000u && !_ri_done) { _ri_done = 1;
+  uint32_t _tbl = hle_malloc(0x100u);                  // 零初始化
+  uint8_t* _q = GP(0x816CBE2Cu);
+  if (_q && _tbl) { std::memcpy(_q, &_tbl, 4); printf("[RINIT] DAT_816CBE2C = %08X\n", _tbl); } }
+```
+→ `FUN_811EFE6A` 读到的表项为 0 → 跳过 → 不崩溃，帧继续（uniform 缺失但可推进）。
+5) 已启动 62M 长跑：`out62m_m1014rinit.txt`（RINIT + UBO 修复 + P1TICK）。
+NEXT：检查是否越过 `0x811EFE6A`、`[FRAMEBEGIN]`/`[FRAMEEND]`/present 计数、page1 是否完成；
+若仍有其它面 uniform 表（`DAT_816CBE1C` 等）未初始化，按同样方式补齐。
+验证：`out62m_m1013gxmubo.txt`（BADMEM/FRAMEBEGIN）、`FUN_811EBF94`/`FUN_811EFE6A`/`FUN_811E44D0` 反编译、`out62m_m1014rinit.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M930 UBO fix effective; new BADMEM is guest-side DAT_816CBE2C render uniform table pointer = 0: out62m_m1013gxmubo.txt err shows [FRAMEBEGIN] frame=1 then [BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400 (stub field stale; real faulting block is guest 0x811EFE6A). Decompiled FUN_811EBF94 (page1 BeginScene frame path): FUN_811efd8e(...); FUN_811f043e(...); FUN_812b1400(DAT_816cbe78,&local_18) (ReserveFragmentDefaultUBO, now fixed); FUN_811efe6a(local_18,0x1b,DAT_816cbe2c) reads DAT_816cbe2c[0x1b]=[0x6C]; FUN_812b14a0(...); FUN_812b15f0(...); FUN_811c52b6(). FUN_811EFE6A: iVar1 = *(int *)(param_3 + param_2*4); if (iVar1 != 0) FUN_812b13b0(param_1,iVar1,0,...,param_2*0x48 + -0x7eaebd08) => root cause DAT_816CBE2C=0. Usage: FUN_811E44D0 checks dirty bit (*(u32*)(DAT_816cbe28+0x48) & 0x10000000), if DAT_816cbe2c != 0 then FUN_812b1400(ctx,&local) + FUN_811efe24(local, DAT_816cbe2c) => it is a shader fragment uniform data block set by upper render state/resource code. Experiment 18.4475 env P5D_RINIT=1 at n>=59,500,000 once: uint32_t _tbl = hle_malloc(0x100u) (zeroed); uint8_t* _q = GP(0x816CBE2Cu); memcpy(_q,&_tbl,4); print [RINIT]; then FUN_811EFE6A reads entry 0 -> skips -> no crash, frame proceeds (uniform data missing). 62M run started out62m_m1014rinit.txt (RINIT + UBO fix + P1TICK). NEXT: check passing 0x811EFE6A, [FRAMEBEGIN]/[FRAMEEND]/present counters, page1 completion; if other uniform tables (DAT_816CBE1C etc.) are uninitialized do the same.
+
+LOOKUP: 0x816CBE2C, 0x816CBE1C, 0x816CBE28, 0x811EBF94, 0x811EFE6A, 0x811E44D0, P5D_RINIT, out62m_m1014rinit.txt -> §18.4474 [relevant: UBO ABI fix], §18.4473 [relevant: sema fix]

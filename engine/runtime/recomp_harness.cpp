@@ -937,6 +937,13 @@ static void pending_req_scan() {
 
 static int g_periodpump_env = -1;
 static void job_probes(uint32_t pcv, RecState* s) {
+  { static int _ri_env = -1; if (_ri_env < 0) { const char* _e = getenv("P5D_RINIT"); _ri_env = (_e && atoi(_e)) ? 1 : 0; }
+    if (_ri_env && g_main_n >= 59500000u) { static int _ri_done = 0;
+      if (!_ri_done) { _ri_done = 1;
+        uint32_t _tbl = hle_malloc(0x100u);
+        uint8_t* _q = GP(0x816CBE2Cu); if (_q && _tbl) { std::memcpy(_q, &_tbl, 4);
+          printf("[RINIT] DAT_816CBE2C(render uniform table) = %08X at n=%u blk=%08X\\n", _tbl, g_main_n, pcv); fflush(stdout); } } } }
+
   { static int _co_env = -1; if (_co_env < 0) { const char* _e = getenv("P5D_CRIOP"); _co_env = (_e && atoi(_e)) ? 1 : 0; }
     static uint32_t _cop = 0; static uint32_t _cop_next = 0; static int _cop_sub = 0;
     if (_co_env && g_main_n >= 59500000u) {
