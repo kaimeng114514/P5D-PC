@@ -948,6 +948,23 @@
 | M930 | §18.4475: **UBO ABI 修复生效（穿过 ReserveFragment），新 BADMEM 定位为 guest 侧 `DAT_816CBE2C`（渲染 uniform 表指针）=0 导致读 `[0x6C]`；反编译 render 帧路径 `FUN_811EBF94`；加 `P5D_RINIT` 在 page1 开始时初始化该表指针为 0x100 零缓冲**。`out62m_m1013gxmubo.txt`（UBO 修复版）：
 | M931 | §18.4476: **RINIT 未触发（崩溃早于 59.5M 阈值）→ 改为在 `FUN_811EBF94` 入口自动初始化；并定位到真正初始化者 `FUN_811F043E`（fragment program setter）**。`out62m_m1014rinit.txt`（RINIT=1）：`[RINIT]` 0 条——因为崩溃发生在 **n≈59.454M**，而 RINIT 阈值是 `n>=59.5M`，太晚未触发。反编译找到渲染状态初始化链：
 | M932 | §18.4477: **探针判定：RINIT 的零表被 `FUN_811F043E` 覆盖回 0 —— 真正原因是 fragment state 对象字段为 0（shader program 未建立）；RINIT v2 同时写对象字段 +8/+idx*0xC+8**。`out62m_m1015rinit2.txt`（n=59,454,976，第一帧）探针：
+| M933 | §18.4478: ★★★★★ **RINIT v2 成功：BADMEM 消失（`[BADMEM]` 0），page1 恢复推进并持续产生 IDR 事件（n 59.45M→59.73M+），运行继续到 62M 上限**。`out62m_m1016rinit3.txt`（RINIT v2）关键证据：
+```
+[RINIT] g2C was 0 -> set 85B85000; fragobj=84B33570(field+8), vertobj=84B33480(idx=0,+8) (n=59454976)
+[FUNC43E] #0 obj=84B33570 w4=00000000 w8=85B85000 w48=00000000 g28=00000000 g2C=85B85000
+[HELPER6A] r0=85B85100 r1=0000001B r2=85B85000      <- 不再是 0！
+err: [BADMEM] 0 条（修复前每条运行都崩）
+err: [FRAMEBEGIN] frame=1 img=0 cmd=...
+[IDR] 11 次：at=81184FFE state=2 idx=0 handle=0xC8 r0=85B846EC，n=59452293/59472490/59493022/59513113/59533103/59553085/59573109...
+[FRAMEDUMP] n=59640000 ctr=9 pc=8127BB28 blk=8127B370（运行仍在继续）
+[THREXIT] 0，[INDIRECT-MISS] 0
+```
+结论：
+1) **RINIT v2 完全消除了 `[BADMEM] va=0x6C`**（把零表写进 fragment/vertex state 对象字段，抵消了 `FUN_811F043E`/`FUN_811EFD8E` 的覆盖）；
+2) page1 **重新开始推进**：IDR 事件按 ~20k n 的节奏持续（state=2、handle=0xC8），说明 page1 的读取/渲染帧循环在跑；
+3) 但仍 **没有 `[FRAMEEND]` / present**（`gxm(b/e/p)=0/0/0`）——因为 app 的 shader/program 状态仍是 **0**（`w4=0`，fragment program 指针为 0），实际绘制调用被跳过；
+4) 运行继续到 62M 上限（未崩溃、无 done）。NEXT: 读最终结果（是否 page1 完成/换页）；**真修 GXM ShaderPatcher HLE**（`sceGxmShaderPatcherCreateFragmentProgram` 0x4ED2E49D、`CreateVertexProgram`、`RegisterProgram` 等返回非 0 假句柄并写入 out 参数），使 app render state 的 program/uniform 字段非 0 → 真正绘制/EndScene/present。 |
+| §18.4478 | RINIT v2 worked: [BADMEM] is gone (0 lines), page1 resumed advancing and keeps producing IDR events (n 59.45M->59.73M+), the run continues to the 62M limit. out62m_m1016rinit3.txt (RINIT v2) key evidence: [RINIT] g2C was 0 -> set 85B85000; fragobj=84B33570(field+8), vertobj=84B33480(idx=0,+8) (n=59454976); [FUNC43E] #0 obj=84B33570 w4=0 w8=85B85000 w48=0 g28=0 g2C=85B85000; [HELPER6A] r0=85B85100 r1=0x1B r2=85B85000 (no longer 0); err [BADMEM] 0 lines (before this every run crashed); err [FRAMEBEGIN] frame=1 img=0 cmd=...; [IDR] 11 times: at=81184FFE state=2 idx=0 handle=0xC8 r0=85B846EC at n=59452293/59472490/59493022/59513113/59533103/59553085/59573109...; [FRAMEDUMP] n=59640000 ctr=9 pc=8127BB28 blk=8127B370 (run still going); [THREXIT] 0, [INDIRECT-MISS] 0. Conclusions: (1) RINIT v2 completely eliminates [BADMEM] va=0x6C (writing the zero table into the fragment/vertex state object fields cancels the overwrites by FUN_811F043E/FUN_811EFD8E); (2) page1 resumed advancing: IDR events at ~20k n cadence (state=2, handle=0xC8), so page1's read/render frame loop is running; (3) but still no [FRAMEEND]/present (gxm(b/e/p)=0/0/0) because the app shader/program state is still 0 (w4=0, fragment program pointer 0) so real draw calls are skipped; (4) the run continues to the 62M limit (no crash, no done). NEXT: read the final result (page1 completion/page switch); really fix GXM ShaderPatcher HLE (sceGxmShaderPatcherCreateFragmentProgram 0x4ED2E49D, CreateVertexProgram, RegisterProgram returning nonzero fake handles written to their out params) so the app render state's program/uniform fields become nonzero -> real drawing/EndScene/present. |
 ```
 [FUNC43E] #0 obj=84B33570 w4=00000000 w8=00000000 w48=00000000  g28=00000000 g2C=85B85000
 [FRAME94] #0 g28=00000000 g2C=00000000 n=59454976
@@ -487724,3 +487741,32 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M932 probes show RINIT zero table overwritten back to 0 by FUN_811F043E: out62m_m1015rinit2.txt at n=59,454,976 [FUNC43E] #0 obj=84B33570 w4=0 w8=0 w48=0 g28=0 g2C=85B85000; [FRAME94] #0 g28=0 g2C=0; [HELPER6A] r0=85B85100 r1=0x1B r2=0; [RINIT] g2C was 0 -> set 85B85000. Chain: RINIT sets DAT_816CBE2C=85B85000 at FUN_811EBF94 entry, but FUN_811F043E then executes DAT_816cbe2c = puVar2[1] where puVar2=param_1+4 so puVar2[1]=*(param_1+8), and w8=0 -> g2C overwritten to 0 -> HELPER6A r2=0 -> FUN_811EFE6A(ubo,0x1b,0) reads [0x6C] -> BADMEM. Real root: 84B33570 is the fragment render state object whose +4 (fragment program pointer) and +8 (uniform data pointer) are both 0 => the app shader/program state was never built (GXM ShaderPatcher HLE returns 0 handles, app stores 0). RINIT v2 (18.4477 P5D_RINIT=1): also write the zero-table VA into fragment *(u32*)(*(u32*)(*(u32*)0x816CD120+0x20)+8) and vertex *(u32*)(*(u32*)(*(u32*)0x816CCFB0+0x20)+idx*0xC+8) with idx=DAT_816CBE38, plus DAT_816CBE2C, so subsequent overwrites still yield a valid pointer and FUN_811EFE6A reads table entry 0 -> skips. 62M run started out62m_m1016rinit3.txt; NEXT: check passing BADMEM and [FRAMEBEGIN]->[FRAMEEND]->present, and really fix GXM ShaderPatcher HLE (Create/RegisterProgram returning nonzero fake handles or real impl) so the app render state becomes nonzero.
 
 LOOKUP: 0x84B33570, 0x816CD120, 0x816CCFB0, 0x816CBE38, 0x816CBE2C, 0x811F043E, 0x811EFD8E, 0x811EFE6A, out62m_m1016rinit3.txt -> §18.4476 [relevant: FUN_811F043E], §18.4475 [relevant: RINIT]
+### 18.4478 PORT M933: RINIT v2 消除 BADMEM，page1 恢复推进（IDR 持续）
+
+1) `out62m_m1016rinit3.txt`（`P5D_RINIT=1` v2）：
+```
+[RINIT] g2C was 0 -> set 85B85000; fragobj=84B33570(field+8), vertobj=84B33480(idx=0,+8) (n=59454976)
+[FUNC43E] #0 obj=84B33570 w4=00000000 w8=85B85000 w48=00000000 g28=00000000 g2C=85B85000
+[HELPER6A] r0=85B85100 r1=0000001B r2=85B85000        <- 调用参数不再是 0
+err: [BADMEM] 0 条                                     <- 修复前必然崩溃
+err: [FRAMEBEGIN] frame=1 img=0 cmd=...
+[IDR] 11 次: at=81184FFE state=2 idx=0 handle=000000C8, n=59452293 / 59472490 / 59493022 /
+             59513113 / 59533103 / 59553085 / 59573109 ...
+[FRAMEDUMP] n=59640000 flags=00000003 ctr=9 pc=8127BB28 blk=8127B370（仍在继续）
+[THREXIT] 0   [INDIRECT-MISS] 0
+```
+2) 结论：
+- **RINIT v2 完全消除 BADMEM**（把零表写入 fragment/vertex state 对象字段，抵消 `FUN_811F043E`/`FUN_811EFD8E` 的覆盖）；
+- page1 **恢复推进**：`[IDR]` 事件按 ~20k n 节奏持续（state=2, handle=0xC8），page1 的读取/渲染帧循环在跑；
+- 仍无 `[FRAMEEND]`/present（`gxm(b/e/p)=0/0/0`）：app 的 shader/program 状态仍为 0（`w4=0`），真实绘制调用被跳过；
+- 运行持续到 62M 上限（无崩溃、无 done）。
+3) NEXT（两条线）：
+  a) 读最终结果：page1 是否完成/换页（`[SEQST]` cur、`[IDR]` handle 变化、`[TITLEMOV]`）；
+  b) **真修 GXM ShaderPatcher HLE**：为 `sceGxmShaderPatcherCreateFragmentProgram`（0x812B1350 / NID 4ED2E49D）、
+     `CreateVertexProgram`、`RegisterProgram` 等返回**非 0 假句柄**并写入各自 out 参数，
+     使 app render state 的 program/uniform 字段非 0 → 绘制/EndScene/present 真正发生。
+验证：`out62m_m1016rinit3.txt`（RINIT v2、BADMEM=0、IDR 推进）。
+
+ANTI-FORGETTING ENTRY. Keywords: M933 RINIT v2 eliminated the BADMEM: out62m_m1016rinit3.txt (P5D_RINIT=1 v2) shows [RINIT] g2C was 0 -> set 85B85000; fragobj=84B33570(field+8), vertobj=84B33480(idx=0,+8); [FUNC43E] obj=84B33570 w4=0 w8=85B85000 w48=0 g28=0 g2C=85B85000; [HELPER6A] r0=85B85100 r1=0x1B r2=85B85000 (no longer 0); err [BADMEM] 0 lines; err [FRAMEBEGIN] frame=1; [IDR] 11 events at=81184FFE state=2 idx=0 handle=0xC8 r0=85B846EC at n=59452293/59472490/59493022/59513113/59533103/59553085/59573109...; [FRAMEDUMP] n=59640000 ctr=9 pc=8127BB28 blk=8127B370; [THREXIT] 0, [INDIRECT-MISS] 0. Conclusions: RINIT v2 cancels the FUN_811F043E/FUN_811EFD8E overwrites by writing the zero table into the state-object fields, so the BADMEM is gone and page1 resumes advancing with IDR events at ~20k n cadence; still no [FRAMEEND]/present because the app shader/program state remains 0 (w4=0 fragment program pointer) so real draw calls are skipped; the run continues to the 62M limit. NEXT: read final result (page1 completion/page switch via [SEQST] cur, [IDR] handle changes, [TITLEMOV]); and really fix GXM ShaderPatcher HLE (sceGxmShaderPatcherCreateFragmentProgram 0x812B1350/NID 4ED2E49D, CreateVertexProgram, RegisterProgram) to return nonzero fake handles written to their out params so the app render state program/uniform fields become nonzero -> real drawing/EndScene/present.
+
+LOOKUP: 0x84B33570, 0x84B33480, 0x816CD120, 0x816CCFB0, 0x811F043E, 0x811EFD8E, 0x812B1350, 0x4ED2E49D, out62m_m1016rinit3.txt -> §18.4477 [relevant: RINIT v2], §18.4476 [relevant: FUN_811F043E]
