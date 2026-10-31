@@ -953,7 +953,19 @@ static void job_probes(uint32_t pcv, RecState* s) {
       if (_p == 0x811EBF94u) { uint32_t _c2c = 0; uint8_t* _q = GP(0x816CBE2Cu);
         if (_q) std::memcpy(&_c2c,_q,4);
         if (_c2c == 0) { uint32_t _tbl = hle_malloc(0x100u); uint8_t* _q2 = GP(0x816CBE2Cu);
-          if (_q2 && _tbl) { std::memcpy(_q2, &_tbl, 4); printf("[RINIT] g2C was 0 -> set %08X (auto at FUN_811EBF94 n=%u)\n", _tbl, g_main_n); fflush(stdout); } } } } }
+          if (_q2 && _tbl) { std::memcpy(_q2, &_tbl, 4);
+            // 18.4477 M932: FUN_811F043E will overwrite DAT_816cbe2c with puVar2[1] = *(fragStateObj+8);
+            // make that field point at the zero table too, so the overwrite keeps a valid pointer.
+            uint8_t* _qd = GP(0x816CD120u); uint32_t _dv = 0; if (_qd) std::memcpy(&_dv,_qd,4);
+            uint8_t* _qo = GP(_dv + 0x20u); uint32_t _obj = 0; if (_qo) std::memcpy(&_obj,_qo,4);
+            uint8_t* _qf = GP(_obj + 8u); if (_qf) std::memcpy(_qf, &_tbl, 4);
+            // vertex side: FUN_811EFD8E sets DAT_816cbe1c = *(vertexState + idx*0xc + 8)
+            uint8_t* _qd2 = GP(0x816CCFB0u); uint32_t _dv2 = 0; if (_qd2) std::memcpy(&_dv2,_qd2,4);
+            uint8_t* _qo2 = GP(_dv2 + 0x20u); uint32_t _obj2 = 0; if (_qo2) std::memcpy(&_obj2,_qo2,4);
+            uint32_t _idx = 0; uint8_t* _qi = GP(0x816CBE38u); if (_qi) std::memcpy(&_idx,_qi,4);
+            uint8_t* _qv = GP(_obj2 + _idx*0xCu + 8u); if (_qv) std::memcpy(_qv, &_tbl, 4);
+            printf("[RINIT] g2C was 0 -> set %08X; fragobj=%08X(field+8), vertobj=%08X(idx=%u,+%u) (n=%u)\n",
+                   _tbl, _obj, _obj2, _idx, _idx*0xCu+8u, g_main_n); fflush(stdout); } } } } }
 
   { static int _co_env = -1; if (_co_env < 0) { const char* _e = getenv("P5D_CRIOP"); _co_env = (_e && atoi(_e)) ? 1 : 0; }
     static uint32_t _cop = 0; static uint32_t _cop_next = 0; static int _cop_sub = 0;

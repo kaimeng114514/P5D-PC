@@ -947,6 +947,24 @@
 | M929 | §18.4474: ★★★★★★★ **sema 修复解锁渲染：首次 GXM BeginScene 发生（`[FRAMEBEGIN] frame=1`）！随后 `[BADMEM] va=0x6C stub=812B1400` 崩溃 = `sceGxmReserveFragmentDefaultUniformBuffer` ABI 空实现用了过期 out 指针 → 补真实现**。`out62m_m1011sematok.txt`（sema token 修复版）关键证据：
 | M930 | §18.4475: **UBO ABI 修复生效（穿过 ReserveFragment），新 BADMEM 定位为 guest 侧 `DAT_816CBE2C`（渲染 uniform 表指针）=0 导致读 `[0x6C]`；反编译 render 帧路径 `FUN_811EBF94`；加 `P5D_RINIT` 在 page1 开始时初始化该表指针为 0x100 零缓冲**。`out62m_m1013gxmubo.txt`（UBO 修复版）：
 | M931 | §18.4476: **RINIT 未触发（崩溃早于 59.5M 阈值）→ 改为在 `FUN_811EBF94` 入口自动初始化；并定位到真正初始化者 `FUN_811F043E`（fragment program setter）**。`out62m_m1014rinit.txt`（RINIT=1）：`[RINIT]` 0 条——因为崩溃发生在 **n≈59.454M**，而 RINIT 阈值是 `n>=59.5M`，太晚未触发。反编译找到渲染状态初始化链：
+| M932 | §18.4477: **探针判定：RINIT 的零表被 `FUN_811F043E` 覆盖回 0 —— 真正原因是 fragment state 对象字段为 0（shader program 未建立）；RINIT v2 同时写对象字段 +8/+idx*0xC+8**。`out62m_m1015rinit2.txt`（n=59,454,976，第一帧）探针：
+```
+[FUNC43E] #0 obj=84B33570 w4=00000000 w8=00000000 w48=00000000  g28=00000000 g2C=85B85000
+[FRAME94] #0 g28=00000000 g2C=00000000 n=59454976
+[HELPER6A] r0=85B85100 r1=0000001B r2=00000000 n=59454976
+[RINIT] g2C was 0 -> set 85B85000 (auto at FUN_811EBF94 n=59454976)
+```
+分析：
+1) RINIT 在 `FUN_811EBF94` 入口确实把 `DAT_816CBE2C` 设为 `85B85000`（[FUNC43E] 里能看到 g2C=85B85000）；
+2) 但随后 `FUN_811F043E` 执行 `DAT_816cbe2c = puVar2[1]`，其中 `puVar2 = param_1+4`、`puVar2[1] = *(param_1+8)`，而探针显示 **`w8=0`** → g2C 被**覆盖回 0**；
+3) 因此 `HELPER6A r2=0` → `FUN_811EFE6A(ubo,0x1b,0)` 再次读 `[0x6C]` → BADMEM。
+4) 根因层次：`84B33570` 是 **fragment render state 对象**，其 `+4`（fragment program 指针）与 `+8`（uniform 数据指针）都是 0 —— 即**app 的 shader/program 状态没有建立起来**（GXM ShaderPatcher 相关 HLE 目前返回 0 句柄，app 存下 0 → 后续字段全 0）。
+5) **修复实验（18.4477，`P5D_RINIT=1` v2）**：RINIT 时除写 `DAT_816CBE2C` 外，也把零表 VA 写入：
+   - fragment：`*(u32*)(*(u32*)(*(u32*)0x816CD120 + 0x20) + 8) = tbl`
+   - vertex：`*(u32*)(*(u32*)(*(u32*)0x816CCFB0 + 0x20) + idx*0xC + 8) = tbl`（idx = DAT_816CBE38）
+   这样 `FUN_811F043E`/`FUN_811EFD8E` 的后续覆盖仍得到**有效指针**，`FUN_811EFE6A` 读到表项 0 → 跳过。
+6) 已启动 62M 长跑：`out62m_m1016rinit3.txt`。NEXT: 看是否越过 BADMEM、`[FRAMEBEGIN]`→`[FRAMEEND]`→present 计数；并准备**真正修 shader patcher HLE**（给 Create/RegisterProgram 返回非 0 假句柄或真实现），使 app render state 非 0。 |
+| §18.4477 | Probes show RINIT's zero table is overwritten back to 0 by FUN_811F043E - the real cause is that fragment state object fields are 0 (shader program not built); RINIT v2 also writes the object fields +8 / +idx*0xC+8. out62m_m1015rinit2.txt (n=59,454,976, first frame) probes: [FUNC43E] #0 obj=84B33570 w4=0 w8=0 w48=0 g28=0 g2C=85B85000; [FRAME94] #0 g28=0 g2C=0; [HELPER6A] r0=85B85100 r1=0x1B r2=0; [RINIT] g2C was 0 -> set 85B85000. Analysis: (1) RINIT does set DAT_816CBE2C to 85B85000 at FUN_811EBF94 entry (g2C=85B85000 visible in [FUNC43E]); (2) but then FUN_811F043E executes DAT_816cbe2c = puVar2[1] where puVar2 = param_1+4, puVar2[1] = *(param_1+8), and the probe shows w8=0 -> g2C is overwritten back to 0; (3) so HELPER6A r2=0 -> FUN_811EFE6A(ubo,0x1b,0) reads [0x6C] again -> BADMEM; (4) root layer: 84B33570 is the fragment render state object whose +4 (fragment program pointer) and +8 (uniform data pointer) are both 0 - i.e. the app's shader/program state was never built (GXM ShaderPatcher HLE currently returns 0 handles, app stores 0 -> all fields 0). Fix experiment 18.4477 P5D_RINIT=1 v2: RINIT also writes the zero-table VA into (a) fragment *(u32*)(*(u32*)(*(u32*)0x816CD120 + 0x20) + 8) and (b) vertex *(u32*)(*(u32*)(*(u32*)0x816CCFB0 + 0x20) + idx*0xC + 8) with idx=DAT_816CBE38, so the subsequent overwrites in FUN_811F043E/FUN_811EFD8E still yield a valid pointer and FUN_811EFE6A reads table entry 0 -> skips. 62M run started out62m_m1016rinit3.txt; NEXT: check whether it passes BADMEM and [FRAMEBEGIN]->[FRAMEEND]->present counters; and prepare a real shader-patcher HLE fix (Create/RegisterProgram returning nonzero fake handles or real impl) so the app render state becomes nonzero. |
 1) **`FUN_811F043E`（fragment program 切换，282B）**：
 ```c
 ...
@@ -487669,3 +487687,40 @@ NEXT：读探针判定 uniform 表应来自哪个 fragment 程序条目，修 HL
 ANTI-FORGETTING ENTRY. Keywords: M931 RINIT never fired because crash at n~59.454M precedes the 59.5M threshold; trigger moved to FUN_811EBF94 entry; found the real uniform-table initializer FUN_811F043E (fragment program setter): if ((*(uint*)(param_1+0x48)&1)==0) { uVar3=*(u32*)(param_1+4); puVar2=(u32*)(param_1+4); } else { puVar2=(u32*)FUN_811f01ae(param_1,DAT_816cbe48,&DAT_816cbe58); uVar3=*puVar2; } FUN_812b1560(DAT_816cbe78,uVar3) (sceGxmSetFragmentProgram); DAT_816cbe28=param_1; *(uint*)(param_1+0x48)|=0x10000000 (dirty); DAT_816cbe2c=puVar2[1] (fragment uniform data pointer). Vertex analog FUN_811EFD8E: iVar1=param_1+DAT_816cbe38*0xc; FUN_812b12e0(DAT_816cbe78,*(u32*)(iVar1+4)) (sceGxmSetVertexProgram); *(u32*)(param_1+0x7c)|=0x10000000; DAT_816cbe1c=*(u32*)(iVar1+8); DAT_816cbe18=param_1. FUN_811EBF94 order: FUN_811EFD8E -> FUN_811F043E -> FUN_812B1400(ctx,&ubo) -> FUN_811EFE6A(ubo,0x1b,DAT_816cbe2c); so DAT_816CBE2C should be set by FUN_811F043E to puVar2[1], but it is 0 -> either FUN_811F043E early-returned (same program/state) or puVar2[1] itself is 0 (fragment program entry uniform pointer unfilled). New probes [FUNC43E] (obj/w4/w8/w48/g28/g2C), [FRAME94] (g28/g2C), [HELPER6A] (r0/r1/r2); RINIT auto-trigger at FUN_811EBF94 entry when g2C==0: allocate 0x100 zero buffer, write it, print [RINIT] g2C was 0 -> set ...; 62M run started out62m_m1015rinit2.txt; NEXT: read [FUNC43E]/[FRAME94] to determine which fragment program entry DAT_816CBE2C should come from, fix HLE/resource layer so it is nonzero, and check subsequent [FRAMEBEGIN]->[FRAMEEND]->present.
 
 LOOKUP: 0x816CBE2C, 0x816CBE1C, 0x811F043E, 0x811EFD8E, 0x811EBF94, 0x811EFE6A, out62m_m1015rinit2.txt -> §18.4475 [relevant: RINIT], §18.4474 [relevant: UBO ABI]
+### 18.4477 PORT M932: RINIT 被 FUN_811F043E 覆盖回 0 → RINIT v2（写对象字段）+ 真正根因（shader program 未建立）
+
+1) `out62m_m1015rinit2.txt`（n=59,454,976，第一帧，探针全在）：
+```
+[FUNC43E] #0 obj=84B33570 w4=00000000 w8=00000000 w48=00000000  g28=00000000 g2C=85B85000
+[FRAME94] #0 g28=00000000 g2C=00000000 n=59454976
+[HELPER6A] r0=85B85100 r1=0000001B r2=00000000 n=59454976
+[RINIT] g2C was 0 -> set 85B85000 (auto at FUN_811EBF94 n=59454976)
+```
+2) 因果链：
+- RINIT 在 `FUN_811EBF94` 入口把 `DAT_816CBE2C` 设为 0x85B85000（后续 [FUNC43E] 中可见）；
+- `FUN_811F043E` 执行 `DAT_816cbe2c = puVar2[1]`；`puVar2 = param_1 + 4`，所以 `puVar2[1] = *(param_1 + 8)`；
+- 探针显示 **w8 = 0** → `DAT_816CBE2C` 又被覆盖回 0 → `HELPER6A r2=0` → `FUN_811EFE6A` 再读 `[0x6C]` → BADMEM。
+3) 真正的根因：`84B33570` 是 **fragment render state 对象**，字段 `+4`（fragment program 指针）与 `+8`（uniform 数据指针）都是 **0** =
+   **app 的 shader/program 状态没有建立**。GXM ShaderPatcher 相关 HLE 目前返回 0 句柄，app 把 0 存入状态对象。
+4) RINIT v2（18.4477）：
+```cpp
+// fragment
+uint32_t _dv=*(u32*)GP(0x816CD120); uint32_t _obj=*(u32*)GP(_dv+0x20);
+*(u32*)GP(_obj+8) = _tbl;
+// vertex
+uint32_t _dv2=*(u32*)GP(0x816CCFB0); uint32_t _obj2=*(u32*)GP(_dv2+0x20);
+uint32_t _idx=*(u32*)GP(0x816CBE38);
+*(u32*)GP(_obj2 + _idx*0xC + 8) = _tbl;
+*(u32*)GP(0x816CBE2C) = _tbl;
+```
+→ `FUN_811F043E`/`FUN_811EFD8E` 覆盖后仍是有效指针；`FUN_811EFE6A` 读到表项 0 → 跳过。
+5) 已启动 62M 长跑：`out62m_m1016rinit3.txt`。
+NEXT：
+  a) 看是否越过 BADMEM、`[FRAMEBEGIN]`→`[FRAMEEND]`→present；
+  b) **真修**：GXM ShaderPatcher HLE（`sceGxmShaderPatcherCreateFragmentProgram` 等）返回非 0 假句柄或真实现，
+     让 app render state 的 program/uniform 字段非 0，从而走到真正绘制路径。
+验证：`out62m_m1015rinit2.txt`（探针证据）、`out62m_m1016rinit3.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M932 probes show RINIT zero table overwritten back to 0 by FUN_811F043E: out62m_m1015rinit2.txt at n=59,454,976 [FUNC43E] #0 obj=84B33570 w4=0 w8=0 w48=0 g28=0 g2C=85B85000; [FRAME94] #0 g28=0 g2C=0; [HELPER6A] r0=85B85100 r1=0x1B r2=0; [RINIT] g2C was 0 -> set 85B85000. Chain: RINIT sets DAT_816CBE2C=85B85000 at FUN_811EBF94 entry, but FUN_811F043E then executes DAT_816cbe2c = puVar2[1] where puVar2=param_1+4 so puVar2[1]=*(param_1+8), and w8=0 -> g2C overwritten to 0 -> HELPER6A r2=0 -> FUN_811EFE6A(ubo,0x1b,0) reads [0x6C] -> BADMEM. Real root: 84B33570 is the fragment render state object whose +4 (fragment program pointer) and +8 (uniform data pointer) are both 0 => the app shader/program state was never built (GXM ShaderPatcher HLE returns 0 handles, app stores 0). RINIT v2 (18.4477 P5D_RINIT=1): also write the zero-table VA into fragment *(u32*)(*(u32*)(*(u32*)0x816CD120+0x20)+8) and vertex *(u32*)(*(u32*)(*(u32*)0x816CCFB0+0x20)+idx*0xC+8) with idx=DAT_816CBE38, plus DAT_816CBE2C, so subsequent overwrites still yield a valid pointer and FUN_811EFE6A reads table entry 0 -> skips. 62M run started out62m_m1016rinit3.txt; NEXT: check passing BADMEM and [FRAMEBEGIN]->[FRAMEEND]->present, and really fix GXM ShaderPatcher HLE (Create/RegisterProgram returning nonzero fake handles or real impl) so the app render state becomes nonzero.
+
+LOOKUP: 0x84B33570, 0x816CD120, 0x816CCFB0, 0x816CBE38, 0x816CBE2C, 0x811F043E, 0x811EFD8E, 0x811EFE6A, out62m_m1016rinit3.txt -> §18.4476 [relevant: FUN_811F043E], §18.4475 [relevant: RINIT]
