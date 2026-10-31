@@ -936,6 +936,7 @@ static void pending_req_scan() {
 }
 
 static int g_periodpump_env = -1;
+namespace p5d { namespace vulkan { void end_frame(); void present_frame(uint32_t colorData); } }   // 18.4484 M939
 namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }   // 18.4480 M935
 static void job_probes(uint32_t pcv, RecState* s) {
   { static int _ri_env = -1; if (_ri_env < 0) { const char* _e = getenv("P5D_RINIT"); _ri_env = (_e && atoi(_e)) ? 1 : 0; }
@@ -1470,6 +1471,14 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
         static int _pn = 0; if (_pn++ < 20) { printf("[ABIPIPE] v=%s f=%s rc=%d n=%u\n", _abi_vspv.c_str(), _abi_fspv.c_str(), _rc, g_main_n); fflush(stdout); } }
       uint32_t _stk[8];
       for (int _i = 0; _i < 8; ++_i) { uint32_t _v = 0; uint8_t* _q = GP(s->r[13] + (uint32_t)_i * 4u); if (_q) std::memcpy(&_v, _q, 4); _stk[_i] = _v; }
+      // 18.4484 M939: EndScene / DisplayQueueAddEntry -> submit + present (backend end_frame does both)
+      if (strncmp(_ge->name, "sceGxmEndScene", 14) == 0 || strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) {
+        uint32_t _data = 0;
+        if (strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
+        p5d::vulkan::end_frame();
+        static int _dn = 0; if (_dn++ < 16) { printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n); fflush(stdout); }
+        s->r[0] = 0; return s->r[14];
+      }
       // 18.4482 M937: give the app real ShaderPatcher ids / program handles and capture their SPIR-V names.
       { static std::map<uint32_t,std::string> _pid2spv, _vobj2spv, _fobj2spv;
         static uint32_t _nextid = 0x8540B000u, _nextobj = 0x8540C000u;

@@ -954,6 +954,34 @@
 | M936 | §18.4481: **发现 page1 渲染走的是 GXM "Precomputed" 路径（不调用 SetVertex/FragmentProgram），因此上一版 ABIGXP 捕获没触发；已把捕获钩子扩展到 `sceGxmPrecomputedVertexStateInit`/`sceGxmPrecomputedFragmentStateInit`**。证据（`out62m_m1017pipe.txt`，管线接线版 62M 运行）：
 | M937 | §18.4482: **关键发现：所有 Precomputed*Init 的 program 参数 r1=0 —— 因为 ShaderPatcher 的 `RegisterProgram`/`CreateVertexProgram`/`CreateFragmentProgram` 是 STUB（返回 0 且不写 out 参数），app 的 program id/句柄全是 0；已实现假句柄链：RegisterProgram 输出假 id（记录 id→spv）、Create*Program 输出假 program 对象（记录 obj→spv）、Precomputed*Init 从对象映射捕获 v/f spv**。证据（`out62m_m1018pipe2.txt`）：
 | M938 | §18.4483: ★★★★★★★ **假句柄链全链打通：`[ABIPGID]`→`[ABIPGOBJ]`→`[ABIOBJ]`→SPIR-V 加载成功（`[SHADERMOD] ok`）→ `vkCreateGraphicsPipelines` 被调用！但首帧前崩溃（C0000005），原因是"Draw"子串把 `sceGxmPrecomputedDrawInit` 也当成 draw，过早创建管线；已改为只匹配真正的 `sceGxmDraw`**。`out62m_m1019shaderhandles.txt` 证据：
+| M939 | §18.4484: ★★★★★★★ **第一发真实 draw 完整执行：`[REAL-PIPE] #1 OK`（真实 SPIR-V 管线创建成功）、`[FRAMEBEGIN] frame=1`、`[FUBOHOST]` UBO 上传、`[TEXBIND]` 纹理绑定全部发生！** 但 page1 期间 app **不调用 `sceGxmEndScene`**，只调用 `sceGxmBeginScene`×1、`sceGxmDraw`×1、`sceGxmDisplayQueueAddEntry`×2 → 后端 `end_frame()`（提交命令缓冲 + `vkQueuePresentKHR`）从未被调用 → **无 present**。已把 EndScene/DisplayQueueAddEntry 接到后端 `end_frame()`。`out62m_m1020drawonly.txt` 证据：
+```
+[ABIPIPE] v=gxp_vert_0001.gxp.spv f=gxp_frag_0165.gxp.spv rc=0 n=59454976
+[REAL-PIPE] #1 OK v=C:/dev/p5d_build/spv_all/gxp_vert_0001.gxp.spv f=...gxp_frag_0165.gxp.spv rp=... pipe=00000209cf97a8d0
+err: [REALPIPE-CREATE] before vkCreateGraphicsPipelines v=...gxp_vert_0001...
+err: [REALPIPE-CREATE] after r=0 pipe=00000209cf97a8d0        ← 创建成功（此前崩溃已消除）
+err: [FRAMEBEGIN] frame=1 img=0 cmd=00000209cf9da8d0
+err: [FUBOHOST] #1 ... UBO float: 0.00000 0.00000 ...
+err: [TEXBIND] #0 real=0 alias=0 dummy=16
+err: [WARN] [STUB] sceGxmDisplayQueueAddEntry called - NOT IMPLEMENTED
+err: [CRASH] 0 条
+[GXMABI] 统计（page1）：sceGxmBeginScene ×1、sceGxmDraw ×1、sceGxmDisplayQueueAddEntry ×2、**sceGxmEndScene 0**
+```
+**关键发现**：app 不调用 EndScene；`DisplayQueueAddEntry` 才是"把主 RT 送去显示"的入口（后端该函数是 STUB）。
+**修复（18.4484）**：在 harness GXMABI 分发块拦截这两个调用，直接调用后端 `end_frame()`
+（它内部：`cmd_end_render_pass` → `end_command_buffer` → `vkQueueSubmit` → `vkQueuePresentKHR`）：
+```cpp
+namespace p5d { namespace vulkan { void end_frame(); void present_frame(uint32_t); } }
+if (strncmp(_ge->name,"sceGxmEndScene",14)==0 || strncmp(_ge->name,"sceGxmDisplayQueueAddEntry",26)==0) {
+    uint32_t _data=0; if (DisplayQueue) { uint8_t* sp = GP(s->r[2]); if (sp) memcpy(&_data, sp, 4); }
+    p5d::vulkan::end_frame();
+    printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n);
+    s->r[0] = 0; return s->r[14];
+}
+```
+编译链接成功（二进制含 `[ABIDISP]`）；已启动 62M 长跑（`out62m_m1021present.txt`）。
+NEXT：检查 `[ABIDISP]`→`[FRAMESUBMIT]`→`vkQueuePresentKHR`→`[PRESENT]`/窗口首帧；确认 `ef_debug.log` 的 submit/present 结果。 |
+| §18.4484 | The first real draw fully executed: [REAL-PIPE] #1 OK (a real SPIR-V pipeline created successfully), [FRAMEBEGIN] frame=1, [FUBOHOST] UBO upload and [TEXBIND] texture bind all happened! But during page1 the app never calls sceGxmEndScene - only sceGxmBeginScene x1, sceGxmDraw x1, sceGxmDisplayQueueAddEntry x2 - so the backend end_frame() (which submits the command buffer and calls vkQueuePresentKHR) was never invoked -> no present. Wired EndScene/DisplayQueueAddEntry to the backend end_frame(). Evidence (out62m_m1020drawonly.txt): [ABIPIPE] v=gxp_vert_0001 f=gxp_frag_0165 rc=0 n=59454976; [REAL-PIPE] #1 OK v=...gxp_vert_0001.gxp.spv f=...gxp_frag_0165.gxp.spv pipe=...; err [REALPIPE-CREATE] before vkCreateGraphicsPipelines ...; err [REALPIPE-CREATE] after r=0 pipe=00000209cf97a8d0 (created successfully - the earlier crash is gone); err [FRAMEBEGIN] frame=1 img=0 cmd=...; err [FUBOHOST] #1 UBO float 0.0...; err [TEXBIND] #0 real=0 alias=0 dummy=16; err [WARN] [STUB] sceGxmDisplayQueueAddEntry NOT IMPLEMENTED; err [CRASH] 0 lines. [GXMABI] stats for page1: sceGxmBeginScene x1, sceGxmDraw x1, sceGxmDisplayQueueAddEntry x2, sceGxmEndScene 0. KEY: the app does not call EndScene; DisplayQueueAddEntry is the entry that sends the main RT for display (the backend function is a STUB). FIX 18.4484: intercept both calls in the harness GXMABI dispatch block and call the backend end_frame() (which does cmd_end_render_pass -> end_command_buffer -> vkQueueSubmit -> vkQueuePresentKHR): namespace p5d { namespace vulkan { void end_frame(); void present_frame(uint32_t); } } then if (strncmp(name,'sceGxmEndScene',14)==0 || strncmp(name,'sceGxmDisplayQueueAddEntry',26)==0) { uint32_t data=0; if (DisplayQueue) { uint8_t* sp=GP(s->r[2]); if (sp) memcpy(&data,sp,4); } p5d::vulkan::end_frame(); printf('[ABIDISP] ...'); s->r[0]=0; return s->r[14]; }. Build+link OK (binary contains [ABIDISP]); 62M run started out62m_m1021present.txt; NEXT: check [ABIDISP]->[FRAMESUBMIT]->vkQueuePresentKHR->[PRESENT]/window first frame; confirm ef_debug.log submit/present results. |
 1) **GXP→SPIR-V 映射完全正确**（12 条）：
 ```
 [ABIPGID] id=8540B000 hash=A71B28370132FF67 spv=gxp_vert_0000.gxp.spv n=1717
@@ -488119,3 +488147,55 @@ NEXT：确认管线只在真实 `sceGxmDraw`（BeginScene 内）创建、崩溃�
 ANTI-FORGETTING ENTRY. Keywords: M938 fake-handle chain fully connected + 'Draw' substring fix: out62m_m1019shaderhandles.txt shows [ABIPGID] id=8540B000 hash=A71B28370132FF67 spv=gxp_vert_0000; id=8540B020 hash=26F80E96E57EB001 spv=gxp_frag_0000; id=8540B040 hash=FEDFC230E83B40F3 spv=gxp_vert_0001; id=8540B060 hash=BEEA90FD4B545170 spv=gxp_frag_0001 (all manifest hits); [ABIPGOBJ] vert obj=8540C000 spv=gxp_vert_0000, frag obj=8540C040 spv=gxp_frag_0000; [ABICAP] PrecomputedFragmentStateInit r1=8540EA80, PrecomputedVertexStateInit r1=8540E800; [ABIOBJ] frag obj=8540EA80 spv=gxp_frag_0160, vert obj=8540E800 spv=gxp_vert_0026; err [SHADERMOD] ok codeWords=3340/1874; err [REALPIPE-CREATE] before vkCreateGraphicsPipelines v=gxp_vert_0026 f=gxp_frag_0160; then [CRASH] code=C0000005 addr=00007fff5dff33c6 blk=812B1520 pc_last=812B1520 inside sceGxmPrecomputedDrawInit. ROOT: the M935 pipeline-selection condition strstr(_ge->name,'Draw') also matched 'PrecomputedDrawInit' (and GetPrecomputedDrawSize) so the pipeline was created too early with incomplete context -> vkCreateGraphicsPipelines AV. FIX 18.4483: condition strncmp(_ge->name,'sceGxmDraw',10)==0 (real draws only). Build+link OK; 62M run started out62m_m1020drawonly.txt; NEXT: confirm pipeline creation only inside the real sceGxmDraw (inside BeginScene), crash gone, [REAL-PIPE]/draw/EndScene/present -> first visible frame.
 
 LOOKUP: [ABIPGID], [ABIPGOBJ], [ABIOBJ], [SHADERMOD], [REALPIPE-CREATE], 0x8540B000, 0x8540C000, sceGxmPrecomputedDrawInit, out62m_m1020drawonly.txt -> §18.4482 [relevant: fake handles], §18.4480 [relevant: pipeline wiring]
+### 18.4484 PORT M939: 第一发真实 draw 完整执行 + 接上 present（EndScene/DisplayQueueAddEntry → end_frame）
+
+1) `out62m_m1020drawonly.txt`（真实管线创建版）里程碑证据：
+```
+[ABIPIPE] v=gxp_vert_0001.gxp.spv f=gxp_frag_0165.gxp.spv rc=0 n=59454976
+[REAL-PIPE] #1 OK v=C:/dev/p5d_build/spv_all/gxp_vert_0001.gxp.spv
+                    f=.../gxp_frag_0165.gxp.spv rp=00000209cf4f60d0 pipe=00000209cf97a8d0
+err: [REALPIPE-CREATE] before vkCreateGraphicsPipelines v=... f=...
+err: [REALPIPE-CREATE] after r=0 pipe=00000209cf97a8d0     ← 创建成功（崩溃已消除）
+err: [FRAMEBEGIN] frame=1 img=0 cmd=00000209cf9da8d0
+err: [FUBOHOST] #1 ... UBO float: 0.00000 ...
+err: [TEXBIND] #0 real=0 alias=0 dummy=16
+err: [WARN] [STUB] sceGxmDisplayQueueAddEntry called - NOT IMPLEMENTED
+err: [CRASH] 0
+```
+2) page1 实际 GXM 调用（`[GXMABI]` 统计）：
+```
+sceGxmBeginScene ×1
+sceGxmDraw ×1
+sceGxmDisplayQueueAddEntry ×2
+sceGxmEndScene 0        ← app 不调用 EndScene!
+```
+3) 后端 `end_frame()` 才是"提交命令缓冲 + present"：
+```cpp
+void end_frame() {
+  cmd_end_render_pass(current_cmd_buffer);
+  end_command_buffer(current_cmd_buffer);
+  vkQueueSubmit(graphics_queue, ... frame_fence);
+  ... (截图)
+  vkQueuePresentKHR(present_queue, &present_info);   // <- 上屏
+  current_cmd_buffer = nullptr;
+}
+```
+4) 修复（18.4484，`recomp_harness.cpp` GXMABI 分发块）：
+```cpp
+namespace p5d { namespace vulkan { void end_frame(); void present_frame(uint32_t); } }
+if (strncmp(_ge->name, "sceGxmEndScene", 14) == 0 || strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) {
+    uint32_t _data = 0;
+    if (strncmp(_ge->name, "sceGxmDisplayQueueAddEntry", 26) == 0) { uint8_t* _sp = GP(s->r[2]); if (_sp) std::memcpy(&_data, _sp, 4); }
+    p5d::vulkan::end_frame();
+    static int _dn=0; if (_dn++<16) printf("[ABIDISP] %s data=%08X n=%u\n", _ge->name, _data, g_main_n);
+    s->r[0] = 0; return s->r[14];
+}
+```
+5) 编译链接成功（二进制含 `[ABIDISP]`）；已启动 62M 长跑：`out62m_m1021present.txt`。
+NEXT：检查 `[ABIDISP]` → `[FRAMESUBMIT]` → `vkQueuePresentKHR` → `[PRESENT]`/窗口首帧；
+核对 `ef_debug.log`（end_render_pass/end_command_buffer/after submit/before present/after present）。
+验证：`out62m_m1020drawonly.txt`（真实管线/draw 证据）、`out62m_m1021present.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M939 first real draw fully executed + present wiring: out62m_m1020drawonly.txt shows [ABIPIPE] v=gxp_vert_0001 f=gxp_frag_0165 rc=0 n=59454976; [REAL-PIPE] #1 OK ... pipe=00000209cf97a8d0; err [REALPIPE-CREATE] before/after r=0 pipe=...; err [FRAMEBEGIN] frame=1 img=0 cmd=...; err [FUBOHOST] #1 UBO float 0.0; err [TEXBIND] #0 real=0 alias=0 dummy=16; err [WARN] [STUB] sceGxmDisplayQueueAddEntry NOT IMPLEMENTED; err [CRASH] 0. page1 GXM calls: BeginScene x1, Draw x1, DisplayQueueAddEntry x2, EndScene 0 (the app never calls EndScene). The backend end_frame() is the one that ends the render pass, ends+submits the command buffer, calls vkQueueSubmit and vkQueuePresentKHR; it was never invoked. FIX 18.4484: in the harness GXMABI dispatch block intercept sceGxmEndScene and sceGxmDisplayQueueAddEntry, read data=*(u32*)GP(s->r[2]) for display queue, call p5d::vulkan::end_frame(), print [ABIDISP], return 0. Build+link OK (binary contains [ABIDISP]); 62M run started out62m_m1021present.txt; NEXT: check [ABIDISP] -> [FRAMESUBMIT] -> vkQueuePresentKHR -> [PRESENT]/window first frame and ef_debug.log submit/present results.
+
+LOOKUP: 0x812B17F0, 0x812B1720, end_frame, vkQueuePresentKHR, [FRAMESUBMIT], [ABIDISP], ef_debug.log, out62m_m1021present.txt -> §18.4483 [relevant: real pipeline/draw], §18.4480 [relevant: pipeline wiring]
