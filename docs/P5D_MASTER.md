@@ -951,6 +951,30 @@
 | M933 | §18.4478: ★★★★★ **RINIT v2 成功：BADMEM 消失（`[BADMEM]` 0），page1 恢复推进并持续产生 IDR 事件（n 59.45M→59.73M+），运行继续到 62M 上限**。`out62m_m1016rinit3.txt`（RINIT v2）关键证据：
 | M934 | §18.4479: ★★★★★★ **找到"首帧可见"缺失的整块拼图：SPIR-V 着色器资产与管线选择机制在磁盘上完整存在，只是我们的 AOT harness 从未接线**。证据与发现：
 | M935 | §18.4480: ★★★★★★★ **实现 GXP→SPIR-V→Vulkan 管线接线（首帧最后一环）：harness 在 GXM ABI 分发前捕获 SetVertex/FragmentProgram 的 GXP 程序、FNV-1a64 哈希、查 `spv_all/gxp_manifest.txt`，并在每次 Draw 前调用 `p5d::vulkan::select_real_pipeline()` 绑定真实管线**。实现（全部在 `recomp_harness.cpp` 的 `hle_call` GXMABI 分发块内）：
+| M936 | §18.4481: **发现 page1 渲染走的是 GXM "Precomputed" 路径（不调用 SetVertex/FragmentProgram），因此上一版 ABIGXP 捕获没触发；已把捕获钩子扩展到 `sceGxmPrecomputedVertexStateInit`/`sceGxmPrecomputedFragmentStateInit`**。证据（`out62m_m1017pipe.txt`，管线接线版 62M 运行）：
+1) `[ABISPVDIR] dir=C:/dev/p5d_build/spv_all manifest=4331` ✅（manifest 加载正常）；
+2) 但 `[ABIGXP]`/`[ABIPIPE]`/`[REAL-PIPE]` = **0**，`gxm_draw_arrays: no graphics pipeline bound` 依旧；
+3) `[GXMABI]` 调用名统计显示 page1 期间 **没有** `sceGxmSetVertexProgram`/`SetFragmentProgram`，而是：
+```
+[GXMABI] sceGxmBeginScene va=812B1470 ...
+[GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000 lr=811EC006
+[GXMABI] sceGxmPrecomputedDrawSetVertexStream va=812B13E0 r0=8F7471D0 r1=0 r2=8F951E00 lr=811E331A
+```
+→ 走的是 **Precomputed 顶点/片元状态** API（`sceGxmPrecomputedVertexStateInit` 0x812B1630、
+`sceGxmPrecomputedFragmentStateInit` 0x812B16D0、`PrecomputedDrawInit` 0x812B1520、`PrecomputedDrawSetVertexStream` 0x812B13E0）。
+4) 修复（18.4481）：ABI 分发前的捕获条件扩展为：
+```cpp
+if (strstr(name,"SetVertexProgram") || strstr(name,"SetFragmentProgram")
+ || strstr(name,"PrecomputedVertexStateInit") || strstr(name,"PrecomputedFragmentStateInit")) {
+    const bool frag = strstr(name,"FragmentProgram")||strstr(name,"PrecomputedFragmentStateInit");
+    // 程序对象 = s->r[1]（Set* 与 Precomputed*StateInit 的第 2 参数都是 {Vertex,Fragment}Program*）
+    ... GXP 捕获/哈希/manifest 查表（同 M935）...
+}
+```
+调试打印：`[ABICAP] name=... frag=N r1=... r2=...`（前 8 次）。
+5) 编译链接成功（二进制含 `[ABICAP]`）；已启动 62M 长跑（`out62m_m1018pipe2.txt`）。
+NEXT：看 `[ABICAP]` 命中与 `[ABIGXP]`/`[ABIPIPE]`/`[REAL-PIPE]`、draw 错误是否消失、EndScene/present → **首帧可见画面**。 |
+| §18.4481 | Found that page1 rendering uses the GXM "Precomputed" path (it never calls SetVertexProgram/SetFragmentProgram), which is why the previous ABIGXP capture never fired; extended the capture hooks to sceGxmPrecomputedVertexStateInit/sceGxmPrecomputedFragmentStateInit. Evidence (out62m_m1017pipe.txt, pipeline-wiring 62M run): (1) [ABISPVDIR] dir=C:/dev/p5d_build/spv_all manifest=4331 (manifest loads fine); (2) but [ABIGXP]/[ABIPIPE]/[REAL-PIPE] = 0 and 'gxm_draw_arrays: no graphics pipeline bound' persists; (3) the [GXMABI] call-name stats show that during page1 there is NO sceGxmSetVertexProgram/SetFragmentProgram; instead: [GXMABI] sceGxmBeginScene va=812B1470; [GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000 lr=811EC006; [GXMABI] sceGxmPrecomputedDrawSetVertexStream va=812B13E0 r0=8F7471D0 r1=0 r2=8F951E00 lr=811E331A -> the Precomputed vertex/fragment state APIs are used (sceGxmPrecomputedVertexStateInit 0x812B1630, sceGxmPrecomputedFragmentStateInit 0x812B16D0, PrecomputedDrawInit 0x812B1520, PrecomputedDrawSetVertexStream 0x812B13E0). FIX 18.4481: extend the pre-dispatch capture condition to include PrecomputedVertexStateInit/PrecomputedFragmentStateInit (program object = s->r[1]; both Set* and Precomputed*StateInit take the {Vertex,Fragment}Program* as the 2nd argument), keep the same GXP capture/hash/manifest lookup, and add [ABICAP] debug prints (first 8). Build+link succeed (binary contains [ABICAP]); 62M run started (out62m_m1018pipe2.txt); NEXT: check [ABICAP] hits, [ABIGXP]/[ABIPIPE]/[REAL-PIPE], whether the draw error disappears, EndScene/present -> first visible frame. |
 1) manifest 懒加载：`P5D_SPV_DIR`（默认 `C:/dev/p5d_build/spv_all`）+ `/gxp_manifest.txt` → `map<u64,string>`；打印 `[ABISPVDIR] dir=... manifest=N`；
 2) 程序捕获：`sceGxmSetVertexProgram`/`SetFragmentProgram` 的 `s->r[1]` = SceGxm{Vertex,Fragment}Program*，其 **+0 = SceGxmProgram*(GXP VA)**；校验 GXP 魔数 `0x00505847`、`sz=*(u32*)(gxp+8)`，对前 sz 字节做 **FNV-1a64**（`h=0xcbf29ce484222325; h^=b; h*=1099511628211`）→ 查 manifest → 记录 `_abi_vspv/_abi_fspv`（打印 `[ABIGXP] vert/frag obj=... gxp=... hash=... spv=...`）；
 3) Draw 前绑定：`sceGxmDraw*` 分发前若两个 spv 名都有 → `p5d::vulkan::select_real_pipeline("<spvdir>/<v>", "<spvdir>/<f>")`（打印 `[ABIPIPE] v=... f=... rc=... n=...`）。
@@ -487911,3 +487935,39 @@ NEXT：验证 `[ABISPVDIR] manifest≈4331`、`[ABIGXP]` 命中、`[ABIPIPE]/[RE
 ANTI-FORGETTING ENTRY. Keywords: M935 GXP->SPIR-V->Vulkan pipeline wiring implemented (last link for first frame): in recomp_harness.cpp hle_call GXMABI dispatch block, (1) lazy-load spv_all/gxp_manifest.txt into map<u64,string> using env P5D_SPV_DIR (default C:/dev/p5d_build/spv_all), print [ABISPVDIR] dir=... manifest=N; (2) on sceGxmSetVertexProgram/SetFragmentProgram capture s->r[1] = SceGxm{Vertex,Fragment}Program*, whose +0 = SceGxmProgram* (GXP VA); validate GXP magic 0x00505847 and sz=*(u32*)(gxp+8); FNV-1a64 over first sz bytes (h=0xcbf29ce484222325; h^=b; h*=1099511628211); lookup manifest -> store _abi_vspv/_abi_fspv, print [ABIGXP] vert/frag obj=... gxp=... hash=... spv=...; (3) on sceGxmDraw* with both names known call p5d::vulkan::select_real_pipeline("<spvdir>/<v>","<spvdir>/<f>") and print [ABIPIPE] v=... f=... rc=... n=...; top-level declaration namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, const char*); } }. Backend get_or_create_real_pipeline creates the real Vulkan pipeline (blend/writemask) and sets g_current_real_pipe so gxm_draw_arrays no longer reports 'no graphics pipeline bound'. Build+link succeed; binary has [ABISPVDIR]/[ABIGXP]/[ABIPIPE] tags. 62M run started out62m_m1017pipe.txt (RINIT + P1TICK + pipeline wiring); NEXT: check [ABISPVDIR] manifest count (~4331), [ABIGXP] hits, [ABIPIPE]/[REAL-PIPE] appearance, disappearance of the gxm_draw_arrays error, EndScene/present -> first visible frame.
 
 LOOKUP: gxp_manifest.txt, select_real_pipeline, get_or_create_real_pipeline, g_current_real_pipe, FNV-1a64, 0x00505847, P5D_SPV_DIR, [ABIGXP], [ABIPIPE], out62m_m1017pipe.txt -> §18.4479 [relevant: manifest discovery], §18.4478 [relevant: draw attempt]
+### 18.4481 PORT M936: page1 走 Precomputed 路径 → 捕获钩子扩展
+
+1) `out62m_m1017pipe.txt`（M935 管线接线版）：
+```
+[ABISPVDIR] dir=C:/dev/p5d_build/spv_all manifest=4331      <- manifest 正常
+[ABIGXP] 0 条   [ABIPIPE] 0 条   [REAL-PIPE] 0 条
+err: [ERROR] gxm_draw_arrays: no graphics pipeline bound
+```
+2) `[GXMABI]` 调用名统计（page1 期间）：
+```
+[GXMABI] sceGxmBeginScene va=812B1470 r0=85410040 ... lr=811EBC28
+[GXMABI] sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000 lr=811EC006
+[GXMABI] sceGxmPrecomputedDrawSetVertexStream va=812B13E0 r0=8F7471D0 r2=8F951E00 lr=811E331A
+```
+**没有** `SetVertexProgram`/`SetFragmentProgram` → page1 用 **Precomputed 状态** API：
+- `sceGxmPrecomputedVertexStateInit` 0x812B1630
+- `sceGxmPrecomputedFragmentStateInit` 0x812B16D0
+- `sceGxmPrecomputedDrawInit` 0x812B1520 / `PrecomputedDrawSetVertexStream` 0x812B13E0
+3) 修复（18.4481，`recomp_harness.cpp` ABI 分发块）：
+```cpp
+if (strstr(_ge->name, "SetVertexProgram") || strstr(_ge->name, "SetFragmentProgram")
+    || strstr(_ge->name, "PrecomputedVertexStateInit") || strstr(_ge->name, "PrecomputedFragmentStateInit")) {
+    const bool _frag = (strstr(_ge->name, "SetFragmentProgram") != nullptr)
+                    || (strstr(_ge->name, "PrecomputedFragmentStateInit") != nullptr);
+    static int _dbg = 0; if (_dbg++ < 8) printf("[ABICAP] name=%s frag=%d r1=%08X r2=%08X\n", ...);
+    // 程序对象 = s->r[1]；后续 GXP 捕获/FNV-1a64/manifest 查表与 M935 相同
+}
+```
+4) 编译链接成功；二进制含 `[ABICAP]`；已启动 62M 长跑：`out62m_m1018pipe2.txt`。
+NEXT：`[ABICAP]` 是否命中、`[ABIGXP]`/`[ABIPIPE]`/`[REAL-PIPE]` 是否出现、
+`gxm_draw_arrays` 错误是否消失、EndScene/present → 首帧可见画面。
+验证：`out62m_m1017pipe.txt`（GXMABI 名称统计）、`out62m_m1018pipe2.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M936 page1 uses the GXM Precomputed path, not SetVertexProgram/SetFragmentProgram, so the M935 capture never fired. out62m_m1017pipe.txt: [ABISPVDIR] dir=C:/dev/p5d_build/spv_all manifest=4331 but [ABIGXP]/[ABIPIPE]/[REAL-PIPE] = 0 and 'gxm_draw_arrays: no graphics pipeline bound' persists; [GXMABI] stats show sceGxmBeginScene va=812B1470, sceGxmDraw va=812B15F0 r0=85410040 r3=8E600000 lr=811EC006, sceGxmPrecomputedDrawSetVertexStream va=812B13E0 r0=8F7471D0 r2=8F951E00 lr=811E331A, and no SetVertexProgram/SetFragmentProgram at all. The Precomputed APIs used are sceGxmPrecomputedVertexStateInit 0x812B1630, sceGxmPrecomputedFragmentStateInit 0x812B16D0, sceGxmPrecomputedDrawInit 0x812B1520, PrecomputedDrawSetVertexStream 0x812B13E0. FIX 18.4481: extend the ABI pre-dispatch capture condition to SetVertexProgram/SetFragmentProgram/PrecomputedVertexStateInit/PrecomputedFragmentStateInit; program object = s->r[1] for all (2nd arg is the {Vertex,Fragment}Program*); frag flag true for SetFragmentProgram or PrecomputedFragmentStateInit; add [ABICAP] debug prints (first 8). Build+link OK; binary contains [ABICAP]; 62M run started out62m_m1018pipe2.txt; NEXT: check [ABICAP] hits, [ABIGXP]/[ABIPIPE]/[REAL-PIPE], disappearance of the draw error, EndScene/present -> first visible frame.
+
+LOOKUP: 0x812B1630, 0x812B16D0, 0x812B1520, 0x812B13E0, 0x812B15F0, [ABICAP], out62m_m1018pipe2.txt -> §18.4480 [relevant: pipeline wiring], §18.4479 [relevant: manifest]

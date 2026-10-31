@@ -1444,8 +1444,10 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
             if (std::sscanf(_ln, "%16llx %31s %255s", &_h, _st, _nm) >= 3 && _h && _nm[0]) _abi_man[_h] = std::string(_nm); }
           std::fclose(_f); }
         printf("[ABISPVDIR] dir=%s manifest=%zu\n", _abi_spvdir.c_str(), _abi_man.size()); fflush(stdout); }
-      if (strstr(_ge->name, "SetVertexProgram") || strstr(_ge->name, "SetFragmentProgram")) {
-        const bool _frag = strstr(_ge->name, "SetFragmentProgram") != nullptr;
+      if (strstr(_ge->name, "SetVertexProgram") || strstr(_ge->name, "SetFragmentProgram")
+          || strstr(_ge->name, "PrecomputedVertexStateInit") || strstr(_ge->name, "PrecomputedFragmentStateInit")) {
+        const bool _frag = (strstr(_ge->name, "SetFragmentProgram") != nullptr) || (strstr(_ge->name, "PrecomputedFragmentStateInit") != nullptr);
+        static int _dbg = 0; if (_dbg++ < 8) { printf("[ABICAP] name=%s frag=%d r1=%08X r2=%08X\n", _ge->name, (int)_frag, s->r[1], s->r[2]); fflush(stdout); }
         uint32_t _o = s->r[1]; uint8_t* _q = GP(_o); uint32_t _gxp = 0; if (_q) std::memcpy(&_gxp, _q, 4);
         uint64_t _h = 0; uint8_t* _g = GP(_gxp);
         if (_g) { uint32_t _mg = 0, _sz = 0; std::memcpy(&_mg, _g, 4); std::memcpy(&_sz, _g + 8, 4);
