@@ -964,6 +964,54 @@
 | M946 | §18.4491: ★★★★★★ **红色片元诊断结果：即使换成常量红色片元着色器，RT 截图仍全黑（mean=0/max=0）→ 定位到根因：后端 `sceGxmBeginScene` **忽略 renderTarget/colorSurface 参数**，永远渲染进 swapchain；而我们的显示路径把**从未被绘制过的 app RT** 拷贝到 swapchain → 把真实绘制内容覆盖成黑色**。证据链：
 | M947 | §18.4492: ★★★★★★★ **找到并实现正确的渲染架构（源自旧 host `eboot_probe.cpp` 的成熟做法）：`BeginScene` 的 colorSurface 在 guest 栈 `[sp+8]`，surface 结构 `+0 flags/+4 width/+8 height/+0xC stride/+0x10 data/+0x14 format/+0x18 type`；正确流程是 `begin_scene_pass(data,w,h)`（画进 app 的 RT，且 `g_cur_pass_rp` 与管线 render pass 匹配）→ `end_scene_pass()` → `present_frame(data)`（RT→swapchain 拷贝+present）**。证据链：
 | M948 | §18.4493: **M947 架构验证结果：BeginScene 的 colorSurface 参数解析取错了（`[ABIBEGIN] surf=816CBCC4 data=00000000 0x0`）→ 回退到 begin_frame，RT 依旧全黑（mean=0/max=0）；已改为多候选探测（r3 + 栈 4 个指针 + 两种 surface 布局自动判别）**。`out62m_m1030rtscene.txt`：
+| M949 | §18.4494: ★★★★★★ **候选探测揭示关键真相：BeginScene 的 colorSurface 是 `0x816CBCC4`（image 数据段的全局结构），但其字段全 0——因为**我们从未实现 `sceGxmColorSurfaceInit`（STUB，不写任何字段）**！已实现真实的 ColorSurfaceInit/DepthStencilSurfaceInit HLE，填充 surface 结构。** 证据：
+| M950 | §18.4495: ★★★★★★★ **ColorSurfaceInit 真实实现生效：surface 结构被正确填充（`w=960 h=544 stride=1024 data=8D300000`），且启动期不再 stall。** 3M 冒烟（`out3m_m1033smoke.txt`）：
+```
+[ABICS] init surf=816CBC74 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8CF00000 sane=1
+[ABICS] init surf=816CBCC4 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8D300000 sane=1   ← BeginScene 的 colorSurface!
+[ABICS] init surf=816CBD14 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8D700000 sane=1
+[ABICS] init surf=816CBEC8 fmt=4734976 ... sane=0     ← 第 4 次调用参数不合理，已跳过写入（守卫生效）
+done: blocks=3000000 pc=811DFA22 last_block=0x811DFA18 r0=0 r9=0x50   exit=0
+```
+- `0x816CBCC4`（候选探测里 BeginScene 的 `[sp+8]`）现在有 `w=960,h=544,stride=1024,data=0x8D300000`；
+- `data=0x8D300000` 正是 `DisplayQueueAddEntry` 传入的 RT 地址 → **BeginScene 探测现在能正确选中该 surface 并调用 `begin_scene_pass(0x8D300000,960,544)`**。
+**同时修复（18.4495）**：M949 里对 `sceGxmDepthStencilSurfaceInit` 的拦截导致启动期 stall（0x811EAAE4 循环，n=347993 卡死），已撤回该拦截（保留旧 stub 行为，深度不是红 FS 验证所需）；并给 ColorSurfaceInit 加**合理性守卫**（w/h∈[64,2048] 且 stride∈[64,4096] 才写入），避免第 4 种误调用破坏 guest 内存。
+证据（m1032 早退）：`out62m_m1032csinit.txt` 在 `[812B1660/816CBEF8/...]`（DepthStencilSurfaceInit）后的 init 循环 0x811EAAE4 stall，watchdog 输出后进程退出。
+已启动 62M 验证运行（`out62m_m1033rtred.txt`，红 FS）：预期 `[ABIBEGIN] surf=816CBCC4 data=8D300000 960x544` → `[ABIRT]` 截图**变红** → present_frame 上屏红色。 |
+| §18.4495 | The real ColorSurfaceInit works: surface structures are now correctly filled (w=960 h=544 stride=1024 data=8D300000) and boot no longer stalls. 3M smoke (out3m_m1033smoke.txt): [ABICS] init surf=816CBC74 w=960 h=544 stride=1024 data=8CF00000 sane=1; [ABICS] init surf=816CBCC4 w=960 h=544 stride=1024 data=8D300000 sane=1 (the BeginScene colorSurface!); [ABICS] init surf=816CBD14 w=960 h=544 stride=1024 data=8D700000 sane=1; [ABICS] init surf=816CBEC8 fmt=4734976 ... sane=0 (4th call args insane, write skipped by the guard); done: blocks=3000000 ... exit=0. The candidate 0x816CBCC4 ([sp+8] in BeginScene) now has w=960,h=544,stride=1024,data=0x8D300000; data 0x8D300000 is exactly the RT address passed to DisplayQueueAddEntry -> the BeginScene probe can now select this surface and call begin_scene_pass(0x8D300000,960,544). Also fixed 18.4495: the M949 interception of sceGxmDepthStencilSurfaceInit caused a boot-time stall (loop 0x811EAAE4 hung at n=347993), so it was reverted (keep the old stub behavior; depth is not needed for the red-FS verification); ColorSurfaceInit got a sanity guard (write only when w/h in [64,2048] and stride in [64,4096]) so the 4th mis-call cannot corrupt guest memory. Evidence of the early exit (m1032): out62m_m1032csinit.txt stalls in the init loop 0x811EAAE4 after [812B1660/816CBEF8/...] (DepthStencilSurfaceInit) and the process exits after the watchdog dump. 62M verification run started (out62m_m1033rtred.txt with P5D_REALFS=red): expected [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 -> [ABIRT] capture turns RED -> present_frame shows red. |
+1) `out62m_m1031begincand.txt` 候选探测：
+```
+[ABICAND] #2 ptr=85420080 w0=00000001 w4=55555555 w8=00000001 wC=55555555 w10=00000001   ← 栈[sp+4]=我们的 fake sync 句柄
+[ABICAND] #3 ptr=816CBCC4 w0=00000000 w4=00000000 w8=00000000 wC=00000000 w10=00000000   ← colorSurface 全局，全 0
+[ABICAND] #4 ptr=816CBD64 w0=0 ... 全 0                                                 ← depthStencil 全局，全 0
+[ABIBEGIN] surf=00000000 data=00000000 0x0
+```
+2) 参数分布（结合早期 `[GXMABI] r0=85410040 r1=4 r2=85410040 r3=0`）：
+   - r0=context, r1=flags, r2=renderTarget, **r3=0（不是 surface）**；
+   - 栈：[sp+0]=?(0)、**[sp+4]=sync 句柄 0x85420080**、**[sp+8]=colorSurface=0x816CBCC4**、**[sp+0xC]=depthStencil=0x816CBD64**；
+   → 说明 BeginScene 真正签名/参数序与 Vita 头文件不同：colorSurface 在 [sp+8]（**旧 host 的读法是对的**），
+   但结构字段全 0 是因为 **ColorSurfaceInit 是 STUB**。
+3) 从 `gxm_abi.cpp` 找到 guest ABI 签名（9 参数）：
+```
+int sceGxmColorSurfaceInit(SceGxmColorSurface *surface, SceGxmColorFormat colorFormat,
+    SceGxmColorSurfaceType surfaceType, SceGxmColorSurfaceScaleMode scaleMode,
+    SceGxmOutputRegisterSize outputRegisterSize, unsigned int width, unsigned int height,
+    unsigned int strideInPixels, void *data)
+```
+4) **实现（18.4494）**：在 GXMABI 分发块真实填写 surface 结构（布局沿用旧 host 读法）：
+```cpp
+if (strncmp(_ge->name, "sceGxmColorSurfaceInit", 22) == 0) {
+  _surf=s->r[0]; _fmt=s->r[1]; _type=s->r[2]; _scale=s->r[3];
+  _osz=_stk[0]; _w=_stk[1]; _h=_stk[2]; _stride=_stk[3]; _data=_stk[4];
+  写 +0=0, +4=w, +8=h, +0xC=stride, +0x10=data, +0x14=fmt, +0x18=type, +0x1C=scale, +0x20=osz;
+  printf("[ABICS] init surf=%08X fmt=%u type=%u scale=%u osz=%u w=%u h=%u stride=%u data=%08X\n", ...);
+  return 0;
+}
+if (strncmp(_ge->name, "sceGxmDepthStencilSurfaceInit", 29) == 0) { ... 写 +4=w,+8=h,+0xC=stride,+0x10=data,+0x14=fmt,+0x18=type; }
+```
+5) 编译链接成功（二进制含 `[ABICS]/[ABIDS]`）；已启动 62M 验证运行（`out62m_m1032csinit.txt`，红 FS）。
+NEXT：检查 `[ABICS]`（w/h/stride/data 是否 960x544/RT VA）+ `[ABICAND]`（全局结构是否已有字段）+ `[ABIRT]` 的 RT 是否变红。 |
+| §18.4494 | Candidate probing revealed the key truth: BeginScene's colorSurface is 0x816CBCC4 (a global structure in the image data segment) but all its fields are zero - because we never implemented sceGxmColorSurfaceInit (STUB, writes nothing)! Implemented real ColorSurfaceInit/DepthStencilSurfaceInit HLE filling the surface structures. Evidence: (1) out62m_m1031begincand.txt candidates: [ABICAND] #2 ptr=85420080 w0=00000001 w4=55555555 w8=00000001 wC=55555555 w10=00000001 (stack[sp+4] = our fake sync handle); [ABICAND] #3 ptr=816CBCC4 w0=0 w4=0 w8=0 wC=0 w10=0 (colorSurface global, all zero); [ABICAND] #4 ptr=816CBD64 all zero (depthStencil global, all zero); [ABIBEGIN] surf=00000000 data=00000000 0x0. (2) argument distribution (with early [GXMABI] r0=85410040 r1=4 r2=85410040 r3=0): r0=context, r1=flags, r2=renderTarget, r3=0 (not the surface); stack: [sp+0]=0, [sp+4]=sync handle 0x85420080, [sp+8]=colorSurface=0x816CBCC4, [sp+0xC]=depthStencil=0x816CBD64 -> the BeginScene signature/arg order differs from the Vita header: colorSurface is at [sp+8] (the old host read was right), but the struct fields are all zero because ColorSurfaceInit is a STUB. (3) guest ABI signature from gxm_abi.cpp (9 args): int sceGxmColorSurfaceInit(SceGxmColorSurface *surface, SceGxmColorFormat colorFormat, SceGxmColorSurfaceType surfaceType, SceGxmColorSurfaceScaleMode scaleMode, SceGxmOutputRegisterSize outputRegisterSize, unsigned int width, unsigned int height, unsigned int strideInPixels, void *data). (4) Implementation 18.4494 in the GXMABI dispatch block writes the surface structure (layout per old host reads): _surf=s->r[0]; _fmt=s->r[1]; _type=s->r[2]; _scale=s->r[3]; _osz=_stk[0]; _w=_stk[1]; _h=_stk[2]; _stride=_stk[3]; _data=_stk[4]; write +0=0, +4=w, +8=h, +0xC=stride, +0x10=data, +0x14=fmt, +0x18=type, +0x1C=scale, +0x20=osz; print [ABICS] init surf=%08X fmt=%u type=%u scale=%u osz=%u w=%u h=%u stride=%u data=%08X; return 0. DepthStencilSurfaceInit 29: writes +4=w,+8=h,+0xC=stride,+0x10=data,+0x14=fmt,+0x18=type ([ABIDS]). (5) Build+link OK (binary contains [ABICS]/[ABIDS]); 62M verification run started (out62m_m1032csinit.txt with P5D_REALFS=red). NEXT: check [ABICS] (w/h/stride/data = 960x544/RT VA) + [ABICAND] (global struct now filled) + whether [ABIRT] RT turns red. |
 ```
 [ABIBEGIN] surf=816CBCC4 data=00000000 0x0 n=59454976      ← 从栈 sp+8 读到的不是 colorSurface
 [ABIRT] saved p5d_rt_first.bmp cd=8D300000 n=59475321
@@ -488825,3 +488873,78 @@ NEXT：读 `[ABICAND]` 找正确 surface 指针/布局 → 修正 BeginScene 解
 ANTI-FORGETTING ENTRY. Keywords: M948 BeginScene colorSurface argument parsed wrong in M947 ([ABIBEGIN] surf=816CBCC4 data=00000000 0x0) -> fell back to begin_frame and the RT stayed black (mean=0/max=0). out62m_m1030rtscene.txt shows [ABIBEGIN] surf=816CBCC4 data=00000000 0x0 n=59454976; [ABIRT] saved p5d_rt_first.bmp cd=8D300000; [REAL-PIPE] #1 OK; [DRAWST] vc=3 inrp=1 rp=0000000000000000; [ENDPASS] cd=00000000; RT STATS mean=0.00 max=0 (0,0,0) 100%. 0x816CBCC4 is an image data-segment global (not a heap surface) with +4/+8/+0x10 all zero -> colorSurface is NOT at [sp+8] (old host stack offset differs from our AOT stack base) or the layout differs; early [GXMABI] sceGxmBeginScene r0=85410040 r1=00000004 r2=85410040 r3=00000000 shows the arg distribution differs from the Vita header order. FIX 18.4493: BeginScene interception probes candidates r3 + [sp+0..0xC] and auto-discriminates two layouts: A (+0 flags,+4 width,+8 height,+0xC stride,+0x10 data,+0x14 format,+0x18 type) and B (+0 width,+4 height,+8 data); accepts when w/h in [64,2048] and data in [0x80000000,0xC0000000); prints [ABICAND] #i ptr=... w0/w4/w8/wC/w10; on success begin_scene_pass(data,w,h) else begin_frame(). Build+link OK; 62M probe run started out62m_m1031begincand.txt with P5D_REALFS=red. NEXT: read [ABICAND] to find the real surface pointer/layout, fix the BeginScene parsing, and the RT should turn red.
 
 LOOKUP: [ABIBEGIN], [ABICAND], begin_scene_pass, 0x816CBCC4, 0x85410040, out62m_m1031begincand.txt -> §18.4492 [relevant: render architecture], §18.4491 [relevant: BeginScene ignores RT]
+### 18.4494 PORT M949: ColorSurfaceInit 真实实现（BeginScene surface 全 0 的真凶）
+
+1) 候选探测（`out62m_m1031begincand.txt`）：
+```
+[ABICAND] #2 ptr=85420080 w0=00000001 w4=55555555 w8=00000001 wC=55555555 w10=00000001  <- 栈[sp+4]=fake sync 句柄
+[ABICAND] #3 ptr=816CBCC4 w0=00000000 w4=00000000 w8=00000000 wC=00000000 w10=00000000  <- colorSurface 全局
+[ABICAND] #4 ptr=816CBD64 w0=00000000 w4=00000000 w8=00000000 wC=00000000 w10=00000000  <- depthStencil 全局
+[ABIBEGIN] surf=00000000 data=00000000 0x0
+```
+2) 参数分布（结合早期 `[GXMABI] sceGxmBeginScene r0=85410040 r1=4 r2=85410040 r3=0`）：
+- r0=context, r1=flags, r2=renderTarget, **r3=0**；
+- 栈：`[sp+0]=0`、`[sp+4]=0x85420080`（fake sync）、**`[sp+8]=0x816CBCC4`（colorSurface 全局）**、**`[sp+0xC]=0x816CBD64`（depthStencil 全局）**；
+→ 旧 host 的 `[sp+8]` 读法正确；但字段全 0 的原因是 **ColorSurfaceInit 是 STUB（不写字段）**。
+3) `gxm_abi.cpp` 里 0x812B1730 的 guest ABI（9 参数）：
+```
+int sceGxmColorSurfaceInit(SceGxmColorSurface *surface, SceGxmColorFormat colorFormat,
+    SceGxmColorSurfaceType surfaceType, SceGxmColorSurfaceScaleMode scaleMode,
+    SceGxmOutputRegisterSize outputRegisterSize, unsigned int width, unsigned int height,
+    unsigned int strideInPixels, void *data)
+```
+4) 实现（18.4494）：在 GXMABI 分发块真实填写 surface：
+```cpp
+if (strncmp(_ge->name, "sceGxmColorSurfaceInit", 22) == 0) {
+  uint32_t _surf=s->r[0], _fmt=s->r[1], _type=s->r[2], _scale=s->r[3];
+  uint32_t _osz=_stk[0], _w=_stk[1], _h=_stk[2], _stride=_stk[3], _data=_stk[4];
+  uint8_t* _q = GP(_surf);
+  if (_q) { uint32_t _z=0;
+    memcpy(_q+0,&_z,4); memcpy(_q+4,&_w,4); memcpy(_q+8,&_h,4);
+    memcpy(_q+0xC,&_stride,4); memcpy(_q+0x10,&_data,4);
+    memcpy(_q+0x14,&_fmt,4); memcpy(_q+0x18,&_type,4);
+    memcpy(_q+0x1C,&_scale,4); memcpy(_q+0x20,&_osz,4); }
+  printf("[ABICS] init surf=%08X fmt=%u type=%u scale=%u osz=%u w=%u h=%u stride=%u data=%08X\n", ...);
+  s->r[0]=0; return s->r[14];
+}
+if (strncmp(_ge->name, "sceGxmDepthStencilSurfaceInit", 29) == 0) {
+  // 6 参数: surface, format, type, strideInPixels, width, height, data ?
+  // 写 +4=w,+8=h,+0xC=stride,+0x10=data,+0x14=fmt,+0x18=type
+}
+```
+5) 编译链接成功（含 `[ABICS]/[ABIDS]`）；已启动 62M 验证运行：`out62m_m1032csinit.txt`（红 FS）。
+NEXT：`[ABICS]` 的 w/h/stride/data 应为 960x544/RT VA；`[ABICAND]` 全局结构应有字段；`[ABIRT]` RT 应变为红色。
+验证：`out62m_m1031begincand.txt`、`out62m_m1032csinit.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M949 the BeginScene colorSurface is 0x816CBCC4 (a global struct in the image data segment) and the depthStencil is 0x816CBD64, but all fields were zero because sceGxmColorSurfaceInit was a STUB that wrote nothing. Evidence out62m_m1031begincand.txt: [ABICAND] #2 ptr=85420080 w0=1 w4=55555555 w8=1 wC=55555555 w10=1 (stack[sp+4] = fake sync handle); [ABICAND] #3 ptr=816CBCC4 all zero (colorSurface global); [ABICAND] #4 ptr=816CBD64 all zero (depthStencil global); [ABIBEGIN] surf=00000000 data=0 0x0. Arg distribution from early [GXMABI]: r0=85410040 r1=4 r2=85410040 r3=0 -> r0=context, r1=flags, r2=renderTarget, r3=0; stack [sp+0]=0, [sp+4]=sync handle 0x85420080, [sp+8]=colorSurface 0x816CBCC4, [sp+0xC]=depthStencil 0x816CBD64; the old host's [sp+8] read is correct. Guest ABI signature of sceGxmColorSurfaceInit (9 args): SceGxmColorSurface *surface, SceGxmColorFormat colorFormat, SceGxmColorSurfaceType surfaceType, SceGxmColorSurfaceScaleMode scaleMode, SceGxmOutputRegisterSize outputRegisterSize, unsigned int width, unsigned int height, unsigned int strideInPixels, void *data. Implementation 18.4494: intercept sceGxmColorSurfaceInit -> _surf=s->r[0]; _fmt=s->r[1]; _type=s->r[2]; _scale=s->r[3]; _osz=_stk[0]; _w=_stk[1]; _h=_stk[2]; _stride=_stk[3]; _data=_stk[4]; write struct +0=0, +4=w, +8=h, +0xC=stride, +0x10=data, +0x14=fmt, +0x18=type, +0x1C=scale, +0x20=osz; print [ABICS]; return 0; also sceGxmDepthStencilSurfaceInit (29) writes +4=w,+8=h,+0xC=stride,+0x10=data,+0x14=fmt,+0x18=type printing [ABIDS]. Build+link OK (binary contains [ABICS]/[ABIDS]); 62M verification run started out62m_m1032csinit.txt with P5D_REALFS=red. NEXT: check [ABICS] (w/h/stride/data should be 960x544/RT VA), [ABICAND] (globals now filled), and whether the [ABIRT] RT turns red.
+
+LOOKUP: sceGxmColorSurfaceInit, 0x812B1730, 0x816CBCC4, 0x816CBD64, ColorSurfaceInit, [ABICS], [ABIDS], [ABICAND], out62m_m1032csinit.txt -> §18.4493 [relevant: BeginScene arg probe], §18.4492 [relevant: render architecture]
+### 18.4495 PORT M950: ColorSurfaceInit 生效（surface 正确填充）+ DepthStencil 拦截撤回 + 合理性守卫
+
+1) 3M 冒烟（`out3m_m1033smoke.txt`）：
+```
+[ABICS] init surf=816CBC74 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8CF00000 sane=1
+[ABICS] init surf=816CBCC4 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8D300000 sane=1   <- BeginScene colorSurface
+[ABICS] init surf=816CBD14 fmt=0 type=0 scale=1 osz=0 w=960 h=544 stride=1024 data=8D700000 sane=1
+[ABICS] init surf=816CBEC8 fmt=4734976 type=1065353216 scale=2389704704 ... sane=0   <- 参数不合理，跳过写入
+done: blocks=3000000 pc=811DFA22 last_block=0x811DFA18 r0=0 r9=0x50   exit=0
+```
+- `0x816CBCC4`（BeginScene 的 `[sp+8]`）现在有 `w=960,h=544,stride=1024,data=0x8D300000`；
+- `0x8D300000` 正是 `DisplayQueueAddEntry` 的 RT → **BeginScene 探测可正确选中并 `begin_scene_pass(0x8D300000,960,544)`**。
+2) 修复 M949 副作用（18.4495）：
+- **撤回 `sceGxmDepthStencilSurfaceInit` 拦截**：它在启动期被调用（`[812B1660/816CBEF8/...]`），我们写错字段导致
+  0x811EAAE4 的 init 循环 stall（n=347993 卡死，watchdog 后退出）；深度非红 FS 验证所需，保持旧 stub；
+- **ColoSsurfaceInit 加合理性守卫**：`w/h∈[64,2048]` 且 `stride∈[64,4096]` 才写结构（第 4 种误调用 sane=0 被跳过）。
+3) 证据（m1032 早退）：`out62m_m1032csinit.txt` 在 `[812B1660/816CBEF8/...]` 之后卡在 0x811EAAE4。
+4) 已启动 62M 验证运行：`out62m_m1033rtred.txt`（红 FS）：
+```
+预期: [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544
+      [ABIRT] ... -> p5d_rt_first.bmp 变红
+      present_frame() → 窗口出现红色
+```
+NEXT：检查 `[ABIBEGIN]`/`[ABICAND]`/`[ABIRT]` 与 BMP 颜色统计；若变红 ⇒ 渲染架构修正成功，转入纹理/uniform/顶点数据通路。
+验证：`out3m_m1033smoke.txt`、`out62m_m1032csinit.txt`（早退证据）、`out62m_m1033rtred.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M950 the real ColorSurfaceInit (9 args) now works and fills the surface structures correctly: 3M smoke out3m_m1033smoke.txt shows [ABICS] init surf=816CBC74 w=960 h=544 stride=1024 data=8CF00000 sane=1; [ABICS] init surf=816CBCC4 w=960 h=544 stride=1024 data=8D300000 sane=1 (BeginScene colorSurface); [ABICS] init surf=816CBD14 w=960 h=544 stride=1024 data=8D700000 sane=1; [ABICS] init surf=816CBEC8 fmt=4734976 ... sane=0 (4th call args insane, write skipped); done blocks=3000000 exit=0. 0x816CBCC4 ([sp+8]) now has data=0x8D300000 which is exactly the RT passed to DisplayQueueAddEntry -> BeginScene probe can now select it and call begin_scene_pass(0x8D300000,960,544). Also 18.4495: the M949 DepthStencilSurfaceInit interception caused a boot stall (init loop 0x811EAAE4 hung at n=347993, [812B1660/816CBEF8/...]) and was REVERTED (keep the old stub; depth not needed for the red-FS test); ColorSurfaceInit got a sanity guard requiring w/h in [64,2048] and stride in [64,4096] before writing. 62M verification run started out62m_m1033rtred.txt with P5D_REALFS=red: expected [ABIBEGIN] surf=816CBCC4 data=8D300000 960x544 -> [ABIRT] capture turns red -> present_frame shows red. NEXT: check [ABIBEGIN]/[ABICAND]/[ABIRT] and BMP color stats; if red the architecture is fixed and work moves to textures/uniforms/vertex data.
+
+LOOKUP: sceGxmColorSurfaceInit, 0x812B1730, [ABICS], 0x816CBCC4, 0x8D300000, sane, out3m_m1033smoke.txt, out62m_m1032csinit.txt, out62m_m1033rtred.txt -> §18.4494 [relevant: ColorSurfaceInit impl], §18.4493 [relevant: BeginScene arg probe]
