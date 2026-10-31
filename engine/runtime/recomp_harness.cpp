@@ -938,11 +938,22 @@ static void pending_req_scan() {
 static int g_periodpump_env = -1;
 static void job_probes(uint32_t pcv, RecState* s) {
   { static int _ri_env = -1; if (_ri_env < 0) { const char* _e = getenv("P5D_RINIT"); _ri_env = (_e && atoi(_e)) ? 1 : 0; }
-    if (_ri_env && g_main_n >= 59500000u) { static int _ri_done = 0;
-      if (!_ri_done) { _ri_done = 1;
-        uint32_t _tbl = hle_malloc(0x100u);
-        uint8_t* _q = GP(0x816CBE2Cu); if (_q && _tbl) { std::memcpy(_q, &_tbl, 4);
-          printf("[RINIT] DAT_816CBE2C(render uniform table) = %08X at n=%u blk=%08X\\n", _tbl, g_main_n, pcv); fflush(stdout); } } } }
+    if (_ri_env && g_main_n >= 59400000u) {
+      uint32_t _p = pcv & ~1u;
+      if (_p == 0x811F043Eu) { static int _n43 = 0; if (_n43++ < 8) {
+          uint32_t _o = s->r[0], _w4=0,_w8=0,_w48=0, _c28=0,_c2c=0;
+          uint8_t* _q; if ((_q=GP(_o)) != NULL) std::memcpy(&_w4,_q+4,4), std::memcpy(&_w8,_q+8,4), std::memcpy(&_w48,_q+0x48,4);
+          if ((_q=GP(0x816CBE28u))) std::memcpy(&_c28,_q,4); if ((_q=GP(0x816CBE2Cu))) std::memcpy(&_c2c,_q,4);
+          printf("[FUNC43E] #%d obj=%08X w4=%08X w8=%08X w48=%08X  g28=%08X g2C=%08X n=%u\n", _n43-1,_o,_w4,_w8,_w48,_c28,_c2c,g_main_n); fflush(stdout); } }
+      if (_p == 0x811EBF94u) { static int _n94 = 0; if (_n94++ < 8) {
+          uint32_t _c28=0,_c2c=0; uint8_t* _q;
+          if ((_q=GP(0x816CBE28u))) std::memcpy(&_c28,_q,4); if ((_q=GP(0x816CBE2Cu))) std::memcpy(&_c2c,_q,4);
+          printf("[FRAME94] #%d g28=%08X g2C=%08X n=%u\n", _n94-1,_c28,_c2c,g_main_n); fflush(stdout); } }
+      if (_p == 0x811EFE6Au) { static int _n6a = 0; if (_n6a++ < 8) printf("[HELPER6A] r0=%08X r1=%08X r2=%08X n=%u\n", s->r[0], s->r[1], s->r[2], g_main_n); }
+      if (_p == 0x811EBF94u) { uint32_t _c2c = 0; uint8_t* _q = GP(0x816CBE2Cu);
+        if (_q) std::memcpy(&_c2c,_q,4);
+        if (_c2c == 0) { uint32_t _tbl = hle_malloc(0x100u); uint8_t* _q2 = GP(0x816CBE2Cu);
+          if (_q2 && _tbl) { std::memcpy(_q2, &_tbl, 4); printf("[RINIT] g2C was 0 -> set %08X (auto at FUN_811EBF94 n=%u)\n", _tbl, g_main_n); fflush(stdout); } } } } }
 
   { static int _co_env = -1; if (_co_env < 0) { const char* _e = getenv("P5D_CRIOP"); _co_env = (_e && atoi(_e)) ? 1 : 0; }
     static uint32_t _cop = 0; static uint32_t _cop_next = 0; static int _cop_sub = 0;

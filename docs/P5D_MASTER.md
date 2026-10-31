@@ -946,6 +946,40 @@
 | M928 | §18.4473: ★★★★★★ **重大根因：GFD job worker 线程因"信号量 token 不对齐"而死 → 反编译 `FUN_811E68C8` 证明 worker 取到 NULL 任务函数指针（`INDIRECT-MISS reg1=0 target=0 block=811E6928`，`[THREXIT] pc=FFFFFFFD lr=811E6936`，5 个线程 40012000–40016000 在 n=59,454,348 全死）；修复 WaitSema/SignalSema token 转移**。证据与推理链：
 | M929 | §18.4474: ★★★★★★★ **sema 修复解锁渲染：首次 GXM BeginScene 发生（`[FRAMEBEGIN] frame=1`）！随后 `[BADMEM] va=0x6C stub=812B1400` 崩溃 = `sceGxmReserveFragmentDefaultUniformBuffer` ABI 空实现用了过期 out 指针 → 补真实现**。`out62m_m1011sematok.txt`（sema token 修复版）关键证据：
 | M930 | §18.4475: **UBO ABI 修复生效（穿过 ReserveFragment），新 BADMEM 定位为 guest 侧 `DAT_816CBE2C`（渲染 uniform 表指针）=0 导致读 `[0x6C]`；反编译 render 帧路径 `FUN_811EBF94`；加 `P5D_RINIT` 在 page1 开始时初始化该表指针为 0x100 零缓冲**。`out62m_m1013gxmubo.txt`（UBO 修复版）：
+| M931 | §18.4476: **RINIT 未触发（崩溃早于 59.5M 阈值）→ 改为在 `FUN_811EBF94` 入口自动初始化；并定位到真正初始化者 `FUN_811F043E`（fragment program setter）**。`out62m_m1014rinit.txt`（RINIT=1）：`[RINIT]` 0 条——因为崩溃发生在 **n≈59.454M**，而 RINIT 阈值是 `n>=59.5M`，太晚未触发。反编译找到渲染状态初始化链：
+1) **`FUN_811F043E`（fragment program 切换，282B）**：
+```c
+...
+FUN_812b1560(DAT_816cbe78, uVar3);         // sceGxmSetFragmentProgram
+DAT_816cbe28 = param_1;                     // 当前 fragment 状态对象
+*(uint *)(param_1 + 0x48) = *(uint *)(param_1 + 0x48) | 0x10000000;   // 置 dirty 位
+DAT_816cbe2c = puVar2[1];                   // ★ fragment uniform 数据指针
+// 其中：if ((*(uint*)(param_1+0x48) & 1) == 0) { uVar3=*(u32*)(param_1+4); puVar2=(u32*)(param_1+4); }
+//       else { puVar2 = (u32*)FUN_811f01ae(param_1,DAT_816cbe48,&DAT_816cbe58); uVar3=*puVar2; }
+```
+2) vertex 对应者 **`FUN_811EFD8E`**：
+```c
+if ((DAT_816cbe18 != param_1) || (DAT_816cbe3c != DAT_816cbe38)) {
+  iVar1 = param_1 + DAT_816cbe38 * 0xc;
+  FUN_812b12e0(DAT_816cbe78, *(u32*)(iVar1 + 4));      // sceGxmSetVertexProgram
+  *(u32*)(param_1 + 0x7c) |= 0x10000000;
+  DAT_816cbe1c = *(u32*)(iVar1 + 8);                   // vertex uniform 数据指针
+  DAT_816cbe3c = DAT_816cbe38; DAT_816cbe18 = param_1;
+}
+```
+3) `FUN_811EBF94` 的调用顺序正是：`FUN_811EFD8E(vertexState)` → `FUN_811F043E(fragmentState)` → `FUN_812B1400(ctx,&ubo)` → `FUN_811EFE6A(ubo,0x1b,DAT_816cbe2c)`。
+   → 理论上 `FUN_811F043E` 应已把 `DAT_816cbe2c` 设为 `puVar2[1]`；但实测为 0 → 说明
+   (a) `FUN_811F043E` 走了**提前 return**（同程序同状态，不重设），或
+   (b) `puVar2[1]`（fragment program 条目的 uniform 指针字段）本身为 0（资源/程序结构未填）。
+4) 新增探针（`out62m_m1015rinit2.txt` 运行中）：
+```
+[FUNC43E] #k obj=%08X w4=%08X w8=%08X w48=%08X g28=%08X g2C=%08X n=...
+[FRAME94] #k g28=%08X g2C=%08X n=...
+[HELPER6A] r0=%08X r1=%08X r2=%08X n=...
+```
+以及 **RINIT 自动触发**：进入 `FUN_811EBF94` 时若 `DAT_816CBE2C==0`，分配 0x100 零缓冲并写入（打印 `[RINIT] g2C was 0 -> set ...`），保证越过 BADMEM、观察后续帧。
+5) 已启动 62M 长跑：`out62m_m1015rinit2.txt`。NEXT: 读 `[FUNC43E]`/`[FRAME94]` → 判定 `DAT_816CBE2C` 应来自哪个 fragment 程序条目 → 修 HLE/资源层使其非 0；同时看 RINIT 后帧是否继续（`[FRAMEBEGIN]`→`[FRAMEEND]`→present）。 |
+| §18.4476 | RINIT never fired (crash at n~59.454M, before the 59.5M threshold) -> trigger it at FUN_811EBF94 entry instead; also found the real initializer FUN_811F043E (fragment program setter). out62m_m1014rinit.txt (RINIT=1): [RINIT] 0 lines because the crash happens at n~59.454M while the RINIT threshold was n>=59.5M. Decompiled render-state init chain: (1) FUN_811F043E (fragment program switch, 282B): ... FUN_812b1560(DAT_816cbe78, uVar3) (sceGxmSetFragmentProgram); DAT_816cbe28 = param_1; *(uint *)(param_1 + 0x48) |= 0x10000000 (dirty bit); DAT_816cbe2c = puVar2[1] (fragment uniform data pointer), where if ((*(uint*)(param_1+0x48) & 1) == 0) { uVar3=*(u32*)(param_1+4); puVar2=(u32*)(param_1+4); } else { puVar2 = (u32*)FUN_811f01ae(param_1,DAT_816cbe48,&DAT_816cbe58); uVar3=*puVar2; }. (2) vertex analog FUN_811EFD8E: if ((DAT_816cbe18 != param_1) || (DAT_816cbe3c != DAT_816cbe38)) { iVar1 = param_1 + DAT_816cbe38*0xc; FUN_812b12e0(DAT_816cbe78, *(u32*)(iVar1+4)) (sceGxmSetVertexProgram); *(u32*)(param_1+0x7c) |= 0x10000000; DAT_816cbe1c = *(u32*)(iVar1+8) (vertex uniform data); DAT_816cbe3c=DAT_816cbe38; DAT_816cbe18=param_1; }. (3) FUN_811EBF94 call order is exactly FUN_811EFD8E(vertexState) -> FUN_811F043E(fragmentState) -> FUN_812B1400(ctx,&ubo) -> FUN_811EFE6A(ubo,0x1b,DAT_816cbe2c), so FUN_811F043E should set DAT_816cbe2c = puVar2[1], but it is 0 -> either FUN_811F043E early-returned (same program/state, no reset) or puVar2[1] (fragment program entry uniform pointer field) is 0 (resource/program struct not filled). New probes (run out62m_m1015rinit2.txt): [FUNC43E] obj/w4/w8/w48/g28/g2C, [FRAME94] g28/g2C, [HELPER6A] r0/r1/r2, plus RINIT auto-trigger at FUN_811EBF94 entry when DAT_816CBE2C==0 (allocate 0x100 zero buffer, print [RINIT] g2C was 0 -> set ...) so the BADMEM is skipped and later frames can be observed. 62M run started out62m_m1015rinit2.txt; NEXT: read [FUNC43E]/[FRAME94] to determine which fragment program entry DAT_816CBE2C should come from -> fix HLE/resource layer so it is nonzero; also check if the frame continues after RINIT ([FRAMEBEGIN]->[FRAMEEND]->present). |
 1) `[FRAMEBEGIN] frame=1` 再次出现（`err` 中），随后 `[BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400`——但这次 **stub=812B1400 只是残留字段**，真正出错块是 `0x811EFE6A`（guest 代码）；
 2) 反编译 `FUN_811EBF94`（134B，page1 的 BeginScene 帧路径）：
 ```c
@@ -487595,3 +487629,43 @@ NEXT：检查是否越过 `0x811EFE6A`、`[FRAMEBEGIN]`/`[FRAMEEND]`/present 计
 ANTI-FORGETTING ENTRY. Keywords: M930 UBO fix effective; new BADMEM is guest-side DAT_816CBE2C render uniform table pointer = 0: out62m_m1013gxmubo.txt err shows [FRAMEBEGIN] frame=1 then [BADMEM] guest va=0x0000006C unmapped block=0x811EFE6A tid=0 stub=812B1400 (stub field stale; real faulting block is guest 0x811EFE6A). Decompiled FUN_811EBF94 (page1 BeginScene frame path): FUN_811efd8e(...); FUN_811f043e(...); FUN_812b1400(DAT_816cbe78,&local_18) (ReserveFragmentDefaultUBO, now fixed); FUN_811efe6a(local_18,0x1b,DAT_816cbe2c) reads DAT_816cbe2c[0x1b]=[0x6C]; FUN_812b14a0(...); FUN_812b15f0(...); FUN_811c52b6(). FUN_811EFE6A: iVar1 = *(int *)(param_3 + param_2*4); if (iVar1 != 0) FUN_812b13b0(param_1,iVar1,0,...,param_2*0x48 + -0x7eaebd08) => root cause DAT_816CBE2C=0. Usage: FUN_811E44D0 checks dirty bit (*(u32*)(DAT_816cbe28+0x48) & 0x10000000), if DAT_816cbe2c != 0 then FUN_812b1400(ctx,&local) + FUN_811efe24(local, DAT_816cbe2c) => it is a shader fragment uniform data block set by upper render state/resource code. Experiment 18.4475 env P5D_RINIT=1 at n>=59,500,000 once: uint32_t _tbl = hle_malloc(0x100u) (zeroed); uint8_t* _q = GP(0x816CBE2Cu); memcpy(_q,&_tbl,4); print [RINIT]; then FUN_811EFE6A reads entry 0 -> skips -> no crash, frame proceeds (uniform data missing). 62M run started out62m_m1014rinit.txt (RINIT + UBO fix + P1TICK). NEXT: check passing 0x811EFE6A, [FRAMEBEGIN]/[FRAMEEND]/present counters, page1 completion; if other uniform tables (DAT_816CBE1C etc.) are uninitialized do the same.
 
 LOOKUP: 0x816CBE2C, 0x816CBE1C, 0x816CBE28, 0x811EBF94, 0x811EFE6A, 0x811E44D0, P5D_RINIT, out62m_m1014rinit.txt -> §18.4474 [relevant: UBO ABI fix], §18.4473 [relevant: sema fix]
+### 18.4476 PORT M931: RINIT 触发点修正 + 定位 uniform 表初始化者 FUN_811F043E
+
+1) `out62m_m1014rinit.txt`（`P5D_RINIT=1`，阈值 59.5M）：`[RINIT]` **0 条**
+→ 原因：崩溃在 **n≈59.454M**（page1 渲染第一帧），阈值 `g_main_n >= 59500000` 太晚。
+2) 反编译找到渲染状态初始化链：
+**`FUN_811F043E`（fragment program 切换，282B）**：
+```c
+if ((*(uint *)(param_1 + 0x48) & 1) == 0) { uVar3 = *(u32*)(param_1 + 4); puVar2 = (u32*)(param_1 + 4); }
+else { puVar2 = (u32*)FUN_811f01ae(param_1, DAT_816cbe48, &DAT_816cbe58); uVar3 = *puVar2; }
+FUN_812b1560(DAT_816cbe78, uVar3);                    // sceGxmSetFragmentProgram
+DAT_816cbe28 = param_1;
+*(uint *)(param_1 + 0x48) = *(uint *)(param_1 + 0x48) | 0x10000000;   // dirty
+DAT_816cbe2c = puVar2[1];                              // ★ fragment uniform 数据指针
+```
+**`FUN_811EFD8E`（vertex program 切换，96B）**：
+```c
+iVar1 = param_1 + DAT_816cbe38 * 0xc;
+FUN_812b12e0(DAT_816cbe78, *(u32*)(iVar1 + 4));        // sceGxmSetVertexProgram
+*(u32*)(param_1 + 0x7c) |= 0x10000000;
+DAT_816cbe1c = *(u32*)(iVar1 + 8);                     // vertex uniform 数据指针
+DAT_816cbe18 = param_1;
+```
+3) 调用顺序（`FUN_811EBF94`）：`FUN_811EFD8E` → `FUN_811F043E` → `FUN_812B1400` → `FUN_811EFE6A(ubo,0x1b,DAT_816cbe2c)`。
+→ `DAT_816CBE2C` 理应由 `FUN_811F043E` 设为 `puVar2[1]`；实测 0 ⇒
+  (a) `FUN_811F043E` 同程序/同状态**提前 return**（不重设），或
+  (b) `puVar2[1]` 本身就是 0（fragment program 条目的 uniform 指针未填）。
+4) 新探针（`out62m_m1015rinit2.txt`）：
+```
+[FUNC43E] #k obj=%08X w4=%08X w8=%08X w48=%08X g28=%08X g2C=%08X n=...
+[FRAME94] #k g28=%08X g2C=%08X n=...
+[HELPER6A] r0=%08X r1=%08X r2=%08X n=...
+```
+**RINIT 自动**：进入 `FUN_811EBF94` 时若 g2C==0 → 分配 0x100 零缓冲并写入 → `[RINIT] g2C was 0 -> set ...`，越过 BADMEM 看后续。
+5) 已启动 62M 长跑：`out62m_m1015rinit2.txt`。
+NEXT：读探针判定 uniform 表应来自哪个 fragment 程序条目，修 HLE/资源层使其非 0；同时观察 RINIT 后 `[FRAMEBEGIN]`→`[FRAMEEND]`→present。
+验证：`out62m_m1014rinit.txt`（RINIT 未触发）、`FUN_811F043E`/`FUN_811EFD8E` 反编译、`out62m_m1015rinit2.txt`（待生成）。
+
+ANTI-FORGETTING ENTRY. Keywords: M931 RINIT never fired because crash at n~59.454M precedes the 59.5M threshold; trigger moved to FUN_811EBF94 entry; found the real uniform-table initializer FUN_811F043E (fragment program setter): if ((*(uint*)(param_1+0x48)&1)==0) { uVar3=*(u32*)(param_1+4); puVar2=(u32*)(param_1+4); } else { puVar2=(u32*)FUN_811f01ae(param_1,DAT_816cbe48,&DAT_816cbe58); uVar3=*puVar2; } FUN_812b1560(DAT_816cbe78,uVar3) (sceGxmSetFragmentProgram); DAT_816cbe28=param_1; *(uint*)(param_1+0x48)|=0x10000000 (dirty); DAT_816cbe2c=puVar2[1] (fragment uniform data pointer). Vertex analog FUN_811EFD8E: iVar1=param_1+DAT_816cbe38*0xc; FUN_812b12e0(DAT_816cbe78,*(u32*)(iVar1+4)) (sceGxmSetVertexProgram); *(u32*)(param_1+0x7c)|=0x10000000; DAT_816cbe1c=*(u32*)(iVar1+8); DAT_816cbe18=param_1. FUN_811EBF94 order: FUN_811EFD8E -> FUN_811F043E -> FUN_812B1400(ctx,&ubo) -> FUN_811EFE6A(ubo,0x1b,DAT_816cbe2c); so DAT_816CBE2C should be set by FUN_811F043E to puVar2[1], but it is 0 -> either FUN_811F043E early-returned (same program/state) or puVar2[1] itself is 0 (fragment program entry uniform pointer unfilled). New probes [FUNC43E] (obj/w4/w8/w48/g28/g2C), [FRAME94] (g28/g2C), [HELPER6A] (r0/r1/r2); RINIT auto-trigger at FUN_811EBF94 entry when g2C==0: allocate 0x100 zero buffer, write it, print [RINIT] g2C was 0 -> set ...; 62M run started out62m_m1015rinit2.txt; NEXT: read [FUNC43E]/[FRAME94] to determine which fragment program entry DAT_816CBE2C should come from, fix HLE/resource layer so it is nonzero, and check subsequent [FRAMEBEGIN]->[FRAMEEND]->present.
+
+LOOKUP: 0x816CBE2C, 0x816CBE1C, 0x811F043E, 0x811EFD8E, 0x811EBF94, 0x811EFE6A, out62m_m1015rinit2.txt -> §18.4475 [relevant: RINIT], §18.4474 [relevant: UBO ABI]
