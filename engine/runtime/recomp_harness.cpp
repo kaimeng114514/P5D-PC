@@ -1116,6 +1116,7 @@ namespace p5d { namespace vulkan { int32_t select_real_pipeline(const char*, con
 namespace p5d { namespace vulkan { void update_uniform_buffer(const float* local_to_world, const float* view_proj); } }   // 18.4496 M951
 namespace p5d { namespace vulkan { void update_uniform_buffer_raw(const void* data, unsigned int bytes); void update_fragment_uniform_buffer_raw(const void* data, unsigned int bytes); } }   // 18.4507 M962
 namespace p5d { namespace vulkan { int32_t upload_gxm_control_resolved(unsigned int unit, const void* control16); } }   // 18.4510 M965
+namespace p5d { namespace vulkan { int32_t upload_gxm_control_to_unit(unsigned int unit, const void* control16, const unsigned char* hostPixels, unsigned int bytes); } }   // 18.4521 M976
 namespace p5d { namespace vulkan { int upload_vertex_stream(const void* data, unsigned int bytes, unsigned int vertex_count); } }   // 18.4498 M953
 static void job_probes(uint32_t pcv, RecState* s) {
   { static uint32_t _pmc = 0; if (((++_pmc) & 0x3FFFu) == 0u) hle_pump_win_messages(); }
@@ -1920,6 +1921,21 @@ extern "C" uint32_t hle_call(uint32_t stub_va, RecState* s) {
             }
             if (!_ok) break;
           }
+          // 18.4521 M976: ENGINE-DRAWN MOVIE - when the bound fragment texture is the 960x544 movie texture,
+          // upload our pre-decoded BGRA movie frame as that unit's content, so the ORIGINAL shader draws the movie.
+          { static int _me = -1; if (_me < 0) _me = (getenv("P5D_MOVIE_ENGINE") != nullptr) ? 1 : 0;
+            if (_me && g_movie_va) {
+              for (int _u = 0; _u < 16; ++_u) {
+                bool _nz = false; for (int _k = 0; _k < 16; ++_k) if (_frag_tex[_u][_k]) { _nz = true; break; }
+                if (!_nz) continue;
+                uint32_t _w1 = 0; std::memcpy(&_w1, _frag_tex[_u] + 4, 4);
+                uint32_t _tm = _w1 & 0xE0000000u;
+                unsigned _tw = 0, _th = 0;
+                if ((_tm & 0xE0000000u) == 0x60000000u || (_tm & 0xE0000000u) == 0x80000000u || (_tm & 0xE0000000u) == 0xC0000000u) {
+                  _tw = ((_w1 >> 12) & 0xFFFu) + 1u; _th = (_w1 & 0xFFFu) + 1u; }
+                if (_tw == g_movie_w && _th == g_movie_h) {
+                  int _rc = p5d::vulkan::upload_gxm_control_to_unit((unsigned)_u, _frag_tex[_u], GP(g_movie_va), (unsigned)(g_movie_w * g_movie_h * 4u));
+                  static int _mn = 0; if (_mn++ < 12) { printf("[ABIMOVTEX] unit=%u rc=%d %ux%u frame=%ld n=%u\n", (unsigned)_u, _rc, _tw, _th, g_movie_frame, g_main_n); fflush(stdout); } } } } }
           // 18.4510 M965: resolve+upload all bound fragment textures (engine ctrl blocks -> backend VkImages)
           for (int _u = 0; _u < 16; ++_u) {
             bool _nz = false; for (int _k = 0; _k < 16; ++_k) if (_frag_tex[_u][_k]) { _nz = true; break; }

@@ -991,6 +991,35 @@
 | M973 | §18.4518: ★★★★★★★★★★ **【真实画面首次上屏！】纯红诊断运行实测：窗口屏幕捕获 **31050/35624 采样像素为纯红**（SCREEN mean=100.6 max=249 red=31050）——证明「宿主影片层 BMP → `p5d_movie_set_frame` → `vkCmdBlitImage` 全屏 blit 到交换链 → `vkQueuePresentKHR` → 窗口 → 物理屏幕」整条**显示通路真实工作**。同时澄清两个假象：①`PrintWindow` 抓 Vulkan 窗口永远是**白色占位**（mean=246.9 red=0，GDI 无法抓 Vulkan surface）；②`save_screenshot` 对交换链读到**纯白**（`[SHOTSTAT] frame=1 max=255 mean=255.00 file=p5d_swap_1.bmp`）——它没正确读 presented image；③早前"白色窗口"判断是这两个假象之一造成，**以屏幕捕获为准**。另外已从 NV12 文件提取并确认 **title 影片第 300 帧 = P5D 真实标题画面**（红色城市剪影 + 彩色纸屑雨，`movie_frame_300.png`），已启动 `P5D_MOVIE_START=300` 运行，屏幕应显示**原版游戏真实标题画面**。证据：
 | M974 | §18.4519: ★★★★★★★★★★★ **【真实游戏画面】：屏幕捕获成功捕获到**原版 P5D 标题画面**（红色天空 + 城市剪影 + 彩色三角/星形纸屑雨）真实显示在 `recomp_harness` 窗口（976×583）中——与本项目从 NV12 直接解码的 title 影片第 300 帧（`movie_frame_300.png`）一致。这是本项目**第一次在屏幕上显示原版游戏的真实画面内容**。证据文件：`C:\dev\p5d_build\evidence_p5d_title_real.png`（窗口捕获）与 `evidence_p5d_title_frame300_ref.png`（NV12 原帧参考）。捕获方法（唯一可靠）：枚举 `recomp_harness` 的窗口 → `MoveWindow` 到干净位置 → `BringWindowToTop`/`SetForegroundWindow` → `CopyFromScreen` 抓窗口矩形；`PrintWindow`（GDI，Vulkan 白占位）与 `save_screenshot`（读交换链白图）均不可用。运行：`out80m_m1053title300.txt`：
 | M975 | §18.4520: **用户反馈「全屏打游戏时弹窗打扰」→ 已实现三项降低干扰/离屏取证能力（本轮只做代码+文档，不启动窗口、不做桌面截屏）**：
+| M976 | §18.4521: **实现「引擎自绘影片」通路：当 draw 绑定的片元纹理控制块声明尺寸 = 960×544（影片纹理）时，把预解码 BGRA 影片帧通过 `upload_gxm_control_to_unit(unit, ctrl16, hostPixels, bytes)` 直接上传为该单元内容 → 原版片元着色器自己采样并绘制影片帧（不再依赖宿主全屏 blit 演示层）**。开关 `P5D_MOVIE_ENGINE=1`；日志 `[ABIMOVTEX]`。实现位置：harness 的 draw 时纹理上传块之前（18.4521）：
+```cpp
+{ static int _me = -1; if (_me < 0) _me = (getenv("P5D_MOVIE_ENGINE") != nullptr) ? 1 : 0;
+  if (_me && g_movie_va) {
+    for (int _u = 0; _u < 16; ++_u) {
+      if (_frag_tex[_u] 全零) continue;
+      uint32_t _w1; std::memcpy(&_w1, _frag_tex[_u] + 4, 4);
+      uint32_t _tm = _w1 & 0xE0000000u;
+      unsigned _tw = 0, _th = 0;
+      if (_tm==0x60000000u || _tm==0x80000000u || _tm==0xC0000000u) {   // linear/tiled/strided 的宽高编码
+        _tw = ((_w1 >> 12) & 0xFFFu) + 1u; _th = (_w1 & 0xFFFu) + 1u; }
+      if (_tw == g_movie_w && _th == g_movie_h) {
+        int _rc = upload_gxm_control_to_unit((unsigned)_u, _frag_tex[_u], GP(g_movie_va), (unsigned)(g_movie_w*g_movie_h*4u));
+        printf("[ABIMOVTEX] unit=%u rc=%d %ux%u frame=%ld n=%u\n", ...); } } } }
+```
+后端接口（`vulkan_backend.h`）：
+```cpp
+SceInt32 upload_gxm_control_to_unit(SceUInt32 unit, const void* control16,
+                                    const SceUInt8* hostPixels, SceUInt32 bytes);
+```
+—— 内部 `resolve_gxm_texture` 解析控制块（含 swizzle/尺寸/格式）后按 hostPixels 上传到该 unit。
+编译：Idle 优先级，exit=0；二进制含 `[ABIMOVTEX]`/`P5D_MOVIE_ENGINE`。
+意义：这是"**原版代码自己绘制**"的关键一步——影片帧不再是宿主层覆盖，而是进入引擎的纹理采样路径，由原版 GXP 片元着色器绘制。等用户不在游戏时运行验证：
+```
+P5D_HIDEWINDOW=1 P5D_MOVIE_ENGINE=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_START=300 \
+P5D_MOVIE_CAPTURE=1  (或不加 MOVIE_CAPTURE，用 RT 截图)
+```
+NEXT：验证 `[ABIMOVTEX]` 出现 + RT 截图出现影片内容（引擎绘制）；若 page1 没有 960×544 影片纹理绘制，则继续找"影片 quad"的片元程序哈希并调整门控。 |
+| §18.4521 | Implemented the ENGINE-DRAWN MOVIE path: when a draw's bound fragment texture control block declares size = 960x544 (the movie texture), upload our pre-decoded BGRA movie frame directly as that unit's content via upload_gxm_control_to_unit(unit, ctrl16, hostPixels, bytes) -> the ORIGINAL fragment shader samples and draws the movie frame (no longer relying on the host fullscreen-blit demo layer). Toggle P5D_MOVIE_ENGINE=1; log tag [ABIMOVTEX]. Implementation location: before the draw-time texture upload block in the harness (18.4521): static int _me=-1; if(_me<0) _me=(getenv("P5D_MOVIE_ENGINE")!=nullptr)?1:0; if(_me && g_movie_va){ for(int _u=0;_u<16;++_u){ if(_frag_tex[_u] all zero) continue; uint32_t _w1; memcpy(&_w1,_frag_tex[_u]+4,4); uint32_t _tm=_w1&0xE0000000u; unsigned _tw=0,_th=0; if(_tm==0x60000000u||_tm==0x80000000u||_tm==0xC0000000u){ _tw=((_w1>>12)&0xFFFu)+1u; _th=(_w1&0xFFFu)+1u; } if(_tw==g_movie_w && _th==g_movie_h){ int _rc=upload_gxm_control_to_unit((unsigned)_u,_frag_tex[_u],GP(g_movie_va),(unsigned)(g_movie_w*g_movie_h*4u)); printf("[ABIMOVTEX] unit=%u rc=%d %ux%u frame=%ld n=%u"); } } }. Backend API (vulkan_backend.h): SceInt32 upload_gxm_control_to_unit(SceUInt32 unit, const void* control16, const SceUInt8* hostPixels, SceUInt32 bytes) - internally resolve_gxm_texture parses the control block (swizzle/size/format) then uploads hostPixels to that unit. Compiled at Idle priority, exit=0; binary contains [ABIMOVTEX]/P5D_MOVIE_ENGINE. This is a key step toward 'the original code draws it itself' - the movie frame enters the engine texture-sampling path and is drawn by the original GXP fragment shader. Verify when the user is not gaming: P5D_HIDEWINDOW=1 P5D_MOVIE_ENGINE=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_START=300 P5D_MOVIE_CAPTURE=1 (or RT capture). NEXT: verify [ABIMOVTEX] appears + RT screenshot shows movie content (engine-drawn); if page1 has no 960x544 movie-texture draw, find the movie quad's fragment program hash and adjust the gate. |
 1) **`P5D_HIDEWINDOW=1`**：backend 初始化后立即 `FindWindowA(0,"P5D Native Port")` + `ShowWindow(SW_HIDE)` —— 运行渲染时**不再弹出/显示窗口**，不会切掉用户全屏游戏画面；
 2) **`P5D_MOVIE_CLOCK=wall`**：影片帧按**墙钟 29.97fps** 推进（此前只在 DisplayQueueAddEvent 推进 1 帧 → 画面静止），让 title 影片真正播放；
 3) **`P5D_MOVIE_CAPTURE=1`**：**离屏证据**——每帧把影片 BGRA 写成 `p5d_moviecap_N.bmp`（项目自带 BMP 写入器，前 16 帧），**完全不需要窗口/桌面截屏**即可取证。
@@ -490796,3 +490825,49 @@ NEXT（等用户允许/不在游戏时）：
 ANTI-FORGETTING ENTRY. Keywords: M975 user complained that popups disturb the fullscreen game -> implemented anti-disturbance and offscreen-evidence features. P5D_HIDEWINDOW=1: after backend init FindWindowA(nullptr,'P5D Native Port') + ShowWindow(hwnd,0/SW_HIDE) via p5d_maybe_hide_window() so no window ever shows over the user's game. P5D_MOVIE_CLOCK=wall: in movie_advance_frame advance movie frame by wall clock at 29.97fps (g_movie_frame = start + elapsed_ms*30000/1001/1000) instead of one frame per DisplayQueueAddEvent (which left the picture static). P5D_MOVIE_CAPTURE=1: offscreen evidence via p5d_write_bgra_bmp('p5d_moviecap_N.bmp', _dst, w, h) (self-written 54-byte BMP header, first 16 frames), needing NO window/desktop screen capture. Compiled at Idle priority (ProcessPriorityClass::Idle) so the user's game is not disturbed; exit=0; binary contains the P5D_HIDEWINDOW/[MOVIECAP]/clock=wall tags. PROJECT RULE: while the user plays fullscreen - NO popups, NO window topmost/move/activate, NO desktop screen capture; evidence must use offscreen capture (P5D_MOVIE_CAPTURE / RT screenshots); visible window preview requires user consent. NEXT (when user allows / not gaming): run P5D_HIDEWINDOW=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_CAPTURE=1 to verify movie animation offscreen; wire movie content back into the engine's own movie quad (TEXSRC gating) for the final 'original code draws it' form; fix save_screenshot swapchain reading (capture before present).
 
 LOOKUP: P5D_HIDEWINDOW, p5d_maybe_hide_window, FindWindowA P5D Native Port, P5D_MOVIE_CLOCK=wall, P5D_MOVIE_CAPTURE, p5d_write_bgra_bmp, p5d_moviecap_N.bmp, Idle priority compile -> §18.4519 [relevant: real title picture], §18.4516 [relevant: host movie layer]
+### 18.4521 PORT M976: 引擎自绘影片（原版着色器采样真实影片帧）
+
+1) 设计：把影片帧作为**引擎纹理单元的内容**上传（而非宿主全屏 blit），让原版片元着色器自己采样绘制。
+2) 实现（`recomp_harness.cpp` 18.4521，draw 时纹理上传块之前）：
+```cpp
+{ static int _me = -1; if (_me < 0) _me = (getenv("P5D_MOVIE_ENGINE") != nullptr) ? 1 : 0;
+  if (_me && g_movie_va) {
+    for (int _u = 0; _u < 16; ++_u) {
+      if (_frag_tex[_u] 全零) continue;
+      uint32_t _w1; std::memcpy(&_w1, _frag_tex[_u] + 4, 4);
+      uint32_t _tm = _w1 & 0xE0000000u;
+      unsigned _tw = 0, _th = 0;
+      if (_tm == 0x60000000u || _tm == 0x80000000u || _tm == 0xC0000000u) {
+        _tw = ((_w1 >> 12) & 0xFFFu) + 1u; _th = (_w1 & 0xFFFu) + 1u; }
+      if (_tw == g_movie_w && _th == g_movie_h) {   // 960x544 = 影片纹理
+        int _rc = p5d::vulkan::upload_gxm_control_to_unit((unsigned)_u, _frag_tex[_u],
+                         GP(g_movie_va), (unsigned)(g_movie_w * g_movie_h * 4u));
+        printf("[ABIMOVTEX] unit=%u rc=%d %ux%u frame=%ld n=%u\n", ...); } } } }
+```
+3) 后端接口（`vulkan_backend.h`）：
+```cpp
+SceInt32 upload_gxm_control_to_unit(SceUInt32 unit, const void* control16,
+                                    const SceUInt8* hostPixels, SceUInt32 bytes);
+```
+   内部：`resolve_gxm_texture(control16)` → 解析 swizzle/尺寸/格式 → 把 hostPixels 上传到该 unit 的 VkImage。
+4) 编译：Idle 优先级，exit=0；二进制含 `[ABIMOVTEX]` / `P5D_MOVIE_ENGINE`。
+5) 运行方式（等用户不在游戏）：
+```
+P5D_HIDEWINDOW=1
+P5D_MOVIE_ENGINE=1
+P5D_MOVIE_CLOCK=wall
+P5D_MOVIE_START=300
+（可选 P5D_MOVIE_CAPTURE=1 离屏取证）
+```
+预期：`[ABIMOVTEX] unit=... rc=0 960x544` → RT 截图出现影片内容（**引擎绘制**）。
+NEXT：
+```
+① 验证 [ABIMOVTEX] + RT 截图（引擎绘制的影片帧）
+② 若 page1 无 960×544 影片纹理绘制 → 找影片 quad 的片元程序哈希，调整门控
+③ 接入引擎真实影片解码事件（[IDR]/[VDEC]）实现帧同步
+```
+验证：编译日志（无 error）、二进制标签。
+
+ANTI-FORGETTING ENTRY. Keywords: M976 engine-drawn movie path - when a draw's bound fragment texture control block declares size 960x544 (movie texture), upload the pre-decoded BGRA movie frame directly as that unit's content via upload_gxm_control_to_unit(unit, ctrl16, hostPixels, bytes), so the ORIGINAL fragment shader samples and draws the movie frame (no longer relying on the host fullscreen-blit demo layer). Toggle P5D_MOVIE_ENGINE=1; log tag [ABIMOVTEX]. Backend API (vulkan_backend.h): SceInt32 upload_gxm_control_to_unit(SceUInt32 unit, const void* control16, const SceUInt8* hostPixels, SceUInt32 bytes) - internally resolve_gxm_texture parses the control block (swizzle/size/format) then uploads hostPixels to that unit's VkImage. Control-block width/height parse for linear/tiled/strided: _w1=_frag_tex[u][4..7]; _tm=_w1&0xE0000000; if(_tm==0x60000000||0x80000000||0xC0000000){ _tw=((_w1>>12)&0xFFF)+1; _th=(_w1&0xFFF)+1; } if(_tw==g_movie_w && _th==g_movie_h) upload. Compiled at Idle priority exit=0; binary contains [ABIMOVTEX]/P5D_MOVIE_ENGINE. This is a key step toward 'the original code draws it itself'. Verify when user not gaming: P5D_HIDEWINDOW=1 P5D_MOVIE_ENGINE=1 P5D_MOVIE_CLOCK=wall P5D_MOVIE_START=300 (optional P5D_MOVIE_CAPTURE=1). NEXT: verify [ABIMOVTEX] appears + RT screenshot shows movie content (engine-drawn); if page1 has no 960x544 movie-texture draw, find the movie quad's fragment program hash and adjust the gate; hook the engine's real video-decode events ([IDR]/[VDEC]) for frame sync.
+
+LOOKUP: upload_gxm_control_to_unit, P5D_MOVIE_ENGINE, [ABIMOVTEX], 960x544 movie texture, _frag_tex control block width/height, P5D_HIDEWINDOW, P5D_MOVIE_CLOCK=wall, P5D_MOVIE_CAPTURE -> §18.4520 [relevant: hidden window/offscreen], §18.4519 [relevant: real title picture]
