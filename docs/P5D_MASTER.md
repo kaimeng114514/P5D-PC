@@ -999,6 +999,48 @@
 | M981 | §18.4526: ★★★★★★ **【page1 卡死真凶：app 异步 job "init trophy" 永不完成】Ghidra 反编译 + 运行时探针联合定位：page1 的 `[IDR]` 循环其实就是 guest 函数 `FUN_81184ffe`（异步 job 状态机），它已提交 job `"init trophy"`（job 节点 handle=0xC8=200 与 `[IDR] handle=000000C8` 完全吻合），然后每轮轮询 `FUN_8116f8d2(job)` 等完成——而该 job 的异步 worker（`FUN_8116f9dc` 派发）在我们的 HLE 下永不完成 ⇒ page1 永远停在初始化第一步（state=2 idx=0），后续 title/影片解码全部无法开始。已实现 `P5D_JOBFORCE`：在 guest 进入 0x81184FFE 时把 job 的完成标志 `*(u32*)(job+0xC)` 清零，使 `FUN_8116f8d2` 返回 0 → 状态机推进到下一步（与旧 host 的 CRIFORCE/强制完成思路一致）**。证据：
 | M982 | §18.4527: ★★★★★★★ **`P5D_JOBFORCE` 生效：page1 初始化 job 被强制完成，job 状态机从 state=2 idx=0 推进到 state=1 idx=1，随后引擎**成功发出场景序列请求 `[SEQREQ] page=1`**（首次拿到完整场景页表！）——这是场景切换机制（S0_LOGO→S1_TITLE→…）的权威证据**。证据（`out80m_m1058jobforce.txt`）：
 | M983 | §18.4528: **场景页函数反编译 + JOBFORCE2 验证 + 关键洞察（强制完成会跳过 worker 实际工作，导致后续对象缺失）**。`out80m_m1059jobforce2.txt`：`[JOBFORCE]` 仍只 1 次、`[JOBFORCE2]` 0 次 → `FUN_8116f8d2` 在 page1 后续从未以"未完成 job"进入；`[SEQREQ] page=1` 出现后到 n=60.7M 无新 draw/present。同时反编译出 **S0–S5 场景页函数本体**（`scenepages2.txt`）：
+| M984 | §18.4529: **异步 job 执行机制反编译：`FUN_8116f9dc` → `FUN_811dab8c` = app 异步 job 队列派发器（作业节点池/优先级队列/互斥量 DAT_816cd9f0，状态 1=入队/2=运行），worker 回调 0x8116fa5d/0x8116fa67，状态查询 `FUN_8116fa38`→`FUN_811daf12`；运行日志确认 **job 消费者线程存在**（`[JOBQ] consumer q=84857A7C thr=40018000` / `q=8489909C thr=40019000`，线程 40011000/40012000/40013000/40014000 entry=811E68C9，信号量 gfdJobCountSema/gfdJobEmptySema/gfdJobEventFlag），但 fiber 模式下消费者不推进 ⇒ 我们提交的 job 永不完成；`P5D_HOSTTHREADS=1` 试验直接卡死在启动早期（无 FRAMEDUMP/PRESENT）⇒ 真实线程模式当前不可用**。证据：
+1) 反编译 `FUN_8116f9dc`（job 节点构造）：
+```c
+uVar5=*param_2; uVar4=param_2[1]; uVar3=param_2[2]; uVar2=param_2[3];
+if (param_2[4]!=0) uVar1 = FUN_8116f728();
+FUN_811dab8c(uVar1,uVar5,uVar4,0,uVar3,uVar2,0x8116fa5d,0,0x8116fa67,param_1);   // 入队+派发
+```
+2) 反编译 `FUN_811dab8c`（512B，job 队列派发器）：
+```c
+puVar2 = FUN_811d9f4a(DAT_816cda48);            // 从作业池取节点
+puVar2[2]=param_3; puVar2[3]=param_4; puVar2[8]=param_5;
+if(param_6<2) param_6=2; puVar2[9]=param_6;      // 优先级下限 2
+puVar2[10]=param_7; puVar2[0xb]=param_8; puVar2[0xc]=param_9; puVar2[0xd]=param_10;
+...
+FUN_81207344(&DAT_816cd9f0);                     // 互斥量
+// 按 puVar2[2] 优先级插入 DAT_816cd9c0/DAT_816cd9bc 链（param_5==0 分支）
+// 按 puVar2[3] 插入 DAT_816cd9c8/DAT_816cd9c4 链（param_8!=0 分支）
+FUN_81207352(&DAT_816cd9f0);
+*puVar2 = uVar5 (1=入队 / 2=...); puVar2[1]=0;
+```
+3) `FUN_8116f7ca`（提交 job）→ `puVar4[3]=FUN_8116f9dc(puVar4,&args)`（job+0xC 状态字段）。
+4) `FUN_8118479c`（page1 start）提交第二个 job：
+```c
+FUN_8116f7ca(0,"initDataRead",200,0,0,0x81184fff,LAB_811850da_1,iVar3);
+```
+5) 运行日志（`out80m_m1059jobforce2.txt`）：
+```
+[THR] create tid=40011000 entry=811E68C9 lr=811E613C
+[JOBQ] consumer q(r0)=84857A7C thr=40018000 fib=848463A0
+[JOBQ] consumer q(r0)=8489909C thr=40019000 fib=848463A0
+[SCREATE] gfdJobCountSema / gfdJobEmptySema / [EFCREATE] gfdJobEventFlag
+```
+6) `P5D_HOSTTHREADS=1` 试验（`out80m_m1060hostthr.txt`）：1.7M 行但 **无 [FRAMEDUMP]/[PRESENT]/[JOBQ]**（启动即卡死）⇒ host-thread 模式暂不可用，fiber 模式是基线。
+结论/下一步：
+```
+① fiber 模式下 job 消费者线程很可能阻塞在 sema/event 等待上（我们未服务/未 pump）；
+② 给消费者循环 0x810160E8 与等待点加探针，确认阻塞在哪个 wait；
+③ 在主线 pump 中显式唤醒 job 消费者（或直接在提交点内联执行 worker），让 "init trophy"/"initDataRead" 真正完成；
+④ 完成后 page1 start=0x8118479C 的 8 步链推进 → scene update 对象出现 → S1_TITLE 画面。
+```
+验证：`asyncdisp.txt`（Ghidra 反编译）、`out80m_m1059jobforce2.txt`、`out80m_m1060hostthr.txt`。 |
+| §18.4529 | Async job execution mechanism decompiled: FUN_8116f9dc -> FUN_811dab8c = the app async job queue dispatcher (job node pool FUN_811d9f4a(DAT_816cda48), priority queues DAT_816cd9c0/DAT_816cd9bc and DAT_816cd9c8/DAT_816cd9c4, mutex DAT_816cd9f0, state 1=queued/2=..., worker callbacks 0x8116fa5d/0x8116fa67, status query FUN_8116fa38->FUN_811daf12); runtime logs confirm the job consumer threads EXIST ([JOBQ] consumer q=84857A7C thr=40018000 / q=8489909C thr=40019000; threads tid=40011000/40012000/40013000/40014000 entry=811E68C9; semaphores gfdJobCountSema/gfdJobEmptySema, event flag gfdJobEventFlag), but in fiber mode the consumers do not advance so our submitted jobs never complete; P5D_HOSTTHREADS=1 test hung at early boot (no FRAMEDUMP/PRESENT) => real host-thread mode is currently unusable. Evidence: (1) FUN_8116f9dc (job node construction): uVar5=*param_2; uVar4=param_2[1]; uVar3=param_2[2]; uVar2=param_2[3]; if(param_2[4]!=0) uVar1=FUN_8116f728(); FUN_811dab8c(uVar1,uVar5,uVar4,0,uVar3,uVar2,0x8116fa5d,0,0x8116fa67,param_1). (2) FUN_811dab8c (512B dispatcher): puVar2=FUN_811d9f4a(DAT_816cda48) (from job pool); puVar2[2]=param_3; puVar2[3]=param_4; puVar2[8]=param_5; if(param_6<2)param_6=2; puVar2[9]=param_6; puVar2[10]=param_7; puVar2[0xb]=param_8; puVar2[0xc]=param_9; puVar2[0xd]=param_10; FUN_81207344(&DAT_816cd9f0) (mutex) then priority-insert into DAT_816cd9c0/DAT_816cd9bc (by puVar2[2]) and DAT_816cd9c8/DAT_816cd9c4 (by puVar2[3], when param_8!=0); FUN_81207352; *puVar2=state(1 queued/2 ...); puVar2[1]=0. (3) FUN_8116f7ca (submit job) -> puVar4[3]=FUN_8116f9dc(puVar4,&args) (job+0xC status field). (4) FUN_8118479c (page1 start) submits a second job: FUN_8116f7ca(0,'initDataRead',200,0,0,0x81184fff,LAB_811850da_1,iVar3). (5) Runtime out80m_m1059jobforce2.txt: [THR] create tid=40011000 entry=811E68C9; [JOBQ] consumer q(r0)=84857A7C thr=40018000 fib=848463A0; [JOBQ] consumer q(r0)=8489909C thr=40019000 fib=848463A0; [SCREATE] gfdJobCountSema/gfdJobEmptySema/[EFCREATE] gfdJobEventFlag. (6) P5D_HOSTTHREADS=1 test (out80m_m1060hostthr.txt) produced 1.7M lines but no [FRAMEDUMP]/[PRESENT]/[JOBQ] (hung at boot) => host-thread mode currently unusable; fiber mode is the baseline. NEXT: (1) in fiber mode the job consumer threads likely block on sema/event waits we do not service/pump; (2) add probes to the consumer loop 0x810160E8 and its wait points to find the blockage; (3) explicitly wake the job consumers from the main pump (or run the worker inline at submission) so 'init trophy'/'initDataRead' really complete; (4) then page1 start=0x8118479C's 8-step chain advances -> scene update objects appear -> S1_TITLE picture. |
 ```
 page0 start=811858CE:  bx lr                                   // 空
 page0 update=811858D0: r0 = FUN_8116f900(0x81309644,0); return r0!=0
@@ -491532,3 +491574,48 @@ NEXT：
 ANTI-FORGETTING ENTRY. Keywords: M983 scene page functions decompiled (scenepages2.txt, Thumb even addresses): page0 start=811858CE bx lr; page0 update=811858D0 r0=FUN_8116f900(0x81309644,0); return r0!=0; page0 end=811858EC; page1 start=8118591E bl 0x8118479C (8-step job init machine); page1 update=81185926 r0=FUN_8116f900(0x81309690,0); return r0!=0; page1 end=81185942; page2 start=81185A0C bl 0x8113ABB0 update=81185A14 bl 0x8113ABCA end=81185A26; page4 start=81185A50 bl 0x81111662 update=81185A58 bl 0x811116E8 end=81185A6A 81111704; page5 start=811859C0 bl 0x8119807C update=811859D2 bl 0x811980FC end=811859E4. FUN_8116f900(name,0) = get object by name/ID (page update polls object readiness). KEY INSIGHT: P5D_JOBFORCE only clears the job completion flag and SKIPS the async worker's real work (worker should call FUN_8102d53c/FUN_8102d544 etc.), so the objects later steps create (FUN_8116f900(0x81309644/0x81309690)) never exist, scene page update always returns 0, page1 does not advance and there are no new draws. The correct unblock is to let the async worker really execute. Evidence out80m_m1059jobforce2.txt: [JOBFORCE] 1, [JOBFORCE2] 0, [SEQREQ] page=1 then no new draws up to n=60.7M. NEXT: decompile FUN_8116f9dc (job dispatch) / FUN_8116fa38 (status query) to identify the worker scheduling (guest thread/fiber/event); find the 8-step worker functions of page1 start=0x8118479C and make them really run; trace when FUN_8116f900 registers objects 0x81309644/0x81309690; then scene update returns 1 -> S1_TITLE advances -> title draws.
 
 LOOKUP: scenepages2.txt, page0 811858CE/811858D0/811858EC, page1 8118591E/81185926/81185942, 8118479C, 8116f900, 0x81309644, 0x81309690, page2 8113ABB0/8113ABCA, page4 81111662/811116E8/81111704, page5 8119807C/811980FC, [JOBFORCE2], out80m_m1059jobforce2.txt -> §18.4527 [relevant: JOBFORCE advance], §18.4526 [relevant: job stall]
+### 18.4529 PORT M984: 异步 job 执行机制（队列派发器 + 消费者线程）反编译
+
+1) `FUN_8116f9dc`（job 节点构造）：
+```c
+uVar5=*param_2; uVar4=param_2[1]; uVar3=param_2[2]; uVar2=param_2[3];
+if (param_2[4]!=0) uVar1 = FUN_8116f728();
+FUN_811dab8c(uVar1,uVar5,uVar4,0,uVar3,uVar2,0x8116fa5d,0,0x8116fa67,param_1);
+```
+2) `FUN_811dab8c`（512B，job 队列派发器）：
+```c
+puVar2 = FUN_811d9f4a(DAT_816cda48);     // 作业池取节点
+puVar2[2]=param_3; puVar2[3]=param_4; puVar2[8]=param_5;
+if (param_6<2) param_6=2;  puVar2[9]=param_6;            // 优先级下限 2
+puVar2[10]=param_7; puVar2[0xb]=param_8; puVar2[0xc]=param_9; puVar2[0xd]=param_10;
+FUN_81207344(&DAT_816cd9f0);              // 互斥量
+// 按 puVar2[2] 插入 DAT_816cd9c0/DAT_816cd9bc 链；按 puVar2[3] 插入 DAT_816cd9c8/DAT_816cd9c4 链
+FUN_81207352(&DAT_816cd9f0);
+*puVar2 = 状态(1=入队/2=…); puVar2[1]=0;
+```
+3) `FUN_8118479c`（page1 start）提交第二个 job：
+```c
+FUN_8116f7ca(0,"initDataRead",200,0,0,0x81184fff,LAB_811850da_1,iVar3);
+```
+4) 运行日志确认消费者线程存在：
+```
+[THR] create tid=40011000 entry=811E68C9 lr=811E613C
+[JOBQ] consumer q(r0)=84857A7C thr=40018000 fib=848463A0
+[JOBQ] consumer q(r0)=8489909C thr=40019000 fib=848463A0
+[SCREATE] gfdJobCountSema / gfdJobEmptySema
+[EFCREATE] gfdJobEventFlag
+```
+5) `P5D_HOSTTHREADS=1` 试验：`out80m_m1060hostthr.txt` 1.7M 行但**无 [FRAMEDUMP]/[PRESENT]/[JOBQ]**（启动卡死）
+⇒ host-thread 模式暂不可用；fiber 模式为基线。
+6) 结论/下一步：
+```
+① fiber 模式下 job 消费者线程很可能阻塞在 sema/event 等待（我们未服务/pump）
+② 给消费者循环 0x810160E8 与等待点加探针，确认阻塞点
+③ 在主线 pump 中显式唤醒 job 消费者（或提交点内联执行 worker），让 init trophy/initDataRead 真正完成
+④ 完成后 page1 start=0x8118479C 的 8 步链推进 → scene update 对象出现 → S1_TITLE 画面
+```
+验证：`asyncdisp.txt`、`out80m_m1059jobforce2.txt`、`out80m_m1060hostthr.txt`。
+
+ANTI-FORGETTING ENTRY. Keywords: M984 async job execution mechanism decompiled: FUN_8116f9dc -> FUN_811dab8c = app async job queue dispatcher (job node pool FUN_811d9f4a(DAT_816cda48), priority queues DAT_816cd9c0/DAT_816cd9bc and DAT_816cd9c8/DAT_816cd9c4, mutex DAT_816cd9f0, state 1=queued/2=..., worker callbacks 0x8116fa5d/0x8116fa67, status query FUN_8116fa38->FUN_811daf12). Runtime logs confirm job consumer threads exist: [THR] create tid=40011000 entry=811E68C9; [JOBQ] consumer q(r0)=84857A7C thr=40018000 fib=848463A0; [JOBQ] consumer q(r0)=8489909C thr=40019000 fib=848463A0; [SCREATE] gfdJobCountSema/gfdJobEmptySema; [EFCREATE] gfdJobEventFlag. In fiber mode the consumers do not advance so submitted jobs never complete; P5D_HOSTTHREADS=1 test hung at early boot (out80m_m1060hostthr.txt: 1.7M lines but no [FRAMEDUMP]/[PRESENT]/[JOBQ]) => host-thread mode currently unusable, fiber mode baseline. FUN_8118479c (page1 start) submits a second job: FUN_8116f7ca(0,'initDataRead',200,0,0,0x81184fff,LAB_811850da_1,iVar3). NEXT: in fiber mode the job consumer threads likely block on sema/event waits we do not service/pump; add probes to consumer loop 0x810160E8 and wait points; explicitly wake the job consumers from the main pump or run the worker inline at submission; then page1 start=0x8118479C's 8-step chain advances -> scene update objects appear -> S1_TITLE picture.
+
+LOOKUP: asyncdisp.txt, FUN_8116f9dc, FUN_811dab8c, DAT_816cda48, DAT_816cd9f0, DAT_816cd9c0, DAT_816cd9bc, DAT_816cd9c8, DAT_816cd9c4, 0x8116fa5d, 0x8116fa67, FUN_8116fa38, FUN_811daf12, FUN_8118479c, initDataRead, 0x81184fff, LAB_811850da_1, [JOBQ], gfdJobCountSema, gfdJobEmptySema, gfdJobEventFlag, P5D_HOSTTHREADS, out80m_m1060hostthr.txt -> §18.4528 [relevant: scene pages], §18.4527 [relevant: JOBFORCE]
